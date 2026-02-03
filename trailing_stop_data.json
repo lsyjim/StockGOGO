@@ -1,0 +1,107 @@
+{
+  "3234": {
+    "highest_price": 56.2,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:39:29.443801"
+  },
+  "4510": {
+    "highest_price": 49.65,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:39:29.444140"
+  },
+  "1618": {
+    "highest_price": 49.8,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:39:29.444282"
+  },
+  "4939": {
+    "highest_price": 51.3,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:39:29.444381"
+  },
+  "3704": {
+    "highest_price": 38.8,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:39:29.444472"
+  },
+  "1609": {
+    "highest_price": 45.7,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:39:29.444613"
+  },
+  "2455": {
+    "highest_price": 179,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:46:25.412731"
+  },
+  "2409": {
+    "highest_price": 16.25,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:46:25.412857"
+  },
+  "3481": {
+    "highest_price": 28.35,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:46:25.412957"
+  },
+  "2331": {
+    "highest_price": 28.3,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T09:52:05.909431"
+  },
+  "6282": {
+    "highest_price": 63.1,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T10:20:18.835083"
+  },
+  "1514": {
+    "highest_price": 142.0,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T10:20:18.835172"
+  },
+  "4540": {
+    "highest_price": 49.25,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T10:33:21.862828"
+  },
+  "1815": {
+    "highest_price": 102.0,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T10:53:40.746723"
+  },
+  "2367": {
+    "highest_price": 41.0,
+    "trailing_stop_price": 0,
+    "activated": false,
+    "activation_price": 0,
+    "updated_at": "2026-01-22T10:53:40.746837"
+  }
+}

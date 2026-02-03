@@ -1,0 +1,210 @@
+[2026-01-20 01:44:39.114284 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 01:44:39.143423 +08:00 INFO] this account require 2fa
+[2026-01-20 01:44:39.199291 +08:00 INFO] [future_option_mapping]: 39.8255ms
+[2026-01-20 01:44:39.210982 +08:00 INFO] [future_option_mapping]: 10.97225ms
+[2026-01-20 01:44:39.304641 +08:00 INFO] [future_option_mapping]: 93.547417ms
+[2026-01-20 01:44:39.407330 +08:00 INFO] [future_option_mapping]: 97.354083ms
+[2026-01-20 01:44:39.517793 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:39.545137 +08:00 INFO] [inventory_result]: 27.312292ms
+[2026-01-20 01:44:39.545360 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:39.601422 +08:00 INFO] [inventory_stock_detail_result]: 56.052958ms
+[2026-01-20 01:44:43.347062 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:43.365557 +08:00 INFO] [inventory_result]: 18.472667ms
+[2026-01-20 01:44:43.365708 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:43.404411 +08:00 INFO] [inventory_stock_detail_result]: 38.692416ms
+[2026-01-20 01:44:44.140120 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:44.156872 +08:00 INFO] [inventory_result]: 16.730375ms
+[2026-01-20 01:44:44.157020 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:44.202097 +08:00 INFO] [inventory_stock_detail_result]: 45.068ms
+[2026-01-20 01:44:45.523075 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:45.540173 +08:00 INFO] [inventory_result]: 17.07775ms
+[2026-01-20 01:44:45.540328 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:45.578538 +08:00 INFO] [inventory_stock_detail_result]: 38.199875ms
+[2026-01-20 01:44:48.408283 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:48.427679 +08:00 INFO] [inventory_result]: 19.374167ms
+[2026-01-20 01:44:48.427838 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:48.469383 +08:00 INFO] [inventory_stock_detail_result]: 41.533417ms
+[2026-01-20 01:44:49.422099 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:49.439040 +08:00 INFO] [inventory_result]: 16.923208ms
+[2026-01-20 01:44:49.439185 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:44:49.489717 +08:00 INFO] [inventory_stock_detail_result]: 50.52125ms
+[2026-01-20 01:55:16.184680 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 01:55:16.208714 +08:00 INFO] this account require 2fa
+[2026-01-20 01:55:16.262731 +08:00 INFO] [future_option_mapping]: 39.107042ms
+[2026-01-20 01:55:16.272903 +08:00 INFO] [future_option_mapping]: 9.517042ms
+[2026-01-20 01:55:16.422327 +08:00 INFO] [future_option_mapping]: 149.343333ms
+[2026-01-20 01:55:16.441935 +08:00 INFO] [future_option_mapping]: 16.861ms
+[2026-01-20 01:55:16.533145 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:16.549475 +08:00 INFO] [inventory_result]: 16.318ms
+[2026-01-20 01:55:16.549702 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:16.589244 +08:00 INFO] [inventory_stock_detail_result]: 39.520875ms
+[2026-01-20 01:55:19.305145 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:19.321623 +08:00 INFO] [inventory_result]: 16.463458ms
+[2026-01-20 01:55:19.321782 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:19.360216 +08:00 INFO] [inventory_stock_detail_result]: 38.427208ms
+[2026-01-20 01:55:23.230112 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:23.250375 +08:00 INFO] [inventory_result]: 20.249375ms
+[2026-01-20 01:55:23.250513 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:23.290828 +08:00 INFO] [inventory_stock_detail_result]: 40.307458ms
+[2026-01-20 01:55:27.026237 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:27.043334 +08:00 INFO] [inventory_result]: 17.035583ms
+[2026-01-20 01:55:27.043469 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:27.084969 +08:00 INFO] [inventory_stock_detail_result]: 41.489458ms
+[2026-01-20 01:55:39.761192 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:39.779237 +08:00 INFO] [inventory_result]: 17.658875ms
+[2026-01-20 01:55:39.779502 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:39.819426 +08:00 INFO] [inventory_stock_detail_result]: 39.915ms
+[2026-01-20 01:55:40.334970 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:40.351932 +08:00 INFO] [inventory_result]: 16.944916ms
+[2026-01-20 01:55:40.352067 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:40.391178 +08:00 INFO] [inventory_stock_detail_result]: 39.101375ms
+[2026-01-20 01:55:41.666077 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:41.685722 +08:00 INFO] [inventory_result]: 19.629208ms
+[2026-01-20 01:55:41.685868 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:41.723247 +08:00 INFO] [inventory_stock_detail_result]: 37.36475ms
+[2026-01-20 01:55:42.652993 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:42.673893 +08:00 INFO] [inventory_result]: 20.856833ms
+[2026-01-20 01:55:42.674050 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:42.711656 +08:00 INFO] [inventory_stock_detail_result]: 37.596208ms
+[2026-01-20 01:55:44.036261 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:44.056083 +08:00 INFO] [inventory_result]: 19.80175ms
+[2026-01-20 01:55:44.056234 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:44.098229 +08:00 INFO] [inventory_stock_detail_result]: 41.984333ms
+[2026-01-20 01:55:45.607116 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:45.627940 +08:00 INFO] [inventory_result]: 20.809417ms
+[2026-01-20 01:55:45.628081 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:45.665692 +08:00 INFO] [inventory_stock_detail_result]: 37.602084ms
+[2026-01-20 01:55:46.525088 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:46.545351 +08:00 INFO] [inventory_result]: 20.246417ms
+[2026-01-20 01:55:46.545490 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:46.582487 +08:00 INFO] [inventory_stock_detail_result]: 36.987334ms
+[2026-01-20 01:55:55.855417 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:55.875747 +08:00 INFO] [inventory_result]: 20.257292ms
+[2026-01-20 01:55:55.875922 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:55:55.911805 +08:00 INFO] [inventory_stock_detail_result]: 35.872375ms
+[2026-01-20 01:57:10.333520 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 01:57:10.362265 +08:00 INFO] this account require 2fa
+[2026-01-20 01:57:10.424402 +08:00 INFO] [future_option_mapping]: 46.044833ms
+[2026-01-20 01:57:10.435888 +08:00 INFO] [future_option_mapping]: 10.796209ms
+[2026-01-20 01:57:10.495513 +08:00 INFO] [future_option_mapping]: 59.540541ms
+[2026-01-20 01:57:10.511449 +08:00 INFO] [future_option_mapping]: 13.181625ms
+[2026-01-20 01:57:11.819001 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:11.845431 +08:00 INFO] [inventory_result]: 26.410834ms
+[2026-01-20 01:57:11.845584 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:11.884752 +08:00 INFO] [inventory_stock_detail_result]: 39.157209ms
+[2026-01-20 01:57:13.024957 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:13.045103 +08:00 INFO] [inventory_result]: 20.129292ms
+[2026-01-20 01:57:13.045252 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:13.083248 +08:00 INFO] [inventory_stock_detail_result]: 37.987125ms
+[2026-01-20 01:57:13.698810 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:13.714564 +08:00 INFO] [inventory_result]: 15.738125ms
+[2026-01-20 01:57:13.714706 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:13.752548 +08:00 INFO] [inventory_stock_detail_result]: 37.830667ms
+[2026-01-20 01:57:14.809270 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:14.905545 +08:00 INFO] [inventory_result]: 96.25275ms
+[2026-01-20 01:57:14.905734 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:14.942570 +08:00 INFO] [inventory_stock_detail_result]: 36.824542ms
+[2026-01-20 01:57:15.293873 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:15.310677 +08:00 INFO] [inventory_result]: 16.790042ms
+[2026-01-20 01:57:15.310823 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:15.430329 +08:00 INFO] [inventory_stock_detail_result]: 119.49525ms
+[2026-01-20 01:57:16.602388 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 01:57:16.622837 +08:00 INFO] this account require 2fa
+[2026-01-20 01:57:16.674521 +08:00 INFO] [future_option_mapping]: 39.803167ms
+[2026-01-20 01:57:16.687355 +08:00 INFO] [future_option_mapping]: 12.166875ms
+[2026-01-20 01:57:16.754671 +08:00 INFO] [future_option_mapping]: 67.236375ms
+[2026-01-20 01:57:16.773054 +08:00 INFO] [future_option_mapping]: 15.782875ms
+[2026-01-20 01:57:16.837086 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:16.854992 +08:00 INFO] [inventory_result]: 17.898875ms
+[2026-01-20 01:57:16.855057 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:16.893867 +08:00 INFO] [inventory_stock_detail_result]: 38.803583ms
+[2026-01-20 01:57:19.234812 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 01:57:19.259652 +08:00 INFO] this account require 2fa
+[2026-01-20 01:57:19.323241 +08:00 INFO] [future_option_mapping]: 45.738958ms
+[2026-01-20 01:57:19.338707 +08:00 INFO] [future_option_mapping]: 14.860042ms
+[2026-01-20 01:57:19.401217 +08:00 INFO] [future_option_mapping]: 62.420208ms
+[2026-01-20 01:57:19.420545 +08:00 INFO] [future_option_mapping]: 16.620375ms
+[2026-01-20 01:57:19.489903 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:19.508278 +08:00 INFO] [inventory_result]: 18.365292ms
+[2026-01-20 01:57:19.508348 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:57:19.624648 +08:00 INFO] [inventory_stock_detail_result]: 116.291791ms
+[2026-01-20 01:58:52.454521 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 01:58:52.476281 +08:00 INFO] this account require 2fa
+[2026-01-20 01:58:52.545186 +08:00 INFO] [future_option_mapping]: 55.575459ms
+[2026-01-20 01:58:52.557708 +08:00 INFO] [future_option_mapping]: 11.834375ms
+[2026-01-20 01:58:52.621835 +08:00 INFO] [future_option_mapping]: 64.045167ms
+[2026-01-20 01:58:52.638102 +08:00 INFO] [future_option_mapping]: 13.600833ms
+[2026-01-20 01:58:54.297449 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:58:54.313896 +08:00 INFO] [inventory_result]: 16.432542ms
+[2026-01-20 01:58:54.314118 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:58:54.356644 +08:00 INFO] [inventory_stock_detail_result]: 42.5135ms
+[2026-01-20 01:59:42.248062 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:59:42.274382 +08:00 INFO] [inventory_result]: 26.160667ms
+[2026-01-20 01:59:42.274575 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 01:59:42.317164 +08:00 INFO] [inventory_stock_detail_result]: 42.579292ms
+[2026-01-20 02:08:59.071533 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 02:08:59.096111 +08:00 INFO] this account require 2fa
+[2026-01-20 02:08:59.151359 +08:00 INFO] [future_option_mapping]: 40.351583ms
+[2026-01-20 02:08:59.166850 +08:00 INFO] [future_option_mapping]: 14.814792ms
+[2026-01-20 02:08:59.232911 +08:00 INFO] [future_option_mapping]: 65.978792ms
+[2026-01-20 02:08:59.249847 +08:00 INFO] [future_option_mapping]: 14.308708ms
+[2026-01-20 02:09:00.920417 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 02:09:00.942678 +08:00 INFO] [inventory_result]: 22.235542ms
+[2026-01-20 02:09:00.942906 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 02:09:00.983111 +08:00 INFO] [inventory_stock_detail_result]: 40.197417ms
+[2026-01-20 10:39:27.792463 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 10:39:27.836030 +08:00 INFO] this account require 2fa
+[2026-01-20 10:39:27.907476 +08:00 INFO] [future_option_mapping]: 47.404709ms
+[2026-01-20 10:39:27.920806 +08:00 INFO] [future_option_mapping]: 12.658208ms
+[2026-01-20 10:39:27.972362 +08:00 INFO] [future_option_mapping]: 51.439917ms
+[2026-01-20 10:39:27.992360 +08:00 INFO] [future_option_mapping]: 17.075084ms
+[2026-01-20 10:39:29.426019 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:29.455364 +08:00 INFO] [inventory_result]: 29.325667ms
+[2026-01-20 10:39:29.455572 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:29.521727 +08:00 INFO] [inventory_stock_detail_result]: 66.144625ms
+[2026-01-20 10:39:32.925757 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:32.942598 +08:00 INFO] [inventory_result]: 16.813834ms
+[2026-01-20 10:39:32.942900 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:32.999585 +08:00 INFO] [inventory_stock_detail_result]: 56.670708ms
+[2026-01-20 10:39:37.964421 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:37.987183 +08:00 INFO] [inventory_result]: 22.703125ms
+[2026-01-20 10:39:37.987730 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:38.114637 +08:00 INFO] [inventory_stock_detail_result]: 126.894417ms
+[2026-01-20 10:39:39.160764 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:39.177063 +08:00 INFO] [inventory_result]: 16.272458ms
+[2026-01-20 10:39:39.177273 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:39.220087 +08:00 INFO] [inventory_stock_detail_result]: 42.795334ms
+[2026-01-20 10:39:48.609514 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:48.630604 +08:00 INFO] [inventory_result]: 20.962083ms
+[2026-01-20 10:39:48.630808 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 10:39:48.676928 +08:00 INFO] [inventory_stock_detail_result]: 46.10225ms
+[2026-01-20 11:00:41.542466 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-20 11:00:41.566164 +08:00 INFO] this account require 2fa
+[2026-01-20 11:00:41.619561 +08:00 INFO] [future_option_mapping]: 35.569542ms
+[2026-01-20 11:00:41.632440 +08:00 INFO] [future_option_mapping]: 12.195208ms
+[2026-01-20 11:00:41.679245 +08:00 INFO] [future_option_mapping]: 46.721125ms
+[2026-01-20 11:00:41.696543 +08:00 INFO] [future_option_mapping]: 14.657875ms
+[2026-01-20 11:00:43.444263 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:00:43.461497 +08:00 INFO] [inventory_result]: 17.217709ms
+[2026-01-20 11:00:43.461744 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:00:43.500718 +08:00 INFO] [inventory_stock_detail_result]: 38.95625ms
+[2026-01-20 11:01:04.006112 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:01:04.029200 +08:00 INFO] [inventory_result]: 22.921542ms
+[2026-01-20 11:01:04.029340 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:01:04.073188 +08:00 INFO] [inventory_stock_detail_result]: 43.835792ms
+[2026-01-20 11:01:04.561985 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:01:04.579598 +08:00 INFO] [inventory_result]: 17.595125ms
+[2026-01-20 11:01:04.579680 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:01:04.631564 +08:00 INFO] [inventory_stock_detail_result]: 51.873417ms
+[2026-01-20 11:22:37.212635 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:22:37.232200 +08:00 INFO] [inventory_result]: 19.386709ms
+[2026-01-20 11:22:37.232512 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:22:37.298923 +08:00 INFO] [inventory_stock_detail_result]: 66.402ms
+[2026-01-20 11:22:38.820815 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:22:38.841489 +08:00 INFO] [inventory_result]: 20.649458ms
+[2026-01-20 11:22:38.841672 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:22:38.905345 +08:00 INFO] [inventory_stock_detail_result]: 63.65825ms
+[2026-01-20 11:22:45.641314 +08:00 INFO] [get inventories] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:22:45.661964 +08:00 INFO] [inventory_result]: 20.528125ms
+[2026-01-20 11:22:45.662502 +08:00 INFO] [unrealized gains and loses] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" }
+[2026-01-20 11:22:45.728249 +08:00 INFO] [inventory_stock_detail_result]: 65.735875ms

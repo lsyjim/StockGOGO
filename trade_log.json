@@ -1,0 +1,38 @@
+[
+  {
+    "time": "2026-01-27T15:02:27.284920",
+    "action": "BUY",
+    "symbol": "4939",
+    "qty": 9000,
+    "round_lots": 9000,
+    "odd_lots": 0,
+    "price": 42.57,
+    "cost": 383675.96025,
+    "reason": "形態確立：W底（短線:買進）",
+    "force_round_lot": true
+  },
+  {
+    "time": "2026-01-29T09:32:20.375134",
+    "action": "BUY",
+    "symbol": "2455",
+    "qty": 2000,
+    "round_lots": 2000,
+    "odd_lots": 0,
+    "price": 170.19,
+    "cost": 340865.0415,
+    "reason": "形態確立：W底（短線:買進）",
+    "force_round_lot": true
+  },
+  {
+    "time": "2026-01-29T10:46:29.660827",
+    "action": "SELL",
+    "symbol": "4939",
+    "qty": 9000,
+    "round_lots": 9000,
+    "odd_lots": 0,
+    "price": 38.51,
+    "proceeds": 345056.33924999996,
+    "pnl": -38073.660749999995,
+    "reason": "【風控】觸發停損百分比（虧損-8.6%，停損線:-8%）"
+  }
+]

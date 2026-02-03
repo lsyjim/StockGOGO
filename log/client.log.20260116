@@ -1,0 +1,22 @@
+[2026-01-16 00:46:45.833617 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-16 00:46:45.856342 +08:00 INFO] this account require 2fa
+[2026-01-16 00:46:45.918053 +08:00 INFO] [future_option_mapping]: 43.288708ms
+[2026-01-16 00:46:45.930709 +08:00 INFO] [future_option_mapping]: 11.9025ms
+[2026-01-16 00:46:45.993639 +08:00 INFO] [future_option_mapping]: 62.821166ms
+[2026-01-16 00:46:46.008791 +08:00 INFO] [future_option_mapping]: 12.161125ms
+[2026-01-16 02:06:44.358156 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-16 02:06:44.386214 +08:00 INFO] this account require 2fa
+[2026-01-16 02:06:44.529267 +08:00 INFO] [future_option_mapping]: 128.794166ms
+[2026-01-16 02:06:44.541848 +08:00 INFO] [future_option_mapping]: 11.118208ms
+[2026-01-16 02:06:44.615323 +08:00 INFO] [future_option_mapping]: 73.390375ms
+[2026-01-16 02:06:44.634125 +08:00 INFO] [future_option_mapping]: 13.47075ms
+[2026-01-16 08:58:35.940427 +08:00 INFO] [login] personal_id="N124680879"
+[2026-01-16 08:58:35.987735 +08:00 INFO] this account require 2fa
+[2026-01-16 08:58:36.054904 +08:00 INFO] [future_option_mapping]: 51.353542ms
+[2026-01-16 08:58:36.067684 +08:00 INFO] [future_option_mapping]: 11.81275ms
+[2026-01-16 08:58:36.158825 +08:00 INFO] [future_option_mapping]: 91.045833ms
+[2026-01-16 08:58:36.177991 +08:00 INFO] [future_option_mapping]: 14.2155ms
+[2026-01-16 09:03:23.943116 +08:00 INFO] [place_order] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" },order=Order { oxtp: NewOrder, market_type: Common, sess: None, date: None, buy_sell: Buy, stock_no: "1802", price_type: Limit, price: Some("40.5"), quantity: 1000, time_in_force: ROD, order_type: Stock, user_def: Some("") }, is_async=false
+[2026-01-16 09:03:23.988588 +08:00 INFO] [place_order]: 46.088708ms
+[2026-01-16 09:06:11.903091 +08:00 INFO] [place_order] account=Account { branch_no: "20115", account: "2391624", account_type: "stock", name: "賴俊仰" },order=Order { oxtp: NewOrder, market_type: IntradayOdd, sess: Some("0"), date: None, buy_sell: Buy, stock_no: "2330", price_type: Limit, price: Some("1700.0"), quantity: 10, time_in_force: ROD, order_type: Stock, user_def: Some("") }, is_async=false
+[2026-01-16 09:06:11.941021 +08:00 INFO] [place_order]: 38.12925ms
