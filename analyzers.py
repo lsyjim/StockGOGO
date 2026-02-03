@@ -3110,6 +3110,39 @@ class DecisionMatrix:
         lines.append("  └─────────────────────────────────────────────────────────────────┘")
         lines.append("")
         
+        # v4.5.12 新增：機構儀表板 (Institutional Dashboard)
+        risk_mgr = result.get('risk_manager', {})
+        beta = risk_mgr.get('beta', 1.0) if risk_mgr else 1.0
+        atr = risk_mgr.get('atr', 0) if risk_mgr else 0
+        atr_pct = risk_mgr.get('atr_pct', 0) if risk_mgr else 0
+        
+        # 計算風險等級文字
+        if beta > 1.5:
+            beta_desc = "⚠️高波動"
+        elif beta > 1.2:
+            beta_desc = "📈偏高"
+        elif beta < 0.8:
+            beta_desc = "🛡️防禦"
+        else:
+            beta_desc = "📊正常"
+        
+        lines.append("  【機構儀表板 Institutional Dashboard】")
+        lines.append(f"    • 風險係數 (Beta): {beta:.2f} {beta_desc}")
+        lines.append(f"    • 真實波幅 (ATR): ${atr:.2f}" + (f" ({atr_pct:.1f}%)" if atr_pct > 0 else ""))
+        
+        # 計算相對強度 (RS) - 如果有大盤數據可用
+        rs_score = result.get('relative_strength', {}).get('rs_score', None)
+        if rs_score is not None:
+            rs_desc = "強於大盤" if rs_score > 0 else "弱於大盤"
+            lines.append(f"    • 相對強度 (RS): {rs_score:+.1f}% ({rs_desc})")
+        
+        # 顯示停損建議
+        if atr > 0 and current_price > 0:
+            stop_price = current_price - (2.5 * atr)
+            lines.append(f"    • 建議停損 (2.5*ATR): ${stop_price:.2f}")
+        
+        lines.append("")
+        
         # ════════════════════════════════════════════════════════════════
         # 第二部分：投資建議
         # ════════════════════════════════════════════════════════════════
@@ -5075,6 +5108,13 @@ class RiskManager:
             # tradable 判斷
             tradable = liquidity['tradable'] and rr_ratio >= QuantConfig.MIN_RR_RATIO
             
+            # v4.5.12 新增：Beta 近似計算（使用波動率比率）
+            # 真正的 Beta 需要大盤數據做回歸分析
+            # 這裡使用 ATR% 與市場平均 ATR% (約 1.5%) 的比率作為近似
+            market_avg_atr_pct = 1.5  # 大盤平均日波動率約 1.5%
+            beta_approx = atr_pct / market_avg_atr_pct if market_avg_atr_pct > 0 else 1.0
+            beta_approx = round(max(0.3, min(3.0, beta_approx)), 2)  # 限制在 0.3-3.0 之間
+            
             return {
                 'available': True,
                 'entry_price': current_price,
@@ -5084,6 +5124,7 @@ class RiskManager:
                 'atr_stop': round(atr_stop, 2),
                 'atr': round(atr, 2),
                 'atr_pct': round(atr_pct, 2),
+                'beta': beta_approx,  # v4.5.12 新增
                 'risk_per_share': round(risk_per_share, 2),
                 'risk_pct': round(risk_pct, 2),
                 'rr_ratio': round(rr_ratio, 2),
