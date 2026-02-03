@@ -2,11 +2,11 @@
 量化投資分析系統 v4.5.10 - 專業量化開發版本
 =====================================
 v4.5.10 重大修正：
-- 統一報告和自選股清單的數據來源
+- 統一報告和自選股清單的數據來源（使用 recommendation['overall']）
 - 報告「投資評級」改用 recommendation['overall']（與短線操作一致）
-- 自選股「總結」也改用 recommendation['overall']
 - 報告新增「進場時機」欄位在綜合評價中
-- 修正報告本身「投資評級」和「短線操作」矛盾的問題
+- 調整分數區間：High ≥65, Mid 45-65, Low ≤45（縮窄中性區間）
+- 場景 I 改名：「蓄勢待發」→「動能交易」（更準確描述股價先行）
 
 v4.5.9 修正：
 - 進場時機：使用 recommendation['action_timing']
@@ -4049,19 +4049,19 @@ class RecommendationDialog:
             action_zh = overall
         
         # 根據中文建議判斷顏色
-        if any(x in action_zh for x in ["強烈建議買進", "強力買進", "買進", "適合買進", "建議買進"]):
+        if any(x in action_zh for x in ["強烈建議買進", "強力買進", "買進", "適合買進", "建議買進", "動能買進"]):
             action_bg = DarkTheme.STRONG_BUY_BG
             action_fg = DarkTheme.STRONG_BUY_FG
             action_en = "Buy"
-        elif any(x in action_zh for x in ["逢低布局", "分批布局", "可考慮買進"]):
+        elif any(x in action_zh for x in ["逢低布局", "分批布局", "可考慮買進", "拉回買進"]):
             action_bg = DarkTheme.STRONG_BUY_BG
             action_fg = DarkTheme.STRONG_BUY_FG
             action_en = "Buy on Dip"
-        elif any(x in action_zh for x in ["賣出", "減碼", "停損", "建議賣出"]):
+        elif any(x in action_zh for x in ["賣出", "減碼", "停損", "建議賣出", "強力賣出"]):
             action_bg = DarkTheme.STRONG_SELL_BG
             action_fg = DarkTheme.STRONG_SELL_FG
             action_en = "Sell"
-        elif any(x in action_zh for x in ["持有", "續抱"]):
+        elif any(x in action_zh for x in ["持有", "續抱", "持股續抱"]):
             action_bg = DarkTheme.HOLD_BG
             action_fg = DarkTheme.HOLD_FG
             action_en = "Hold"
@@ -4184,7 +4184,7 @@ class RecommendationDialog:
         # 說明文字
         tk.Label(card, text="※ 基礎分50分，根據各項指標加減分，最終分數範圍0-100分",
                 font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        tk.Label(card, text="※ High(≥70)=偏多, Mid(40-70)=中性, Low(≤40)=偏空",
+        tk.Label(card, text="※ High(≥65)=偏多, Mid(45-65)=中性, Low(≤45)=偏空",
                 font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
         
         # 評分表格
