@@ -1,6 +1,12 @@
 """
-量化投資分析系統 v4.5.12 - 專業量化開發版本
+量化投資分析系統 v4.5.13 - 專業量化開發版本
 =====================================
+v4.5.13 修正：
+- 修復 Python 3.13 Tkinter 多線程垃圾回收崩潰問題
+- 新增 ThreadSafeGC 類別管理背景線程的垃圾回收
+- 所有 analyze_in_background 函數都加入 GC 保護
+- 修復 dividend_yield 類型轉換錯誤（字串 vs 數字）
+
 v4.5.12 重大架構變更（換腦手術）：
 - 完全重構 DecisionMatrix.analyze，廢除舊的 determine_scenario_and_advice
 - 統一使用雙軌評分系統（DualTrackScorer）作為唯一決策核心
@@ -155,9 +161,57 @@ import threading
 import time
 import hashlib
 import warnings
+import gc
+import atexit
 
 # 抑制 yfinance 的警告訊息
 warnings.filterwarnings('ignore', category=FutureWarning)
+
+# ============================================================
+# v4.5.13 修正：Python 3.13 Tkinter 多線程垃圾回收問題
+# ============================================================
+# 問題：背景線程中的對象被垃圾回收時，如果引用了 Tkinter 變數，
+#       會觸發 "RuntimeError: main thread is not in main loop"
+# 解決：在背景線程執行期間禁用自動垃圾回收
+# ============================================================
+
+class ThreadSafeGC:
+    """
+    線程安全的垃圾回收管理器
+    
+    用於解決 Python 3.13 中 Tkinter 多線程垃圾回收問題
+    """
+    _lock = threading.Lock()
+    _background_threads = 0
+    _gc_was_enabled = True
+    
+    @classmethod
+    def enter_background_thread(cls):
+        """進入背景線程時調用"""
+        with cls._lock:
+            cls._background_threads += 1
+            if cls._background_threads == 1 and gc.isenabled():
+                cls._gc_was_enabled = True
+                gc.disable()
+    
+    @classmethod
+    def exit_background_thread(cls):
+        """離開背景線程時調用"""
+        with cls._lock:
+            cls._background_threads = max(0, cls._background_threads - 1)
+            if cls._background_threads == 0 and cls._gc_was_enabled:
+                gc.enable()
+    
+    @classmethod
+    def collect_in_main_thread(cls, root):
+        """在主線程中安全執行垃圾回收"""
+        def do_collect():
+            if cls._background_threads == 0:
+                gc.collect()
+        try:
+            root.after(0, do_collect)
+        except:
+            pass
 
 import yfinance as yf
 import mplfinance as mpf
@@ -5739,55 +5793,61 @@ class StockAnalysisApp(tk.Tk):
         print(f"[自選股刷新] 開始刷新 {total} 檔股票...")
         
         def analyze_in_background():
+            # v4.5.13: 進入背景線程，禁用自動垃圾回收
+            ThreadSafeGC.enter_background_thread()
             success_count = 0
             
-            for idx, (symbol, name, market, _, _, _) in enumerate(stocks, 1):
-                if not hasattr(self, '_refreshing') or not self._refreshing:
-                    # 用戶可能關閉視窗
-                    print(f"[自選股刷新] 刷新已取消")
-                    break
-                
-                # v4.4.7：檢查熔斷，如果觸發就停止
-                if YFinanceRateLimiter.is_circuit_breaker_active():
-                    remaining = YFinanceRateLimiter.get_circuit_breaker_remaining()
-                    self._refresh_errors.append(f"⛔ YFinance 熔斷觸發，剩餘股票跳過（需等待 {remaining} 秒）")
-                    print(f"[自選股刷新] ⛔ 熔斷觸發，停止刷新")
-                    break
-                
-                # 更新進度
-                progress_text = f"刷新中：{idx}/{total} ({symbol})"
-                self._safe_ui_update(lambda t=progress_text: self._update_progress(t))
-                
-                try:
-                    # v4.4.7：加大節流延遲（1.5秒），避免觸發速率限制
-                    if idx > 1:
-                        time.sleep(1.5)
+            try:
+                for idx, (symbol, name, market, _, _, _) in enumerate(stocks, 1):
+                    if not hasattr(self, '_refreshing') or not self._refreshing:
+                        # 用戶可能關閉視窗
+                        print(f"[自選股刷新] 刷新已取消")
+                        break
                     
-                    print(f"[自選股刷新] 分析 {symbol} ({name or 'N/A'}) - {idx}/{total}")
-                    result = QuickAnalyzer.analyze_stock(symbol, market)
+                    # v4.4.7：檢查熔斷，如果觸發就停止
+                    if YFinanceRateLimiter.is_circuit_breaker_active():
+                        remaining = YFinanceRateLimiter.get_circuit_breaker_remaining()
+                        self._refresh_errors.append(f"⛔ YFinance 熔斷觸發，剩餘股票跳過（需等待 {remaining} 秒）")
+                        print(f"[自選股刷新] ⛔ 熔斷觸發，停止刷新")
+                        break
                     
-                    if result:
-                        rec = result['recommendation']
-                        if isinstance(rec, dict):
-                            overall = rec.get('overall', '待分析')
-                            scenario = rec.get('scenario_name', '')
-                            short_term = rec.get('short_term', {})
-                            short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
-                            timing = rec.get('action_timing', '')
-                            recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
-                        else:
-                            recommendation = str(rec)
-                        self.db.update_recommendation(symbol, recommendation)
-                        success_count += 1
-                        print(f"[自選股刷新] {symbol} 分析完成: {overall}")
-                    else:
-                        self._refresh_errors.append(f"{symbol}: 無分析結果")
-                        print(f"[自選股刷新] {symbol} 無分析結果")
+                    # 更新進度
+                    progress_text = f"刷新中：{idx}/{total} ({symbol})"
+                    self._safe_ui_update(lambda t=progress_text: self._update_progress(t))
+                    
+                    try:
+                        # v4.4.7：加大節流延遲（1.5秒），避免觸發速率限制
+                        if idx > 1:
+                            time.sleep(1.5)
                         
-                except Exception as e:
-                    error_msg = f"{symbol}: {str(e)}"
-                    self._refresh_errors.append(error_msg)
-                    print(f"[自選股刷新] {symbol} 分析錯誤: {e}")
+                        print(f"[自選股刷新] 分析 {symbol} ({name or 'N/A'}) - {idx}/{total}")
+                        result = QuickAnalyzer.analyze_stock(symbol, market)
+                        
+                        if result:
+                            rec = result['recommendation']
+                            if isinstance(rec, dict):
+                                overall = rec.get('overall', '待分析')
+                                scenario = rec.get('scenario_name', '')
+                                short_term = rec.get('short_term', {})
+                                short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
+                                timing = rec.get('action_timing', '')
+                                recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
+                            else:
+                                recommendation = str(rec)
+                            self.db.update_recommendation(symbol, recommendation)
+                            success_count += 1
+                            print(f"[自選股刷新] {symbol} 分析完成: {overall}")
+                        else:
+                            self._refresh_errors.append(f"{symbol}: 無分析結果")
+                            print(f"[自選股刷新] {symbol} 無分析結果")
+                            
+                    except Exception as e:
+                        error_msg = f"{symbol}: {str(e)}"
+                        self._refresh_errors.append(error_msg)
+                        print(f"[自選股刷新] {symbol} 分析錯誤: {e}")
+            finally:
+                # v4.5.13: 離開背景線程，重新啟用垃圾回收
+                ThreadSafeGC.exit_background_thread()
             
             # 完成後更新 UI
             def on_complete():
@@ -5858,6 +5918,8 @@ class StockAnalysisApp(tk.Tk):
             return
         
         def analyze_in_background():
+            # v4.5.13: 進入背景線程，禁用自動垃圾回收
+            ThreadSafeGC.enter_background_thread()
             try:
                 from analyzers import DecisionMatrix
                 
@@ -5935,6 +5997,9 @@ class StockAnalysisApp(tk.Tk):
                     
             except Exception as e:
                 print(f"背景分析出錯: {e}")
+            finally:
+                # v4.5.13: 離開背景線程，重新啟用垃圾回收
+                ThreadSafeGC.exit_background_thread()
         
         # v4.4.2 修正：線程啟動放在正確位置
         thread = threading.Thread(target=analyze_in_background, daemon=True)
@@ -5977,6 +6042,8 @@ class StockAnalysisApp(tk.Tk):
         用於新加入自選股時，只分析該股票而不是全部重跑
         """
         def analyze_in_background():
+            # v4.5.13: 進入背景線程，禁用自動垃圾回收
+            ThreadSafeGC.enter_background_thread()
             try:
                 from analyzers import DecisionMatrix
                 
@@ -6050,6 +6117,9 @@ class StockAnalysisApp(tk.Tk):
                     
             except Exception as e:
                 print(f"[單股分析] {symbol} 錯誤: {e}")
+            finally:
+                # v4.5.13: 離開背景線程，重新啟用垃圾回收
+                ThreadSafeGC.exit_background_thread()
         
         # 背景執行分析
         thread = threading.Thread(target=analyze_in_background, daemon=True)

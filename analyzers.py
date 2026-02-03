@@ -1797,9 +1797,26 @@ class DecisionMatrix:
         # 2. 價值面評分
         # ========================================
         fundamental = result.get('fundamental', {})
-        pe_ratio = fundamental.get('pe_ratio', None)
-        pb_ratio = fundamental.get('pb_ratio', None)
-        dividend_yield = fundamental.get('dividend_yield', None)
+        
+        # v4.5.12 修正：確保數值類型正確（可能是字串）
+        def safe_float(value, default=None):
+            """安全轉換為浮點數"""
+            if value is None:
+                return default
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                # 移除百分號和其他符號
+                cleaned = value.replace('%', '').replace(',', '').strip()
+                try:
+                    return float(cleaned)
+                except ValueError:
+                    return default
+            return default
+        
+        pe_ratio = safe_float(fundamental.get('pe_ratio'))
+        pb_ratio = safe_float(fundamental.get('pb_ratio'))
+        dividend_yield = safe_float(fundamental.get('dividend_yield'))
         
         if pe_ratio is not None and pe_ratio > 0:
             if pe_ratio < 15:
