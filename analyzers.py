@@ -36,12 +36,12 @@ from data_fetcher import RealtimePriceFetcher
 
 class DecisionMatrix:
     """
-    多因子決策矩陣 v4.5.11 - 時效性濾網版
+    多因子決策矩陣 v4.5.12 - 換腦手術版
     
-    v4.5.11 更新：
-    - PatternAnalyzer 加入時效性濾網 (Recency Filter)
-    - 新增 max_distance_from_neckline 參數（預設 8%）
-    - 距頸線過遠的形態訊號降級，避免追高
+    v4.5.12 重大架構變更：
+    - 完全重構 analyze 方法，廢除 determine_scenario_and_advice（舊邏輯）
+    - 統一使用雙軌評分系統作為唯一決策核心
+    - 解決「雙頭馬車」問題，確保資訊一致
     - 分數區間：High ≥65, Mid 45-65, Low ≤45
     
     整合「市場背景 (Regime)」與「形態訊號 (Pattern)」的交叉場景判斷，
@@ -87,51 +87,171 @@ class DecisionMatrix:
     @staticmethod
     def analyze(result):
         """
-        執行完整決策矩陣分析（v4.4.7 重構版）
+        執行完整決策矩陣分析（v4.5.12 換腦手術版）
+        
+        =====================================================
+        重大架構變更：
+        =====================================================
+        
+        問題：原本同時存在兩套決策邏輯（雙頭馬車）
+        - 舊邏輯：determine_scenario_and_advice（if/else 硬規則）
+        - 新邏輯：DualTrackScorer（分數查表）
+        
+        結果：自選股列表和報告顯示矛盾的建議
+        
+        解決：完全依賴「雙軌評分系統」作為唯一決策核心
+        - 廢除 determine_scenario_and_advice
+        - 統一使用 calculate_short_term_score + calculate_long_term_score
+        - 用 get_investment_advice 查表決定場景
         
         Args:
             result: QuickAnalyzer.analyze_stock() 的回傳結果
         
         Returns:
-            dict: 決策矩陣分析結果
+            dict: 決策矩陣分析結果（兼容現有格式）
         """
         try:
-            # Step 1: 計算核心決策變數
+            # Step 1: 計算核心決策變數（保留用於顯示和計算目標價）
             decision_vars = DecisionMatrix._calculate_decision_variables(result)
             
-            # Step 2: 執行新版綜合場景判斷（整合 Regime + Pattern）
-            scenario_result = DecisionMatrix.determine_scenario_and_advice(decision_vars, result)
+            # ============================================================
+            # v4.5.12 換腦手術：使用雙軌評分系統作為唯一決策核心
+            # ============================================================
             
-            # Step 3: 執行強制濾網檢查
-            final_result = DecisionMatrix._apply_filters(scenario_result, decision_vars, result)
+            # Step 2: 計算短線和長線評分
+            short_term_score_data = DecisionMatrix.calculate_short_term_score(result)
+            long_term_score_data = DecisionMatrix.calculate_long_term_score(result)
             
-            # Step 4: 應用訊號冷卻期（避免忽買忽賣）
-            final_result = DecisionMatrix._apply_signal_cooldown(final_result, result)
+            short_score = short_term_score_data.get('score', 50)
+            long_score = long_term_score_data.get('score', 50)
             
-            # Step 5: 計算動態目標價
-            price_targets = DecisionMatrix.calculate_price_targets(result, scenario_result)
+            # Step 3: 根據分數取得投資建議（統一決策核心）
+            investment_advice = DecisionMatrix.get_investment_advice(short_score, long_score)
             
-            # 構建回傳結果
+            # 從 investment_advice 提取關鍵資訊
+            scenario_code = investment_advice['scenario_code']
+            scenario_name = investment_advice['title']
+            recommendation = investment_advice['action_zh']
+            action_code = investment_advice['action']
+            weighted_score = investment_advice['weighted_score']
+            risk_level = investment_advice['risk_level']
+            position_advice = investment_advice['position_advice']
+            stop_loss_advice = investment_advice['stop_loss_advice']
+            description = investment_advice['description']
+            
+            # Step 4: 根據場景和分數決定進場時機
+            if weighted_score >= 70:
+                action_timing = '可立即進場'
+            elif weighted_score >= 60:
+                action_timing = '可考慮進場，設好停損'
+            elif weighted_score >= 50:
+                action_timing = '等待拉回或突破確認'
+            elif weighted_score >= 40:
+                action_timing = '觀望為主，等待訊號'
+            else:
+                action_timing = '不宜進場，風險過高'
+            
+            # 特殊場景調整
+            if scenario_code == 'B':  # 拉回佈局
+                action_timing = '等待止跌訊號，分批布局'
+            elif scenario_code == 'C':  # 投機反彈
+                action_timing = '短線搶反彈，嚴格停損'
+            elif scenario_code == 'G':  # 頭部確立
+                action_timing = '獲利了結，不宜追高'
+            elif scenario_code == 'H':  # 空頭確認
+                action_timing = '儘速離場，不要抄底'
+            
+            # Step 5: 檢查形態分析是否需要覆蓋建議
+            pattern_info = result.get('pattern_analysis', {})
+            warning_message = ''
+            
+            if pattern_info.get('detected') and pattern_info.get('available'):
+                pattern_status = pattern_info.get('status', '')
+                pattern_signal = pattern_info.get('signal', 'neutral')
+                pattern_name = pattern_info.get('pattern_name', '')
+                
+                # v4.5.11: 時效性濾網 - TARGET_REACHED 狀態不覆蓋
+                if pattern_status == 'TARGET_REACHED':
+                    distance = pattern_info.get('distance_from_neckline', 0)
+                    warning_message = f'{pattern_name}已突破一段時間（距頸線{distance:+.1f}%），不宜追價'
+                elif 'CONFIRMED' in pattern_status:
+                    # 形態剛確立，可以覆蓋建議
+                    if pattern_signal == 'buy':
+                        recommendation = f'強烈建議買進（{pattern_name}確立）'
+                        action_timing = '形態突破，可進場'
+                        target = pattern_info.get('target_price', 0)
+                        stop = pattern_info.get('stop_loss', 0)
+                        warning_message = f'{pattern_info.get("description", "")} 目標價${target:.2f}，停損${stop:.2f}'
+                    elif pattern_signal == 'sell':
+                        recommendation = f'建議賣出（{pattern_name}確立）'
+                        action_timing = '形態跌破，應出場'
+                        target = pattern_info.get('target_price', 0)
+                        warning_message = f'{pattern_info.get("description", "")} 目標價${target:.2f}'
+                elif 'FORMING' in pattern_status:
+                    # 形態形成中，加入警示
+                    neckline = pattern_info.get('neckline_price', 0)
+                    if pattern_signal == 'buy':
+                        warning_message = f'{pattern_name}形成中，頸線${neckline:.2f}，突破則確立'
+                    else:
+                        warning_message = f'{pattern_name}形成中，頸線${neckline:.2f}，跌破則確立'
+            
+            # Step 6: 計算動態目標價
+            temp_scenario = {
+                'scenario': scenario_code,
+                'recommendation': recommendation
+            }
+            price_targets = DecisionMatrix.calculate_price_targets(result, temp_scenario)
+            
+            # Step 7: 構建回傳結果（兼容現有格式）
             analysis_result = {
                 'available': True,
                 'decision_vars': decision_vars,
-                'scenario': scenario_result['scenario'],
-                'scenario_name': scenario_result['scenario_name'],
-                'recommendation': final_result['recommendation'],
-                'action_timing': final_result['action_timing'],
-                'warning_message': final_result['warning_message'],
-                'explanation': scenario_result.get('explanation', ''),  # v4.4.7 新增
-                'filters_applied': final_result.get('filters_applied', []),
-                'downgraded': final_result.get('downgraded', False),
-                'original_recommendation': scenario_result.get('recommendation', ''),
-                'confidence': final_result.get('confidence', 'Medium'),
-                'price_targets': price_targets,  # v4.4.7 新增
-                'short_term_action': scenario_result.get('short_term_action', '')
+                
+                # 核心決策資訊（來自雙軌評分）
+                'scenario': scenario_code,
+                'scenario_name': scenario_name,
+                'recommendation': recommendation,
+                'action_timing': action_timing,
+                'warning_message': warning_message,
+                'explanation': description,
+                
+                # 評分資訊
+                'score': weighted_score,
+                'confidence': 'High' if weighted_score >= 70 else 'Medium' if weighted_score >= 50 else 'Low',
+                'risk_level': risk_level,
+                
+                # 詳細評分數據（供前端顯示）
+                'short_term_score': short_term_score_data,
+                'long_term_score': long_term_score_data,
+                'investment_advice': investment_advice,  # 完整的投資建議
+                
+                # 兼容舊格式的欄位
+                'filters_applied': [],
+                'downgraded': False,
+                'original_recommendation': recommendation,
+                'short_term_action': recommendation,
+                
+                # 目標價
+                'price_targets': price_targets
             }
             
-            # 如果是場景 F（區間操作），加入 range_info
-            if scenario_result.get('scenario') == 'F' and 'range_info' in scenario_result:
-                analysis_result['range_info'] = scenario_result['range_info']
+            # 如果是區間操作場景 (E, F)，加入 range_info
+            if scenario_code in ['E', 'F']:
+                tech = result.get('technical', {})
+                current_price = tech.get('current_price', 0)
+                ma20 = tech.get('ma20', current_price)
+                ma60 = tech.get('ma60', current_price)
+                
+                # 計算支撐壓力
+                support = min(ma20, ma60) * 0.98
+                resistance = max(ma20, ma60) * 1.02
+                
+                analysis_result['range_info'] = {
+                    'support': round(support, 2),
+                    'resistance': round(resistance, 2),
+                    'current_position': '靠近支撐' if current_price < (support + resistance) / 2 else '靠近壓力',
+                    'suggestion': '接近支撐可買' if current_price < (support + resistance) / 2 else '接近壓力可賣'
+                }
             
             return analysis_result
             
