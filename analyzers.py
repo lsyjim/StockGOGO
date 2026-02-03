@@ -36,12 +36,13 @@ from data_fetcher import RealtimePriceFetcher
 
 class DecisionMatrix:
     """
-    多因子決策矩陣 v4.5.10 - 機構級優化版
+    多因子決策矩陣 v4.5.11 - 時效性濾網版
     
-    v4.5.10 更新：
-    - 分數區間調整：High ≥65, Mid 45-65, Low ≤45（縮窄中性區間）
-    - 場景 I 改名：「蓄勢待發」→「動能交易」
-    - 統一以 recommendation['overall'] 為主要建議來源
+    v4.5.11 更新：
+    - PatternAnalyzer 加入時效性濾網 (Recency Filter)
+    - 新增 max_distance_from_neckline 參數（預設 8%）
+    - 距頸線過遠的形態訊號降級，避免追高
+    - 分數區間：High ≥65, Mid 45-65, Low ≤45
     
     整合「市場背景 (Regime)」與「形態訊號 (Pattern)」的交叉場景判斷，
     解決訊號矛盾問題，並優化目標價計算邏輯。
@@ -5233,6 +5234,14 @@ class PatternConfig:
     hs_min_head_prominence: float = 0.03     # 頭部最小突出度 (比肩部高/低 3%)
     hs_max_time_asymmetry: float = 0.50      # 最大時間不對稱度 (50%)
     hs_max_shoulder_diff: float = 0.05       # 左右肩最大高度差 (5%)
+    
+    # ========================================
+    # v4.5.11 新增：時效性濾網 (Recency Filter)
+    # ========================================
+    # 解決問題：股價已從高點回落，但仍高於頸線，系統誤報為「形態確立」
+    max_distance_from_neckline: float = 0.08  # 距頸線最大允許幅度 (8%)
+    # 超過此幅度視為「已漲完」或「已跌完」，訊號降級
+    breakout_validity_days: int = 10          # 突破訊號有效天數（可選）
 
 
 class PatternAnalyzer:
@@ -5761,10 +5770,40 @@ class PatternAnalyzer:
             # 判斷狀態
             if current_close < neckline_price:
                 # ========================================
-                # 形態確立：跌破頸線
+                # v4.5.11: 時效性濾網 (Recency Filter)
                 # ========================================
+                distance_pct = (neckline_price - current_close) / neckline_price
+                max_distance = self.config.max_distance_from_neckline
+                
                 volume_confirmed = current_volume >= ma5_vol * self.config.volume_confirm_ratio
                 
+                # 檢查是否距離頸線過遠（已跌完一段）
+                if distance_pct > max_distance:
+                    # 形態已跌破一段時間，訊號降級
+                    result = {
+                        'detected': True,
+                        'pattern_name': PatternType.DOUBLE_TOP.value,
+                        'pattern_type': 'top',
+                        'status': 'TARGET_REACHED',
+                        'neckline_price': round(neckline_price, 2),
+                        'target_price': round(target_price, 2),
+                        'stop_loss': round(stop_loss, 2),
+                        'confidence': 40,
+                        'volume_confirmed': volume_confirmed,
+                        'description': (
+                            f'M頭已跌破一段時間（距頸線-{distance_pct*100:.1f}%），不宜追空。'
+                            f'頸線${neckline_price:.2f}，目前${current_close:.2f}'
+                        ),
+                        'signal': 'hold',
+                        'score_impact': -5,
+                        'geometry_checks': result['geometry_checks'],
+                        'distance_from_neckline': round(-distance_pct * 100, 1)
+                    }
+                    return result
+                
+                # ========================================
+                # 形態確立：剛跌破頸線
+                # ========================================
                 result = {
                     'detected': True,
                     'pattern_name': PatternType.DOUBLE_TOP.value,
@@ -5777,12 +5816,13 @@ class PatternAnalyzer:
                     'volume_confirmed': volume_confirmed,
                     'description': (
                         f'M頭確立！收盤${current_close:.2f}跌破頸線${neckline_price:.2f}，'
-                        f'間隔{spacing}天，深度{depth_pct*100:.1f}%'
+                        f'距頸線-{distance_pct*100:.1f}%，間隔{spacing}天，深度{depth_pct*100:.1f}%'
                         + ('，量能確認' if volume_confirmed else '，量能不足')
                     ),
                     'signal': 'sell',
                     'score_impact': -40 if volume_confirmed else -25,
-                    'geometry_checks': result['geometry_checks']
+                    'geometry_checks': result['geometry_checks'],
+                    'distance_from_neckline': round(-distance_pct * 100, 1)
                 }
                 return result
             else:
@@ -5984,10 +6024,40 @@ class PatternAnalyzer:
             # 判斷狀態
             if current_close > neckline_price:
                 # ========================================
-                # 形態確立：突破頸線
+                # v4.5.11: 時效性濾網 (Recency Filter)
                 # ========================================
+                distance_pct = (current_close - neckline_price) / neckline_price
+                max_distance = self.config.max_distance_from_neckline
+                
                 volume_confirmed = current_volume >= ma5_vol * self.config.volume_confirm_ratio
                 
+                # 檢查是否距離頸線過遠（已漲完一段）
+                if distance_pct > max_distance:
+                    # 形態已突破一段時間，訊號降級
+                    result = {
+                        'detected': True,
+                        'pattern_name': PatternType.DOUBLE_BOTTOM.value,
+                        'pattern_type': 'bottom',
+                        'status': 'TARGET_REACHED',  # 新狀態：已達目標區
+                        'neckline_price': round(neckline_price, 2),
+                        'target_price': round(target_price, 2),
+                        'stop_loss': round(stop_loss, 2),
+                        'confidence': 40,  # 降低信心度
+                        'volume_confirmed': volume_confirmed,
+                        'description': (
+                            f'W底已突破一段時間（距頸線+{distance_pct*100:.1f}%），不宜追價。'
+                            f'頸線${neckline_price:.2f}，目前${current_close:.2f}'
+                        ),
+                        'signal': 'hold',  # 訊號降級：從 buy 降為 hold
+                        'score_impact': 5,  # 降低分數影響
+                        'geometry_checks': result['geometry_checks'],
+                        'distance_from_neckline': round(distance_pct * 100, 1)
+                    }
+                    return result
+                
+                # ========================================
+                # 形態確立：剛突破頸線（距離在合理範圍內）
+                # ========================================
                 result = {
                     'detected': True,
                     'pattern_name': PatternType.DOUBLE_BOTTOM.value,
@@ -6000,12 +6070,13 @@ class PatternAnalyzer:
                     'volume_confirmed': volume_confirmed,
                     'description': (
                         f'W底確立！收盤${current_close:.2f}突破頸線${neckline_price:.2f}，'
-                        f'間隔{spacing}天，深度{depth_pct*100:.1f}%'
+                        f'距頸線+{distance_pct*100:.1f}%，間隔{spacing}天，深度{depth_pct*100:.1f}%'
                         + ('，量能確認' if volume_confirmed else '，量能不足')
                     ),
                     'signal': 'buy',
                     'score_impact': 40 if volume_confirmed else 25,
-                    'geometry_checks': result['geometry_checks']
+                    'geometry_checks': result['geometry_checks'],
+                    'distance_from_neckline': round(distance_pct * 100, 1)
                 }
                 return result
             else:
@@ -6480,10 +6551,39 @@ class PatternAnalyzer:
             # 判斷狀態
             if current_close < neckline_price:
                 # ========================================
-                # 形態確立：跌破頸線
+                # v4.5.11: 時效性濾網 (Recency Filter)
                 # ========================================
+                distance_pct = (neckline_price - current_close) / neckline_price
+                max_distance = self.config.max_distance_from_neckline
+                
                 volume_confirmed = current_volume >= ma5_vol * self.config.volume_confirm_ratio
                 
+                # 檢查是否距離頸線過遠（已跌完一段）
+                if distance_pct > max_distance:
+                    result = {
+                        'detected': True,
+                        'pattern_name': PatternType.HEAD_SHOULDERS_TOP.value,
+                        'pattern_type': 'top',
+                        'status': 'TARGET_REACHED',
+                        'neckline_price': round(neckline_price, 2),
+                        'target_price': round(target_price, 2),
+                        'stop_loss': round(stop_loss, 2),
+                        'confidence': 40,
+                        'volume_confirmed': volume_confirmed,
+                        'description': (
+                            f'頭肩頂已跌破一段時間（距頸線-{distance_pct*100:.1f}%），不宜追空。'
+                            f'頸線${neckline_price:.2f}，目前${current_close:.2f}'
+                        ),
+                        'signal': 'hold',
+                        'score_impact': -5,
+                        'geometry_checks': result['geometry_checks'],
+                        'distance_from_neckline': round(-distance_pct * 100, 1)
+                    }
+                    return result
+                
+                # ========================================
+                # 形態確立：剛跌破頸線
+                # ========================================
                 result = {
                     'detected': True,
                     'pattern_name': PatternType.HEAD_SHOULDERS_TOP.value,
@@ -6496,13 +6596,15 @@ class PatternAnalyzer:
                     'volume_confirmed': volume_confirmed,
                     'description': (
                         f'頭肩頂確立！跌破頸線${neckline_price:.2f}，'
+                        f'距頸線-{distance_pct*100:.1f}%，'
                         f'頭部突出{min(ls_prominence, rs_prominence)*100:.1f}%，'
                         f'時間對稱度{(1-time_asymmetry)*100:.0f}%'
                         + ('，量能確認' if volume_confirmed else '')
                     ),
                     'signal': 'sell',
                     'score_impact': -45 if volume_confirmed else -30,
-                    'geometry_checks': result['geometry_checks']
+                    'geometry_checks': result['geometry_checks'],
+                    'distance_from_neckline': round(-distance_pct * 100, 1)
                 }
                 return result
             else:
@@ -6724,10 +6826,39 @@ class PatternAnalyzer:
             # 判斷狀態
             if current_close > neckline_price:
                 # ========================================
-                # 形態確立：突破頸線
+                # v4.5.11: 時效性濾網 (Recency Filter)
                 # ========================================
+                distance_pct = (current_close - neckline_price) / neckline_price
+                max_distance = self.config.max_distance_from_neckline
+                
                 volume_confirmed = current_volume >= ma5_vol * self.config.volume_confirm_ratio
                 
+                # 檢查是否距離頸線過遠（已漲完一段）
+                if distance_pct > max_distance:
+                    result = {
+                        'detected': True,
+                        'pattern_name': PatternType.HEAD_SHOULDERS_BOTTOM.value,
+                        'pattern_type': 'bottom',
+                        'status': 'TARGET_REACHED',
+                        'neckline_price': round(neckline_price, 2),
+                        'target_price': round(target_price, 2),
+                        'stop_loss': round(stop_loss, 2),
+                        'confidence': 40,
+                        'volume_confirmed': volume_confirmed,
+                        'description': (
+                            f'頭肩底已突破一段時間（距頸線+{distance_pct*100:.1f}%），不宜追價。'
+                            f'頸線${neckline_price:.2f}，目前${current_close:.2f}'
+                        ),
+                        'signal': 'hold',
+                        'score_impact': 5,
+                        'geometry_checks': result['geometry_checks'],
+                        'distance_from_neckline': round(distance_pct * 100, 1)
+                    }
+                    return result
+                
+                # ========================================
+                # 形態確立：剛突破頸線
+                # ========================================
                 result = {
                     'detected': True,
                     'pattern_name': PatternType.HEAD_SHOULDERS_BOTTOM.value,
@@ -6740,13 +6871,15 @@ class PatternAnalyzer:
                     'volume_confirmed': volume_confirmed,
                     'description': (
                         f'頭肩底確立！突破頸線${neckline_price:.2f}，'
+                        f'距頸線+{distance_pct*100:.1f}%，'
                         f'頭部突出{min(ls_prominence, rs_prominence)*100:.1f}%，'
                         f'時間對稱度{(1-time_asymmetry)*100:.0f}%'
                         + ('，量能確認' if volume_confirmed else '')
                     ),
                     'signal': 'buy',
                     'score_impact': 45 if volume_confirmed else 30,
-                    'geometry_checks': result['geometry_checks']
+                    'geometry_checks': result['geometry_checks'],
+                    'distance_from_neckline': round(distance_pct * 100, 1)
                 }
                 return result
             else:

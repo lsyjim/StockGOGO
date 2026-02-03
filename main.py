@@ -1,12 +1,17 @@
 """
-量化投資分析系統 v4.5.10 - 專業量化開發版本
+量化投資分析系統 v4.5.11 - 專業量化開發版本
 =====================================
-v4.5.10 重大修正：
+v4.5.11 重大修正：
+- 修正自選股清單「場景」欄位顯示不一致問題
+- 場景統一顯示簡短名稱（雙強共振、拉回佈局等）
+- PatternAnalyzer 加入時效性濾網，過濾已漲完一波的過期形態
+- 新增 max_distance_from_neckline 參數（預設 8%）
+- 距頸線過遠的形態訊號降級為 hold，避免追高
+
+v4.5.10 修正：
 - 統一報告和自選股清單的數據來源（使用 recommendation['overall']）
-- 報告「投資評級」改用 recommendation['overall']（與短線操作一致）
-- 報告新增「進場時機」欄位在綜合評價中
 - 調整分數區間：High ≥65, Mid 45-65, Low ≤45（縮窄中性區間）
-- 場景 I 改名：「蓄勢待發」→「動能交易」（更準確描述股價先行）
+- 場景 I 改名：「蓄勢待發」→「動能交易」
 
 v4.5.9 修正：
 - 進場時機：使用 recommendation['action_timing']
@@ -5865,9 +5870,15 @@ class StockAnalysisApp(tk.Tk):
                                     long_term_data.get('score', 50)
                                 )
                                 
-                                # 取得報告中使用的數據
+                                # v4.5.11 修正：場景顯示簡短名稱（與報告一致）
                                 scenario_code = investment_advice.get('scenario_code', 'E')
-                                scenario_title = investment_advice.get('title', '')
+                                # 場景代碼轉簡短名稱
+                                SCENARIO_SHORT_NAMES = {
+                                    'A': '雙強共振', 'B': '拉回佈局', 'C': '投機反彈',
+                                    'D': '高檔震盪', 'E': '多空不明', 'F': '弱勢盤整',
+                                    'G': '頭部確立', 'H': '空頭確認', 'I': '動能交易'
+                                }
+                                scenario_name = SCENARIO_SHORT_NAMES.get(scenario_code, scenario_code)
                                 action_zh = investment_advice.get('action_zh', '觀望')
                                 
                                 # 取得短線操作建議和進場時機（從 recommendation 取，與報告一致）
@@ -5884,8 +5895,8 @@ class StockAnalysisApp(tk.Tk):
                                     timing = '觀望中'
                                     overall = action_zh
                                 
-                                # 格式：總結|場景|短線|時機
-                                recommendation = f"{overall}|{scenario_code}|{short_action}|{timing}"
+                                # 格式：總結|場景|短線|時機（場景改用簡短名稱）
+                                recommendation = f"{overall}|{scenario_name}|{short_action}|{timing}"
                             except Exception as dm_error:
                                 print(f"DecisionMatrix 計算錯誤 {symbol}: {dm_error}")
                                 # 回退到舊方法
@@ -5978,8 +5989,15 @@ class StockAnalysisApp(tk.Tk):
                             long_term_data.get('score', 50)
                         )
                         
-                        # 取得報告中使用的數據
+                        # v4.5.11 修正：場景顯示簡短名稱（與報告一致）
                         scenario_code = investment_advice.get('scenario_code', 'E')
+                        # 場景代碼轉簡短名稱
+                        SCENARIO_SHORT_NAMES = {
+                            'A': '雙強共振', 'B': '拉回佈局', 'C': '投機反彈',
+                            'D': '高檔震盪', 'E': '多空不明', 'F': '弱勢盤整',
+                            'G': '頭部確立', 'H': '空頭確認', 'I': '動能交易'
+                        }
+                        scenario_name = SCENARIO_SHORT_NAMES.get(scenario_code, scenario_code)
                         action_zh = investment_advice.get('action_zh', '觀望')
                         
                         # 取得短線操作建議和進場時機（從 recommendation 取，與報告一致）
@@ -5996,7 +6014,7 @@ class StockAnalysisApp(tk.Tk):
                             timing = '觀望中'
                             overall = action_zh
                         
-                        recommendation = f"{overall}|{scenario_code}|{short_action}|{timing}"
+                        recommendation = f"{overall}|{scenario_name}|{short_action}|{timing}"
                     except Exception as dm_error:
                         print(f"DecisionMatrix 計算錯誤 {symbol}: {dm_error}")
                         # 回退到舊方法
