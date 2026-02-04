@@ -36,18 +36,21 @@ from data_fetcher import RealtimePriceFetcher
 
 class DecisionMatrix:
     """
-    多因子決策矩陣 v4.5.15 - 效能優化版
+    多因子決策矩陣 v4.5.16 - 形態失效檢查版
+    
+    v4.5.16 形態失效檢查 (Pattern Invalidation)：
+    - W底/M頭/頭肩頂/頭肩底 加入「形態失效檢查」
+    - 價格突破停損點 → 形態失效，不再回報 FORMING
+    - 新增「形成超時檢查」：超過 30 天未突破頸線視為無效
+    - 解決「形態已被破壞但仍顯示 FORMING」的邏輯漏洞
     
     v4.5.15 效能優化：
-    - PatternAnalyzer._find_significant_points 使用 scipy.signal.argrelextrema
-    - 極值點尋找從 O(N*W) 降低為 O(N)，速度提升 10-50 倍
-    - 若無 scipy，自動回退到原始 Python 實現
+    - _find_significant_points 使用 scipy.signal.argrelextrema
+    - 極值點尋找速度提升 10-50 倍
     
     v4.5.14 重大更新：
     - PatternAnalyzer 加入「陳舊突破檢查」(Stale Breakout Check)
-    - 檢查形態關鍵點之後的歷史最高/最低價
     - 新增 PULLBACK_TEST 狀態，過濾「漲多拉回」假訊號
-    - 加入關鍵點資訊（日期、價格）
     - 分數區間：High ≥65, Mid 45-65, Low ≤45
     
     整合「市場背景 (Regime)」與「形態訊號 (Pattern)」的交叉場景判斷，
@@ -5426,6 +5429,13 @@ class PatternConfig:
     max_distance_from_neckline: float = 0.08  # 距頸線最大允許幅度 (8%)
     # 超過此幅度視為「已漲完」或「已跌完」，訊號降級
     breakout_validity_days: int = 10          # 突破訊號有效天數（可選）
+    
+    # ========================================
+    # v4.5.16 新增：形態失效檢查 (Pattern Invalidation)
+    # ========================================
+    # 解決問題：形態形成中但已被價格突破破壞，應標記為 FAILED
+    max_formation_days: int = 30              # 關鍵點形成後，最長等待突破天數
+    # 超過此天數視為「形態拖太久」，效力減弱
 
 
 class PatternAnalyzer:
@@ -6003,6 +6013,22 @@ class PatternAnalyzer:
             target_price = neckline_price - pattern_height
             stop_loss = max(p1_price, p2_price)
             
+            # ========================================
+            # 【v4.5.16 新增】形態失效檢查 (Pattern Invalidation)
+            # ========================================
+            # 如果收盤價漲破最高點 (P1 或 P2)，代表 M頭失敗，趨勢向上
+            if current_close > stop_loss:
+                # 形態已失效，跳過此形態
+                continue
+            
+            # ========================================
+            # 【v4.5.16 新增】形成超時檢查 (Formation Timeout)
+            # ========================================
+            days_since_last_point = len(df) - 1 - p2_idx
+            if days_since_last_point > self.config.max_formation_days:
+                # 形態拖太久（超過30天），效力大幅減弱，視為無效
+                continue
+            
             # 判斷狀態
             if current_close < neckline_price:
                 # ========================================
@@ -6353,6 +6379,22 @@ class PatternAnalyzer:
             pattern_height = neckline_price - valley_avg
             target_price = neckline_price + pattern_height
             stop_loss = min(v1_price, v2_price)
+            
+            # ========================================
+            # 【v4.5.16 新增】形態失效檢查 (Pattern Invalidation)
+            # ========================================
+            # 如果收盤價跌破最低點 (V1 或 V2)，代表 W底失敗，趨勢向下
+            if current_close < stop_loss:
+                # 形態已失效，跳過此形態
+                continue
+            
+            # ========================================
+            # 【v4.5.16 新增】形成超時檢查 (Formation Timeout)
+            # ========================================
+            days_since_last_point = len(df) - 1 - v2_idx
+            if days_since_last_point > self.config.max_formation_days:
+                # 形態拖太久（超過30天），效力大幅減弱，視為無效
+                continue
             
             # 判斷狀態
             if current_close > neckline_price:
@@ -6976,6 +7018,22 @@ class PatternAnalyzer:
             target_price = neckline_price - pattern_height
             stop_loss = h_price
             
+            # ========================================
+            # 【v4.5.16 新增】形態失效檢查 (Pattern Invalidation)
+            # ========================================
+            # 如果收盤價漲破頭部最高點，代表頭肩頂失敗，趨勢向上
+            if current_close > stop_loss:
+                # 形態已失效，跳過此形態
+                continue
+            
+            # ========================================
+            # 【v4.5.16 新增】形成超時檢查 (Formation Timeout)
+            # ========================================
+            days_since_last_point = len(df) - 1 - rs_idx
+            if days_since_last_point > self.config.max_formation_days:
+                # 形態拖太久（超過30天），效力大幅減弱，視為無效
+                continue
+            
             # 判斷狀態
             if current_close < neckline_price:
                 # ========================================
@@ -7328,6 +7386,22 @@ class PatternAnalyzer:
             pattern_height = neckline_price - h_price
             target_price = neckline_price + pattern_height
             stop_loss = h_price
+            
+            # ========================================
+            # 【v4.5.16 新增】形態失效檢查 (Pattern Invalidation)
+            # ========================================
+            # 如果收盤價跌破頭部最低點，代表頭肩底失敗，趨勢向下
+            if current_close < stop_loss:
+                # 形態已失效，跳過此形態
+                continue
+            
+            # ========================================
+            # 【v4.5.16 新增】形成超時檢查 (Formation Timeout)
+            # ========================================
+            days_since_last_point = len(df) - 1 - rs_idx
+            if days_since_last_point > self.config.max_formation_days:
+                # 形態拖太久（超過30天），效力大幅減弱，視為無效
+                continue
             
             # 判斷狀態
             if current_close > neckline_price:
