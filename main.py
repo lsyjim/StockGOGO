@@ -6387,7 +6387,7 @@ class StockAnalysisApp(tk.Tk):
             self.refresh_watchlist()
     
     def refresh_watchlist(self):
-        """刷新自選股列表（v4.5.17 機構級分組顯示）"""
+        """刷新自選股列表（v4.5.17 Bloomberg風格視覺優化版）"""
         # 清空舊資料
         for item in self.watchlist_tree.get_children():
             self.watchlist_tree.delete(item)
@@ -6401,6 +6401,29 @@ class StockAnalysisApp(tk.Tk):
         
         stocks = self.db.get_all_stocks(order_by=order_by)
         
+        # ========================================
+        # v4.5.17 Bloomberg 風格配色升級
+        # ========================================
+        try:
+            style = ttk.Style()
+            style.configure("Treeview", 
+                            background="#1e1e1e",      # 深灰背景
+                            foreground="#e0e0e0",      # 米白文字
+                            fieldbackground="#1e1e1e", # 欄位背景
+                            rowheight=24)              # 增加行高
+            style.map('Treeview', background=[('selected', '#2d4a69')])  # 選中時深藍色
+        except Exception:
+            pass  # 配色設定失敗不影響功能
+        
+        # 定義 Tag 顏色 (高對比/柔和色系)
+        self.watchlist_tree.tag_configure("group", background="#263238", foreground="#ffffff", font=("Arial", 10, "bold"))
+        self.watchlist_tree.tag_configure("buy", foreground="#ff5252", font=("Arial", 10, "bold"))   # Material Red 400
+        self.watchlist_tree.tag_configure("hold", foreground="#ffab40", font=("Arial", 10))          # Material Orange 400
+        self.watchlist_tree.tag_configure("sell", foreground="#69f0ae", font=("Arial", 10, "bold"))  # Material Green A200
+        self.watchlist_tree.tag_configure("wait", foreground="#b0bec5")                              # 柔和灰
+        self.watchlist_tree.tag_configure("hot", background="#4a1c1c")                               # 過熱深紅底
+        self.watchlist_tree.tag_configure("cold", background="#1c4a2e")                              # 超跌深綠底
+        
         # 判斷是否使用分組模式
         use_grouping = (order_by == 'industry')
         
@@ -6409,61 +6432,63 @@ class StockAnalysisApp(tk.Tk):
             # 分組模式：族群 -> 個股
             # ========================================
             grouped_data = {}
-            for stock in stocks:
-                # 解析資料：(symbol, name, market, added_date, notes, recommendation, industry, sort_order, quant_score, trend_status, chip_signal, bias_20)
-                if len(stock) >= 7:
-                    industry = stock[6] or "未分類"
-                else:
-                    industry = "未分類"
+            for stock_data in stocks:
+                # ★★★ 安全讀取：使用索引存取，防止欄位數量不對時崩潰 ★★★
+                if len(stock_data) < 7:
+                    stock_data = list(stock_data) + ['未分類'] * (7 - len(stock_data))
+                
+                industry = stock_data[6] or "未分類"
                 
                 if industry not in grouped_data:
                     grouped_data[industry] = []
-                grouped_data[industry].append(stock)
+                grouped_data[industry].append(stock_data)
             
             total_count = 0
             
             # 遍歷每個族群
             for industry, items in grouped_data.items():
-                # 計算族群統計
-                scores = [s[8] if len(s) > 8 and s[8] else 0 for s in items]
+                # 計算族群統計（安全讀取評分）
+                scores = []
+                for s in items:
+                    if len(s) > 8 and s[8]:
+                        scores.append(s[8])
                 avg_score = sum(scores) / len(scores) if scores else 0
                 
                 # 建立族群父節點
-                group_text = f"📂 {industry} ({len(items)})"
+                group_text = f"📂 {industry}  [{len(items)}檔]"
                 if avg_score > 0:
                     group_text += f" ★{avg_score:.0f}"
                 
                 group_id = self.watchlist_tree.insert("", "end", 
                     text=group_text, 
-                    values=("", "", "", ""),
+                    values=("", "", ""),
                     open=True, 
                     tags=('group',)
                 )
                 
                 # 插入個股子節點
-                for stock in items:
-                    symbol = stock[0]
-                    name = stock[1]
-                    recommendation = stock[5] if len(stock) > 5 else ''
-                    quant_score = stock[8] if len(stock) > 8 else 0
-                    trend_status = stock[9] if len(stock) > 9 else '待分析'
-                    bias_20 = stock[11] if len(stock) > 11 else 0
+                for item in items:
+                    symbol = item[0] if len(item) > 0 else ''
+                    name = item[1] if len(item) > 1 else ''
+                    recommendation = item[5] if len(item) > 5 else ''
+                    quant_score = item[8] if len(item) > 8 else 0
+                    bias_20 = item[11] if len(item) > 11 else 0
                     
                     # 解析建議字串
                     signal = "待分析"
                     if recommendation and '|' in recommendation:
                         parts = recommendation.split('|')
-                        signal = parts[2] if len(parts) > 2 else parts[0]
+                        signal = parts[0] if len(parts) > 0 else '待分析'  # 取總結
                     elif recommendation:
                         signal = recommendation
                     
-                    # 決定顏色標籤
+                    # 決定顏色標籤 (根據字串內容自動判斷)
                     tags = []
-                    if "買" in signal or "多" in signal:
+                    if any(x in signal for x in ["買", "多", "進場", "看好"]):
                         tags.append("buy")
-                    elif "賣" in signal or "空" in signal or "減碼" in signal:
+                    elif any(x in signal for x in ["賣", "空", "減碼", "撤退", "停損"]):
                         tags.append("sell")
-                    elif "持有" in signal or "續抱" in signal:
+                    elif any(x in signal for x in ["持有", "續抱"]):
                         tags.append("hold")
                     else:
                         tags.append("wait")
@@ -6477,29 +6502,32 @@ class StockAnalysisApp(tk.Tk):
                     # 評分顯示
                     score_str = f"{quant_score:.0f}" if quant_score else "-"
                     
-                    # 趨勢簡寫
-                    trend_short = trend_status[:2] if trend_status else "-"
+                    # 使用 Emoji 增加可讀性
+                    display_signal = signal.replace("建議", "").replace("強力", "🔥").replace("觀望", "👀")[:8]
                     
                     self.watchlist_tree.insert(group_id, "end", 
                         text=symbol, 
-                        values=(name, score_str, signal[:6], trend_short),
+                        values=(name, score_str, display_signal),
                         tags=tuple(tags)
                     )
                     total_count += 1
             
             # 更新計數標籤
-            self.watchlist_count_label.config(text=f"監控中：{total_count} 檔 / {len(grouped_data)} 族群")
+            self.watchlist_count_label.config(text=f"監控：{total_count}檔/{len(grouped_data)}族群")
         
         else:
             # ========================================
             # 平面模式：原有顯示方式
             # ========================================
-            for stock in stocks:
-                symbol = stock[0]
-                name = stock[1]
-                recommendation = stock[5] if len(stock) > 5 else ''
-                quant_score = stock[8] if len(stock) > 8 else 0
-                trend_status = stock[9] if len(stock) > 9 else '待分析'
+            for stock_data in stocks:
+                # 安全讀取
+                if len(stock_data) < 6:
+                    stock_data = list(stock_data) + [''] * (6 - len(stock_data))
+                
+                symbol = stock_data[0]
+                name = stock_data[1]
+                recommendation = stock_data[5] if len(stock_data) > 5 else ''
+                quant_score = stock_data[8] if len(stock_data) > 8 else 0
                 
                 display_text = f"{symbol} {name if name else ''}"
                 
@@ -6507,14 +6535,14 @@ class StockAnalysisApp(tk.Tk):
                 signal = "待分析"
                 if recommendation and '|' in recommendation:
                     parts = recommendation.split('|')
-                    signal = parts[2] if len(parts) > 2 else parts[0]
+                    signal = parts[0]
                 elif recommendation:
                     signal = recommendation
                 
                 # 決定顏色
-                if "買" in signal:
+                if any(x in signal for x in ["買", "多"]):
                     tag = "buy"
-                elif "賣" in signal or "減碼" in signal:
+                elif any(x in signal for x in ["賣", "減碼"]):
                     tag = "sell"
                 elif "持有" in signal:
                     tag = "hold"
@@ -6522,11 +6550,11 @@ class StockAnalysisApp(tk.Tk):
                     tag = "wait"
                 
                 score_str = f"{quant_score:.0f}" if quant_score else "-"
-                trend_short = trend_status[:2] if trend_status else "-"
+                display_signal = signal.replace("建議", "")[:8]
                 
                 self.watchlist_tree.insert("", "end", 
                     text=display_text, 
-                    values=(name, score_str, signal[:6], trend_short),
+                    values=(name, score_str, display_signal),
                     tags=(tag,)
                 )
             
