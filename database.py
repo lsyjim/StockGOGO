@@ -33,7 +33,6 @@ from bs4 import BeautifulSoup
 
 # ============================================================================
 # v4.0 改進：增強版資料庫管理（含籌碼緩存）
-# v4.4.7 改進：添加自選股排序功能
 # ============================================================================
 
 class WatchlistDatabase:
@@ -44,7 +43,7 @@ class WatchlistDatabase:
         self.init_database()
     
     def init_database(self):
-        """初始化資料庫（v4.0 新增籌碼緩存表, v4.4.7 新增排序欄位）"""
+        """初始化資料庫（v4.5.17 新增：族群分類與量化欄位）"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
@@ -57,22 +56,32 @@ class WatchlistDatabase:
                 market TEXT DEFAULT '台股',
                 added_date TEXT,
                 notes TEXT,
-                recommendation TEXT DEFAULT '待分析',
-                sort_order INTEGER DEFAULT 0
+                recommendation TEXT DEFAULT '待分析'
             )
         ''')
         
-        # v4.4.7: 檢查是否需要添加 sort_order 欄位（升級舊資料庫）
+        # ★★★ v4.5.17 重點新增：檢查並添加新欄位 ★★★
         cursor.execute("PRAGMA table_info(watchlist)")
-        columns = [col[1] for col in cursor.fetchall()]
-        if 'sort_order' not in columns:
-            cursor.execute('ALTER TABLE watchlist ADD COLUMN sort_order INTEGER DEFAULT 0')
-            # 初始化排序順序
-            cursor.execute('SELECT id FROM watchlist ORDER BY added_date DESC')
-            rows = cursor.fetchall()
-            for idx, (row_id,) in enumerate(rows):
-                cursor.execute('UPDATE watchlist SET sort_order = ? WHERE id = ?', (idx, row_id))
-            print("[Database] 已添加 sort_order 欄位並初始化排序")
+        existing_columns = [col[1] for col in cursor.fetchall()]
+        
+        # 新增欄位列表
+        new_columns = [
+            ('sort_order', 'INTEGER DEFAULT 0'),
+            ('industry', 'TEXT DEFAULT "未分類"'),
+            ('quant_score', 'REAL DEFAULT 0'),
+            ('trend_status', 'TEXT DEFAULT "待分析"'),
+            ('chip_signal', 'TEXT DEFAULT ""'),
+            ('bias_20', 'REAL DEFAULT 0'),
+            ('last_analyzed', 'TEXT DEFAULT ""'),
+        ]
+        
+        for col_name, col_def in new_columns:
+            if col_name not in existing_columns:
+                try:
+                    cursor.execute(f'ALTER TABLE watchlist ADD COLUMN {col_name} {col_def}')
+                    print(f"[Database] 資料庫升級：已添加 {col_name} 欄位")
+                except sqlite3.OperationalError:
+                    pass  # 欄位已存在
         
         # 分析歷史表格
         cursor.execute('''
@@ -119,8 +128,8 @@ class WatchlistDatabase:
         conn.commit()
         conn.close()
     
-    def add_stock(self, symbol, name="", market="台股", notes=""):
-        """新增自選股（v4.4.7 更新：自動設定排序順序）"""
+    def add_stock(self, symbol, name="", market="台股", notes="", industry="未分類"):
+        """新增自選股（v4.5.17 支援族群分類）"""
         try:
             conn = sqlite3.connect(self.db_name)
             cursor = conn.cursor()
@@ -130,12 +139,25 @@ class WatchlistDatabase:
             cursor.execute('SELECT COALESCE(MAX(sort_order), -1) + 1 FROM watchlist')
             next_order = cursor.fetchone()[0]
             
+            # ★★★ v4.5.17 自動判斷族群 (如果未提供) ★★★
+            if industry == "未分類" and market == "台股":
+                try:
+                    if symbol in twstock.codes:
+                        # 從 twstock 獲取分類
+                        stock_info = twstock.codes[symbol]
+                        industry = stock_info.group or stock_info.type or "未分類"
+                except Exception:
+                    pass
+            
+            # 插入資料 (包含 industry 和 sort_order)
             cursor.execute('''
-                INSERT INTO watchlist (symbol, name, market, added_date, notes, recommendation, sort_order)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (symbol, name, market, added_date, notes, "待分析", next_order))
+                INSERT INTO watchlist (symbol, name, market, added_date, notes, recommendation, sort_order, industry)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (symbol, name, market, added_date, notes, "待分析", next_order, industry))
+            
             conn.commit()
             conn.close()
+            print(f"[Database] 新增自選股: {symbol} {name} (族群: {industry})")
             return True
         except sqlite3.IntegrityError:
             return False
@@ -148,170 +170,152 @@ class WatchlistDatabase:
         cursor.execute('DELETE FROM analysis_history WHERE symbol = ?', (symbol,))
         conn.commit()
         conn.close()
-        # 重新整理排序順序
-        self._reorder_stocks()
     
-    def _reorder_stocks(self):
-        """重新整理排序順序（移除後調用）"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        cursor.execute('SELECT id FROM watchlist ORDER BY sort_order ASC')
-        rows = cursor.fetchall()
-        for idx, (row_id,) in enumerate(rows):
-            cursor.execute('UPDATE watchlist SET sort_order = ? WHERE id = ?', (idx, row_id))
-        conn.commit()
-        conn.close()
-    
-    def get_all_stocks(self, order_by='sort_order'):
-        """
-        取得所有自選股
-        
-        Args:
-            order_by: 排序方式
-                - 'sort_order': 自訂順序（預設）
-                - 'symbol': 按代碼
-                - 'name': 按名稱
-                - 'added_date': 按加入日期
-                - 'recommendation': 按建議
-        """
+    def get_all_stocks(self, order_by='industry'):
+        """取得所有自選股（v4.5.17 支援族群排序）"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
-        # 安全的排序欄位
+        # 增加 industry 排序選項
         valid_orders = {
             'sort_order': 'sort_order ASC',
             'symbol': 'symbol ASC',
             'name': 'name ASC',
             'added_date': 'added_date DESC',
-            'recommendation': 'recommendation ASC'
+            'industry': 'industry ASC, symbol ASC',  # 先排族群，再排代碼
+            'recommendation': 'recommendation ASC',
+            'quant_score': 'quant_score DESC'
         }
-        order_clause = valid_orders.get(order_by, 'sort_order ASC')
+        order_clause = valid_orders.get(order_by, 'industry ASC, symbol ASC')
         
-        cursor.execute(f'SELECT symbol, name, market, added_date, notes, recommendation FROM watchlist ORDER BY {order_clause}')
+        # ★★★ Select 增加所有新欄位 ★★★
+        cursor.execute(f'''
+            SELECT symbol, name, market, added_date, notes, recommendation, 
+                   COALESCE(industry, "未分類") as industry,
+                   COALESCE(sort_order, 0) as sort_order,
+                   COALESCE(quant_score, 0) as quant_score,
+                   COALESCE(trend_status, "待分析") as trend_status,
+                   COALESCE(chip_signal, "") as chip_signal,
+                   COALESCE(bias_20, 0) as bias_20
+            FROM watchlist 
+            ORDER BY {order_clause}
+        ''')
         stocks = cursor.fetchall()
         conn.close()
         return stocks
     
-    def move_stock_up(self, symbol):
-        """將股票上移一位"""
+    def update_industry(self, symbol, industry):
+        """更新股票的族群分類"""
+        conn = sqlite3.connect(self.db_name)
+        cursor = conn.cursor()
+        cursor.execute('UPDATE watchlist SET industry = ? WHERE symbol = ?', (industry, symbol))
+        conn.commit()
+        conn.close()
+    
+    def update_quant_data(self, symbol, quant_score=None, trend_status=None, 
+                          chip_signal=None, bias_20=None, recommendation=None):
+        """更新量化數據（v4.5.17 新增）"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
-        # 取得當前股票的排序順序
-        cursor.execute('SELECT sort_order FROM watchlist WHERE symbol = ?', (symbol,))
-        result = cursor.fetchone()
-        if not result:
-            conn.close()
-            return False
+        updates = []
+        values = []
         
-        current_order = result[0]
-        if current_order == 0:
-            # 已經在最上面
-            conn.close()
-            return False
+        if quant_score is not None:
+            updates.append('quant_score = ?')
+            values.append(quant_score)
+        if trend_status is not None:
+            updates.append('trend_status = ?')
+            values.append(trend_status)
+        if chip_signal is not None:
+            updates.append('chip_signal = ?')
+            values.append(chip_signal)
+        if bias_20 is not None:
+            updates.append('bias_20 = ?')
+            values.append(bias_20)
+        if recommendation is not None:
+            updates.append('recommendation = ?')
+            values.append(recommendation)
         
-        # 找到上一個股票
-        cursor.execute('SELECT symbol FROM watchlist WHERE sort_order = ?', (current_order - 1,))
-        prev_result = cursor.fetchone()
-        if prev_result:
-            prev_symbol = prev_result[0]
-            # 交換順序
-            cursor.execute('UPDATE watchlist SET sort_order = ? WHERE symbol = ?', (current_order, prev_symbol))
-            cursor.execute('UPDATE watchlist SET sort_order = ? WHERE symbol = ?', (current_order - 1, symbol))
+        # 更新最後分析時間
+        updates.append('last_analyzed = ?')
+        values.append(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        
+        values.append(symbol)
+        
+        if updates:
+            cursor.execute(f'UPDATE watchlist SET {", ".join(updates)} WHERE symbol = ?', values)
             conn.commit()
         
         conn.close()
-        return True
     
-    def move_stock_down(self, symbol):
-        """將股票下移一位"""
+    def get_stocks_grouped_by_industry(self):
+        """按族群分組取得股票（v4.5.17 新增）"""
+        stocks = self.get_all_stocks(order_by='industry')
+        
+        grouped = {}
+        for stock in stocks:
+            # stock 格式: (symbol, name, market, added_date, notes, recommendation, industry, sort_order, quant_score, trend_status, chip_signal, bias_20)
+            industry = stock[6] if len(stock) > 6 else '未分類'
+            if industry not in grouped:
+                grouped[industry] = []
+            grouped[industry].append(stock)
+        
+        return grouped
+    
+    def get_industry_summary(self):
+        """取得族群彙總統計（v4.5.17 新增）"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
-        # 取得當前股票的排序順序
-        cursor.execute('SELECT sort_order FROM watchlist WHERE symbol = ?', (symbol,))
-        result = cursor.fetchone()
-        if not result:
-            conn.close()
-            return False
+        cursor.execute('''
+            SELECT 
+                COALESCE(industry, '未分類') as industry,
+                COUNT(*) as count,
+                AVG(COALESCE(quant_score, 0)) as avg_score,
+                SUM(CASE WHEN bias_20 > 0 THEN 1 ELSE 0 END) as up_count,
+                SUM(CASE WHEN bias_20 < 0 THEN 1 ELSE 0 END) as down_count
+            FROM watchlist
+            GROUP BY industry
+            ORDER BY avg_score DESC
+        ''')
         
-        current_order = result[0]
-        
-        # 取得最大排序順序
-        cursor.execute('SELECT MAX(sort_order) FROM watchlist')
-        max_order = cursor.fetchone()[0]
-        
-        if current_order >= max_order:
-            # 已經在最下面
-            conn.close()
-            return False
-        
-        # 找到下一個股票
-        cursor.execute('SELECT symbol FROM watchlist WHERE sort_order = ?', (current_order + 1,))
-        next_result = cursor.fetchone()
-        if next_result:
-            next_symbol = next_result[0]
-            # 交換順序
-            cursor.execute('UPDATE watchlist SET sort_order = ? WHERE symbol = ?', (current_order, next_symbol))
-            cursor.execute('UPDATE watchlist SET sort_order = ? WHERE symbol = ?', (current_order + 1, symbol))
-            conn.commit()
+        results = []
+        for row in cursor.fetchall():
+            results.append({
+                'industry': row[0],
+                'count': row[1],
+                'avg_score': row[2] or 0,
+                'up_count': row[3] or 0,
+                'down_count': row[4] or 0
+            })
         
         conn.close()
-        return True
+        return results
     
-    def move_stock_to_top(self, symbol):
-        """將股票移到最上面"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
+    def auto_tag_all_industries(self):
+        """自動為所有股票標註族群（v4.5.17 新增）"""
+        stocks = self.get_all_stocks()
+        tagged_count = 0
         
-        # 取得當前股票的排序順序
-        cursor.execute('SELECT sort_order FROM watchlist WHERE symbol = ?', (symbol,))
-        result = cursor.fetchone()
-        if not result:
-            conn.close()
-            return False
+        for stock in stocks:
+            symbol = stock[0]
+            current_industry = stock[6] if len(stock) > 6 else '未分類'
+            
+            if current_industry == '未分類' or not current_industry:
+                try:
+                    if symbol in twstock.codes:
+                        stock_info = twstock.codes[symbol]
+                        new_industry = stock_info.group or stock_info.type or '未分類'
+                        if new_industry != '未分類':
+                            self.update_industry(symbol, new_industry)
+                            tagged_count += 1
+                            print(f"[Database] 自動標註: {symbol} -> {new_industry}")
+                except Exception:
+                    pass
         
-        current_order = result[0]
-        if current_order == 0:
-            conn.close()
-            return True
-        
-        # 將所有排序 < current_order 的股票往下移一位
-        cursor.execute('UPDATE watchlist SET sort_order = sort_order + 1 WHERE sort_order < ?', (current_order,))
-        # 將當前股票移到最上面
-        cursor.execute('UPDATE watchlist SET sort_order = 0 WHERE symbol = ?', (symbol,))
-        conn.commit()
-        conn.close()
-        return True
-    
-    def move_stock_to_bottom(self, symbol):
-        """將股票移到最下面"""
-        conn = sqlite3.connect(self.db_name)
-        cursor = conn.cursor()
-        
-        # 取得當前股票的排序順序和最大順序
-        cursor.execute('SELECT sort_order FROM watchlist WHERE symbol = ?', (symbol,))
-        result = cursor.fetchone()
-        if not result:
-            conn.close()
-            return False
-        
-        current_order = result[0]
-        
-        cursor.execute('SELECT MAX(sort_order) FROM watchlist')
-        max_order = cursor.fetchone()[0]
-        
-        if current_order >= max_order:
-            conn.close()
-            return True
-        
-        # 將所有排序 > current_order 的股票往上移一位
-        cursor.execute('UPDATE watchlist SET sort_order = sort_order - 1 WHERE sort_order > ?', (current_order,))
-        # 將當前股票移到最下面
-        cursor.execute('UPDATE watchlist SET sort_order = ? WHERE symbol = ?', (max_order, symbol))
-        conn.commit()
-        conn.close()
-        return True
+        print(f"[Database] 自動標註完成: {tagged_count} 檔")
+        return tagged_count
     
     def get_stock_count(self):
         """取得自選股數量"""
