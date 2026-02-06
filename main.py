@@ -575,6 +575,24 @@ from backtesting import BacktestEngine
 from database import WatchlistDatabase
 
 # ============================================================================
+# v4.5.17 新增：熱門題材掃描模組
+# ============================================================================
+try:
+    from trend_scanner import SectorMomentumScanner
+    from market_trend_manager import MarketTrendManager, SectorInfo, StockInfo
+    TREND_SCANNER_AVAILABLE = True
+except ImportError:
+    TREND_SCANNER_AVAILABLE = False
+    print("[Main] 提示：未找到 trend_scanner.py，熱門題材功能將停用")
+
+try:
+    from advanced_analyzers import VCPScanner, RelativeStrengthCalculator, ATRStopLossCalculator
+    ADVANCED_ANALYZERS_AVAILABLE = True
+except ImportError:
+    ADVANCED_ANALYZERS_AVAILABLE = False
+    print("[Main] 提示：未找到 advanced_analyzers.py，進階分析功能將停用")
+
+# ============================================================================
 # v4.3.5 新增：富邦證券交易模組
 # ============================================================================
 try:
@@ -4914,62 +4932,169 @@ class StockAnalysisApp(tk.Tk):
         self._create_right_panel(right_panel)
     
     def _create_left_panel(self, parent):
-        """建立左側控制面板"""
-        # 標題
-        title_frame = ttk.LabelFrame(parent, text="🔍 股票查詢", padding=10)
-        title_frame.pack(fill=tk.X, pady=(0, 10))
+        """建立左側控制面板 (v4.5.17 升級版：分頁+分組清單)"""
+        # 使用 PanedWindow 讓上下區域可調整高度
+        paned = ttk.PanedWindow(parent, orient=tk.VERTICAL)
+        paned.pack(fill=tk.BOTH, expand=True)
         
-        # --- 新增：建立一個標題列容器 ---
-        header_line = ttk.Frame(title_frame)
-        header_line.pack(fill=tk.X)
+        # === 上半部：功能分頁區 ===
+        top_frame = ttk.Frame(paned)
+        paned.add(top_frame, weight=2)  # 權重2
         
-        # 左側標籤
-        ttk.Label(header_line, text="股票代碼：").pack(side=tk.LEFT)
+        # 建立分頁
+        self.left_notebook = ttk.Notebook(top_frame)
+        self.left_notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
         
-        # 右側新增「市場排行」按鈕 (呼叫您指定的 _show_market_ranking)
-        ranking_btn = ttk.Button(header_line, text="📊 市場排行", 
-                                 command=self._show_market_ranking, width=12)
-        ranking_btn.pack(side=tk.RIGHT)
+        # [分頁1] 個股分析
+        stock_tab = ttk.Frame(self.left_notebook, padding=5)
+        self.left_notebook.add(stock_tab, text="🔍 個股分析")
+        self._build_stock_analysis_ui(stock_tab)
         
-        # v4.3.5 新增：富邦下單按鈕
-        order_btn = ttk.Button(header_line, text="💰 下單", 
-                               command=self._show_order_dialog, width=8)
-        order_btn.pack(side=tk.RIGHT, padx=(0, 5))
+        # [分頁2] 熱門題材 (Trend Scanner)
+        trend_tab = ttk.Frame(self.left_notebook, padding=5)
+        self.left_notebook.add(trend_tab, text="🔥 熱門題材")
+        self._build_trend_scanner_ui(trend_tab)
+
+        # === 下半部：自選股清單 (升級版) ===
+        watchlist_frame = ttk.LabelFrame(paned, text="⭐ 自選股監控 (依族群)", padding=5)
+        paned.add(watchlist_frame, weight=3)  # 權重3，給予更多空間
         
-        # v4.4.4 新增：自動交易按鈕
-        auto_btn = ttk.Button(header_line, text="🤖 自動交易", 
-                              command=self._show_auto_trader, width=10)
-        auto_btn.pack(side=tk.RIGHT, padx=(0, 5))
+        # 工具列
+        tool_frame = ttk.Frame(watchlist_frame)
+        tool_frame.pack(fill=tk.X, pady=(0, 5))
         
-        input_frame = ttk.Frame(title_frame)
+        ttk.Button(tool_frame, text="➕ 加入", command=self.add_to_watchlist, width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tool_frame, text="➖ 移除", command=self.remove_from_watchlist, width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tool_frame, text="🔄 刷新", command=self.refresh_all_watchlist_analysis, width=6).pack(side=tk.LEFT, padx=2)
+        
+        # 排序按鈕
+        ttk.Separator(tool_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        ttk.Button(tool_frame, text="⬆", command=self.move_watchlist_up, width=3).pack(side=tk.LEFT)
+        ttk.Button(tool_frame, text="⬇", command=self.move_watchlist_down, width=3).pack(side=tk.LEFT)
+        ttk.Button(tool_frame, text="⤒", command=self.move_watchlist_to_top, width=3).pack(side=tk.LEFT, padx=1)
+        ttk.Button(tool_frame, text="⤓", command=self.move_watchlist_to_bottom, width=3).pack(side=tk.LEFT, padx=1)
+        
+        # 刷新進度標籤
+        self.watchlist_progress_label = ttk.Label(tool_frame, text="", foreground="gray")
+        self.watchlist_progress_label.pack(side=tk.RIGHT, padx=5)
+        
+        self.watchlist_count_label = ttk.Label(tool_frame, text="0/100", foreground="blue")
+        self.watchlist_count_label.pack(side=tk.RIGHT, padx=5)
+
+        # 排序選項
+        sort_frame = ttk.Frame(watchlist_frame)
+        sort_frame.pack(fill=tk.X, pady=(0, 3))
+        
+        ttk.Label(sort_frame, text="排序：").pack(side=tk.LEFT)
+        self.watchlist_sort_var = tk.StringVar(value='industry')  # 預設按族群
+        sort_options = [
+            ('族群', 'industry'),
+            ('自訂', 'sort_order'),
+            ('代碼', 'symbol'),
+            ('建議', 'recommendation')
+        ]
+        for text, value in sort_options:
+            ttk.Radiobutton(sort_frame, text=text, variable=self.watchlist_sort_var, 
+                           value=value, command=self.refresh_watchlist).pack(side=tk.LEFT, padx=3)
+
+        # ★ 樹狀列表 (支援族群分組)
+        tree_frame = ttk.Frame(watchlist_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.watchlist_tree = ttk.Treeview(
+            tree_frame, 
+            columns=("name", "score", "signal"), 
+            show="tree headings", 
+            height=10
+        )
+        
+        # 定義欄位 (第一欄 #0 為樹狀結構)
+        self.watchlist_tree.heading("#0", text="族群 / 代碼", anchor="w")
+        self.watchlist_tree.heading("name", text="名稱", anchor="w")
+        self.watchlist_tree.heading("score", text="評分", anchor="center")
+        self.watchlist_tree.heading("signal", text="量化建議", anchor="center")
+        
+        self.watchlist_tree.column("#0", width=130, minwidth=100)
+        self.watchlist_tree.column("name", width=70, minwidth=50)
+        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="center")
+        self.watchlist_tree.column("signal", width=90, minwidth=70, anchor="center")
+        
+        # 設定顏色 (高盛風格)
+        self.watchlist_tree.tag_configure("group", background="#E0E0E0", foreground="#2C3E50", font=("Arial", 10, "bold"))
+        self.watchlist_tree.tag_configure("buy", foreground="#C0392B")   # 紅 (買)
+        self.watchlist_tree.tag_configure("hold", foreground="#F39C12")  # 橘 (持有)
+        self.watchlist_tree.tag_configure("sell", foreground="#27AE60")  # 綠 (賣)
+        self.watchlist_tree.tag_configure("wait", foreground="#7F8C8D")  # 灰 (觀望)
+        self.watchlist_tree.tag_configure("hot", background="#FFEBEE")   # 過熱背景
+        self.watchlist_tree.tag_configure("cold", background="#E8F5E9")  # 超跌背景
+        
+        # 滾動條
+        v_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.watchlist_tree.yview)
+        h_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.watchlist_tree.xview)
+        self.watchlist_tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        
+        self.watchlist_tree.grid(row=0, column=0, sticky='nsew')
+        v_scroll.grid(row=0, column=1, sticky='ns')
+        h_scroll.grid(row=1, column=0, sticky='ew')
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        self.watchlist_tree.bind('<Double-1>', self.on_watchlist_double_click)
+        
+        # 用於記錄排序方向
+        self._watchlist_sort_reverse = {}
+        
+        # 版本資訊
+        info_frame = ttk.Frame(watchlist_frame)
+        info_frame.pack(fill=tk.X)
+        ttk.Label(info_frame, text="v4.5.17 族群分組 | 熱門題材掃描", 
+                 font=("Arial", 8), foreground="gray").pack()
+    
+    def _build_stock_analysis_ui(self, parent):
+        """建立個股分析的 UI 內容（從原 _create_left_panel 分離）"""
+        # 標題區（含功能按鈕）
+        header_frame = ttk.Frame(parent)
+        header_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        ttk.Label(header_frame, text="股票代碼：").pack(side=tk.LEFT)
+        
+        # 功能按鈕
+        ttk.Button(header_frame, text="📊 排行", 
+                  command=self._show_market_ranking, width=7).pack(side=tk.RIGHT)
+        ttk.Button(header_frame, text="💰 下單", 
+                  command=self._show_order_dialog, width=6).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(header_frame, text="🤖 自動", 
+                  command=self._show_auto_trader, width=6).pack(side=tk.RIGHT, padx=2)
+        
+        # 輸入框
+        input_frame = ttk.Frame(parent)
         input_frame.pack(fill=tk.X, pady=5)
         
         self.symbol_entry = ttk.Entry(input_frame, font=("Arial", 12))
         self.symbol_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.symbol_entry.bind('<Return>', lambda e: self.plot_chart())
         
-        search_btn = ttk.Button(input_frame, text="查詢", command=self.plot_chart, width=8)
-        search_btn.pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(input_frame, text="查詢", command=self.plot_chart, width=8).pack(side=tk.LEFT, padx=(5, 0))
         
         # 市場選擇
-        market_frame = ttk.Frame(title_frame)
-        market_frame.pack(fill=tk.X, pady=5)
+        market_frame = ttk.Frame(parent)
+        market_frame.pack(fill=tk.X, pady=3)
         
         ttk.Label(market_frame, text="市場：").pack(side=tk.LEFT)
         self.market_var = tk.StringVar(value="台股")
         ttk.Radiobutton(market_frame, text="台股", variable=self.market_var, value="台股").pack(side=tk.LEFT, padx=5)
         ttk.Radiobutton(market_frame, text="美股", variable=self.market_var, value="美股").pack(side=tk.LEFT)
         
-        # 週期選擇
-        period_frame = ttk.Frame(title_frame)
-        period_frame.pack(fill=tk.X, pady=5)
+        # 週期選擇（水平排列節省空間）
+        period_frame = ttk.Frame(parent)
+        period_frame.pack(fill=tk.X, pady=3)
         
-        ttk.Label(period_frame, text="週期：").pack(anchor=tk.W)
+        ttk.Label(period_frame, text="週期：").pack(side=tk.LEFT)
         self.period_var = tk.StringVar(value="6mo")
-        periods = [("1個月", "1mo"), ("3個月", "3mo"), ("6個月", "6mo"), ("1年", "1y")]
+        periods = [("1月", "1mo"), ("3月", "3mo"), ("6月", "6mo"), ("1年", "1y")]
         for text, value in periods:
             ttk.Radiobutton(period_frame, text=text, variable=self.period_var, 
-                          value=value, command=self.plot_chart).pack(anchor=tk.W)
+                          value=value, command=self.plot_chart).pack(side=tk.LEFT, padx=2)
         
         # 初始化圖表選項變數
         self.indicator_var = tk.StringVar(value="KD")
@@ -4977,154 +5102,229 @@ class StockAnalysisApp(tk.Tk):
         self.show_vol_var = tk.BooleanVar(value=True)
         self.show_bb_var = tk.BooleanVar(value=False)
         
-        # 策略與回測
-        strategy_frame = ttk.LabelFrame(parent, text="📈 策略回測", padding=10)
-        strategy_frame.pack(fill=tk.X, pady=(0, 10))
+        # 策略回測區
+        strategy_frame = ttk.LabelFrame(parent, text="📈 策略回測", padding=5)
+        strategy_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Label(strategy_frame, text="選擇策略：").pack(anchor=tk.W)
+        # 策略選擇
+        strategy_row = ttk.Frame(strategy_frame)
+        strategy_row.pack(fill=tk.X)
+        ttk.Label(strategy_row, text="策略：").pack(side=tk.LEFT)
         self.strategy_var = tk.StringVar(value="趨勢策略")
         strategies = ["趨勢策略", "動能策略", "通道策略", "均值回歸策略"]
-        strategy_combo = ttk.Combobox(strategy_frame, textvariable=self.strategy_var, 
-                                     values=strategies, state="readonly", width=20)
-        strategy_combo.pack(fill=tk.X, pady=5)
+        strategy_combo = ttk.Combobox(strategy_row, textvariable=self.strategy_var, 
+                                     values=strategies, state="readonly", width=12)
+        strategy_combo.pack(side=tk.LEFT, padx=5)
         
         # 滑價設定
-        slippage_frame = ttk.Frame(strategy_frame)
-        slippage_frame.pack(fill=tk.X, pady=5)
-        ttk.Label(slippage_frame, text="滑價(%)：").pack(side=tk.LEFT)
+        ttk.Label(strategy_row, text="滑價%:").pack(side=tk.LEFT, padx=(10, 0))
         self.slippage_var = tk.DoubleVar(value=0.3)
-        slippage_spin = ttk.Spinbox(slippage_frame, from_=0, to=5, increment=0.1,
-                                   textvariable=self.slippage_var, width=8)
-        slippage_spin.pack(side=tk.LEFT, padx=5)
+        ttk.Spinbox(strategy_row, from_=0, to=5, increment=0.1,
+                   textvariable=self.slippage_var, width=5).pack(side=tk.LEFT, padx=2)
         
+        # 按鈕列
         btn_frame = ttk.Frame(strategy_frame)
         btn_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(btn_frame, text="執行回測", command=self.run_backtest).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text="完整分析", command=self.show_analysis_report).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="執行回測", command=self.run_backtest, width=10).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="完整分析", command=self.show_analysis_report, width=10).pack(side=tk.LEFT, padx=2)
         
-        # v4.3 新增：歷史分析日期選擇
+        # 歷史分析日期
         date_frame = ttk.Frame(strategy_frame)
-        date_frame.pack(fill=tk.X, pady=5)
+        date_frame.pack(fill=tk.X, pady=3)
         
-        ttk.Label(date_frame, text="📅 分析日期：").pack(side=tk.LEFT)
-        
-        # 日期模式選擇
+        ttk.Label(date_frame, text="📅 日期：").pack(side=tk.LEFT)
         self.analysis_date_mode = tk.StringVar(value="today")
         ttk.Radiobutton(date_frame, text="今天", variable=self.analysis_date_mode, 
                        value="today", command=self._toggle_date_entry).pack(side=tk.LEFT, padx=2)
-        ttk.Radiobutton(date_frame, text="指定日期", variable=self.analysis_date_mode,
+        ttk.Radiobutton(date_frame, text="指定", variable=self.analysis_date_mode,
                        value="custom", command=self._toggle_date_entry).pack(side=tk.LEFT, padx=2)
         
-        # 日期輸入框
         self.analysis_date_var = tk.StringVar(value=datetime.datetime.now().strftime('%Y-%m-%d'))
-        self.analysis_date_entry = ttk.Entry(date_frame, textvariable=self.analysis_date_var, width=12, state='disabled')
-        self.analysis_date_entry.pack(side=tk.LEFT, padx=5)
+        self.analysis_date_entry = ttk.Entry(date_frame, textvariable=self.analysis_date_var, width=10, state='disabled')
+        self.analysis_date_entry.pack(side=tk.LEFT, padx=3)
         
-        # 日期選擇按鈕
         self.date_picker_btn = ttk.Button(date_frame, text="📆", width=3, 
                                           command=self._show_date_picker, state='disabled')
         self.date_picker_btn.pack(side=tk.LEFT)
+    
+    def _build_trend_scanner_ui(self, parent):
+        """建立熱門題材掃描的 UI（v4.5.17 新增）"""
+        # 強勢族群區塊
+        sector_frame = ttk.LabelFrame(parent, text="🔥 強勢族群 (5日動能)", padding=5)
+        sector_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
         
-        # 自選股管理
-        watchlist_frame = ttk.LabelFrame(parent, text="⭐ 自選股管理", padding=10)
-        watchlist_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        watchlist_btn_frame = ttk.Frame(watchlist_frame)
-        watchlist_btn_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        ttk.Button(watchlist_btn_frame, text="➕ 加入", command=self.add_to_watchlist, width=8).pack(side=tk.LEFT, padx=2)
-        ttk.Button(watchlist_btn_frame, text="➖ 移除", command=self.remove_from_watchlist, width=8).pack(side=tk.LEFT, padx=2)
-        # v4.4.2 修改：將「相關性」按鈕替換為「刷新」按鈕
-        ttk.Button(watchlist_btn_frame, text="🔄 刷新分析", command=self.refresh_all_watchlist_analysis, width=10).pack(side=tk.LEFT, padx=2)
-        
-        # v4.4.7 新增：排序按鈕
-        ttk.Separator(watchlist_btn_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=5, fill=tk.Y)
-        ttk.Button(watchlist_btn_frame, text="⬆", command=self.move_watchlist_up, width=3).pack(side=tk.LEFT, padx=1)
-        ttk.Button(watchlist_btn_frame, text="⬇", command=self.move_watchlist_down, width=3).pack(side=tk.LEFT, padx=1)
-        ttk.Button(watchlist_btn_frame, text="⤒", command=self.move_watchlist_to_top, width=3).pack(side=tk.LEFT, padx=1)
-        ttk.Button(watchlist_btn_frame, text="⤓", command=self.move_watchlist_to_bottom, width=3).pack(side=tk.LEFT, padx=1)
-        
-        # v4.4.2 新增：刷新進度標籤
-        self.watchlist_progress_label = ttk.Label(watchlist_btn_frame, text="", foreground="gray")
-        self.watchlist_progress_label.pack(side=tk.RIGHT, padx=5)
-        
-        # v4.4.7 新增：排序選項
-        sort_frame = ttk.Frame(watchlist_frame)
-        sort_frame.pack(fill=tk.X, pady=(0, 3))
-        
-        ttk.Label(sort_frame, text="排序：").pack(side=tk.LEFT)
-        self.watchlist_sort_var = tk.StringVar(value='sort_order')
-        sort_options = [
-            ('自訂', 'sort_order'),
-            ('族群', 'industry'),  # v4.5.17 新增
-            ('代碼', 'symbol'),
-            ('名稱', 'name'),
-            ('日期', 'added_date'),
-            ('建議', 'recommendation')
-        ]
-        for text, value in sort_options:
-            ttk.Radiobutton(sort_frame, text=text, variable=self.watchlist_sort_var, 
-                           value=value, command=self.refresh_watchlist).pack(side=tk.LEFT, padx=3)
-        
-        self.watchlist_count_label = ttk.Label(watchlist_frame, text="目前 0/100 檔", foreground="blue")
-        self.watchlist_count_label.pack(anchor=tk.W)
-        
-        tree_frame = ttk.Frame(watchlist_frame)
-        tree_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # v4.5.17：機構級介面升級，支援族群分組
-        self.watchlist_tree = ttk.Treeview(
-            tree_frame, 
-            columns=("name", "score", "signal", "status"), 
-            show="tree headings", 
-            height=12
+        # 族群列表
+        self.sector_tree = ttk.Treeview(sector_frame,
+            columns=("momentum", "category", "leader"),
+            show="tree headings",
+            height=6
         )
-        # 樹狀結構的 #0 欄位顯示「族群/代碼」
-        self.watchlist_tree.heading("#0", text="族群 / 代碼", anchor="w", command=lambda: self._sort_watchlist_by('industry'))
-        self.watchlist_tree.heading("name", text="名稱", anchor="w")
-        self.watchlist_tree.heading("score", text="評分", anchor="center", command=lambda: self._sort_watchlist_by('quant_score'))
-        self.watchlist_tree.heading("signal", text="量化建議", anchor="center")
-        self.watchlist_tree.heading("status", text="趨勢", anchor="center")
+        self.sector_tree.heading("#0", text="族群")
+        self.sector_tree.heading("momentum", text="5D動能")
+        self.sector_tree.heading("category", text="類別")
+        self.sector_tree.heading("leader", text="領頭羊")
         
-        # 調整欄寬（總寬度約 380）
-        self.watchlist_tree.column("#0", width=130, minwidth=100)
-        self.watchlist_tree.column("name", width=70, minwidth=50)
-        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="center")
-        self.watchlist_tree.column("signal", width=80, minwidth=60, anchor="center")
-        self.watchlist_tree.column("status", width=50, minwidth=40, anchor="center")
+        self.sector_tree.column("#0", width=90)
+        self.sector_tree.column("momentum", width=65)
+        self.sector_tree.column("category", width=55)
+        self.sector_tree.column("leader", width=90)
         
-        # v4.5.17：高盛風格顏色標籤
-        self.watchlist_tree.tag_configure("group", background="#E8E8E8", foreground="#2C3E50", font=("Arial", 10, "bold"))
-        self.watchlist_tree.tag_configure("buy", foreground="#C0392B")   # 紅色 (買進)
-        self.watchlist_tree.tag_configure("hold", foreground="#F39C12")  # 橘色 (持有)
-        self.watchlist_tree.tag_configure("sell", foreground="#27AE60")  # 綠色 (賣出)
-        self.watchlist_tree.tag_configure("wait", foreground="#7F8C8D")  # 灰色 (觀望)
-        self.watchlist_tree.tag_configure("hot", background="#FFEBEE")   # 過熱背景
-        self.watchlist_tree.tag_configure("cold", background="#E8F5E9")  # 超跌背景
+        # 顏色標籤
+        self.sector_tree.tag_configure("hot", foreground="#FF4444")
+        self.sector_tree.tag_configure("warm", foreground="#FF8800")
+        self.sector_tree.tag_configure("cool", foreground="#4488FF")
         
-        # 垂直滾動條
-        v_scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.watchlist_tree.yview)
-        # 水平滾動條
-        h_scrollbar = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.watchlist_tree.xview)
-        self.watchlist_tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
+        self.sector_tree.pack(fill=tk.BOTH, expand=True)
+        self.sector_tree.bind('<<TreeviewSelect>>', self._on_sector_select)
         
-        # 使用 grid 佈局以支持雙向滾動
-        self.watchlist_tree.grid(row=0, column=0, sticky='nsew')
-        v_scrollbar.grid(row=0, column=1, sticky='ns')
-        h_scrollbar.grid(row=1, column=0, sticky='ew')
-        tree_frame.grid_rowconfigure(0, weight=1)
-        tree_frame.grid_columnconfigure(0, weight=1)
+        # 領頭羊區塊
+        leader_frame = ttk.LabelFrame(parent, text="🏆 成分股", padding=5)
+        leader_frame.pack(fill=tk.BOTH, expand=True)
         
-        self.watchlist_tree.bind('<Double-1>', self.on_watchlist_double_click)
+        self.leader_tree = ttk.Treeview(leader_frame,
+            columns=("price", "change"),
+            show="tree headings",
+            height=5
+        )
+        self.leader_tree.heading("#0", text="股票")
+        self.leader_tree.heading("price", text="股價")
+        self.leader_tree.heading("change", text="漲跌%")
         
-        # v4.4.7 新增：用於記錄排序方向
-        self._watchlist_sort_reverse = {}
+        self.leader_tree.column("#0", width=110)
+        self.leader_tree.column("price", width=70)
+        self.leader_tree.column("change", width=60)
         
-        # v4.1 版本資訊
-        info_frame = ttk.Frame(parent)
-        info_frame.pack(fill=tk.X)
-        ttk.Label(info_frame, text="v4.4.7 新功能：富邦API優先、移動停利、自選股排序", 
-                 font=("Arial", 8), foreground="gray").pack()
+        self.leader_tree.tag_configure("up", foreground="#C0392B")
+        self.leader_tree.tag_configure("down", foreground="#27AE60")
+        
+        self.leader_tree.pack(fill=tk.BOTH, expand=True)
+        self.leader_tree.bind('<Double-1>', self._on_leader_double_click)
+        
+        # 控制按鈕
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Button(btn_frame, text="🔄 重新整理", 
+                  command=self._refresh_market_trends, width=12).pack(side=tk.LEFT, padx=2)
+        
+        # 狀態標籤
+        self.sector_status_label = ttk.Label(btn_frame, text="點擊「重新整理」載入數據", foreground="gray")
+        self.sector_status_label.pack(side=tk.RIGHT)
+        
+        # 初始化 MarketTrendManager
+        self._market_manager = None
+        if TREND_SCANNER_AVAILABLE:
+            try:
+                self._market_manager = MarketTrendManager()
+            except Exception as e:
+                print(f"[TrendScanner] 初始化失敗: {e}")
+    
+    def _on_sector_select(self, event):
+        """當選擇族群時，載入成分股"""
+        selection = self.sector_tree.selection()
+        if not selection:
+            return
+        
+        sector_id = selection[0]
+        
+        def load_constituents():
+            if self._market_manager:
+                try:
+                    stocks = self._market_manager.get_sector_constituents(sector_id)
+                    self.after(0, lambda: self._update_leader_tree(stocks))
+                except Exception as e:
+                    print(f"[TrendScanner] 載入成分股失敗: {e}")
+        
+        # 在背景線程中載入
+        import threading
+        threading.Thread(target=load_constituents, daemon=True).start()
+    
+    def _on_leader_double_click(self, event):
+        """雙擊領頭羊股票，載入到主圖表"""
+        selection = self.leader_tree.selection()
+        if not selection:
+            return
+        
+        item = self.leader_tree.item(selection[0])
+        stock_text = item['text']  # 格式: "2330 台積電"
+        
+        if stock_text:
+            symbol = stock_text.split()[0]
+            self.symbol_entry.delete(0, tk.END)
+            self.symbol_entry.insert(0, symbol)
+            self.plot_chart()
+    
+    def _refresh_market_trends(self):
+        """重新整理市場熱點數據"""
+        if not self._market_manager:
+            self.sector_status_label.config(text="模組未載入")
+            return
+        
+        self.sector_status_label.config(text="載入中...")
+        
+        def load_sectors():
+            try:
+                sectors = self._market_manager.get_hot_sectors(limit=12, force_refresh=True)
+                self.after(0, lambda: self._update_sector_tree(sectors))
+                self.after(0, lambda: self.sector_status_label.config(
+                    text=f"更新: {datetime.datetime.now().strftime('%H:%M:%S')}"
+                ))
+            except Exception as e:
+                self.after(0, lambda: self.sector_status_label.config(text=f"錯誤: {str(e)[:15]}"))
+        
+        import threading
+        threading.Thread(target=load_sectors, daemon=True).start()
+    
+    def _update_sector_tree(self, sectors):
+        """更新族群列表"""
+        # 清空現有項目
+        for item in self.sector_tree.get_children():
+            self.sector_tree.delete(item)
+        
+        # 新增項目
+        for sector in sectors:
+            momentum = getattr(sector, 'momentum_5d', 0) or 0
+            
+            # 決定顏色標籤
+            if momentum >= 5:
+                tag = "hot"
+            elif momentum >= 2:
+                tag = "warm"
+            else:
+                tag = "cool"
+            
+            leader_text = f"{getattr(sector, 'leader_symbol', '')} {getattr(sector, 'leader_name', '')}"
+            
+            self.sector_tree.insert("", "end",
+                iid=getattr(sector, 'sector_id', ''),
+                text=getattr(sector, 'sector_name', ''),
+                values=(
+                    f"{momentum:+.1f}%",
+                    getattr(sector, 'category', ''),
+                    leader_text.strip()
+                ),
+                tags=(tag,)
+            )
+    
+    def _update_leader_tree(self, stocks):
+        """更新領頭羊列表"""
+        # 清空現有項目
+        for item in self.leader_tree.get_children():
+            self.leader_tree.delete(item)
+        
+        # 新增項目
+        for stock in stocks:
+            change_pct = getattr(stock, 'change_pct', 0) or 0
+            tag = "up" if change_pct > 0 else "down" if change_pct < 0 else ""
+            
+            self.leader_tree.insert("", "end",
+                text=f"{getattr(stock, 'symbol', '')} {getattr(stock, 'name', '')}",
+                values=(
+                    f"${getattr(stock, 'price', 0):.2f}",
+                    f"{change_pct:+.2f}%"
+                ),
+                tags=(tag,)
+            )
     
     def _create_right_panel(self, parent):
         """建立右側圖表區域"""
@@ -5833,7 +6033,12 @@ class StockAnalysisApp(tk.Tk):
             success_count = 0
             
             try:
-                for idx, (symbol, name, market, _, _, _) in enumerate(stocks, 1):
+                for idx, stock_data in enumerate(stocks, 1):
+                    # v4.5.17：安全取出欄位（支援新資料格式）
+                    symbol = stock_data[0]
+                    name = stock_data[1]
+                    market = stock_data[2]
+                    
                     if not hasattr(self, '_refreshing') or not self._refreshing:
                         # 用戶可能關閉視窗
                         print(f"[自選股刷新] 刷新已取消")
