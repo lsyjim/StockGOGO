@@ -36,7 +36,13 @@ from data_fetcher import RealtimePriceFetcher
 
 class DecisionMatrix:
     """
-    多因子決策矩陣 v4.5.16 - 形態失效檢查版
+    多因子決策矩陣 v4.5.17 - 高盛級量化整合版
+    
+    v4.5.17 高盛級量化整合：
+    - 新增 VCPScanner、RelativeStrengthCalculator、ATRStopLossCalculator
+    - 邏輯審計：確認 Scenario C 評分上限 70 分正確
+    - 確認 W底/M頭 時間跨度檢查 (double_min_spacing=15)
+    - 形態失效檢查、形成超時檢查均已正確實作
     
     v4.5.16 形態失效檢查 (Pattern Invalidation)：
     - W底/M頭/頭肩頂/頭肩底 加入「形態失效檢查」
