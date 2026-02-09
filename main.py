@@ -6574,8 +6574,27 @@ class StockAnalysisApp(tk.Tk):
                     )
                     total_count += 1
             
+            # v4.5.18：檢查數據新舊，顯示提示
+            oldest_date = None
+            for stock_data in stocks:
+                if len(stock_data) > 12 and stock_data[12]:  # last_analyzed
+                    try:
+                        analyzed_date = stock_data[12].split()[0]  # 取日期部分
+                        if oldest_date is None or analyzed_date < oldest_date:
+                            oldest_date = analyzed_date
+                    except:
+                        pass
+            
             # 更新計數標籤
-            self.watchlist_count_label.config(text=f"{total_count} / {len(grouped_data)} Groups")
+            status_text = f"{total_count} / {len(grouped_data)} Groups"
+            if oldest_date:
+                today = datetime.datetime.now().strftime("%Y-%m-%d")
+                if oldest_date < today:
+                    status_text += f" [!{oldest_date}]"  # 提示數據已過期
+                    self.watchlist_count_label.config(foreground="#ff8800")  # 橙色警告
+                else:
+                    self.watchlist_count_label.config(foreground="#00aaff")
+            self.watchlist_count_label.config(text=status_text)
         
         else:
             # ========================================

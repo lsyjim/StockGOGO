@@ -172,7 +172,7 @@ class WatchlistDatabase:
         conn.close()
     
     def get_all_stocks(self, order_by='industry'):
-        """取得所有自選股（v4.5.17 支援族群排序）"""
+        """取得所有自選股（v4.5.18 加入分析時間）"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
         
@@ -188,7 +188,7 @@ class WatchlistDatabase:
         }
         order_clause = valid_orders.get(order_by, 'industry ASC, symbol ASC')
         
-        # ★★★ Select 增加所有新欄位 ★★★
+        # v4.5.18：加入 last_analyzed 欄位（索引 12）
         cursor.execute(f'''
             SELECT symbol, name, market, added_date, notes, recommendation, 
                    COALESCE(industry, "未分類") as industry,
@@ -196,7 +196,8 @@ class WatchlistDatabase:
                    COALESCE(quant_score, 0) as quant_score,
                    COALESCE(trend_status, "待分析") as trend_status,
                    COALESCE(chip_signal, "") as chip_signal,
-                   COALESCE(bias_20, 0) as bias_20
+                   COALESCE(bias_20, 0) as bias_20,
+                   COALESCE(last_analyzed, "") as last_analyzed
             FROM watchlist 
             ORDER BY {order_clause}
         ''')
