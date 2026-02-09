@@ -4932,7 +4932,7 @@ class StockAnalysisApp(tk.Tk):
         self._create_right_panel(right_panel)
     
     def _create_left_panel(self, parent):
-        """建立左側控制面板 (v4.5.17 升級版：分頁+分組清單)"""
+        """建立左側控制面板 (v4.5.18 標準金融字型版)"""
         # 使用 PanedWindow 讓上下區域可調整高度
         paned = ttk.PanedWindow(parent, orient=tk.VERTICAL)
         paned.pack(fill=tk.BOTH, expand=True)
@@ -4941,38 +4941,38 @@ class StockAnalysisApp(tk.Tk):
         top_frame = ttk.Frame(paned)
         paned.add(top_frame, weight=2)  # 權重2
         
-        # 建立分頁
+        # 建立分頁（不使用表情符號）
         self.left_notebook = ttk.Notebook(top_frame)
         self.left_notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
         
         # [分頁1] 個股分析
         stock_tab = ttk.Frame(self.left_notebook, padding=5)
-        self.left_notebook.add(stock_tab, text="🔍 個股分析")
+        self.left_notebook.add(stock_tab, text="Analysis")
         self._build_stock_analysis_ui(stock_tab)
         
         # [分頁2] 熱門題材 (Trend Scanner)
         trend_tab = ttk.Frame(self.left_notebook, padding=5)
-        self.left_notebook.add(trend_tab, text="🔥 熱門題材")
+        self.left_notebook.add(trend_tab, text="Sectors")
         self._build_trend_scanner_ui(trend_tab)
 
-        # === 下半部：自選股清單 (升級版) ===
-        watchlist_frame = ttk.LabelFrame(paned, text="⭐ 自選股監控 (依族群)", padding=5)
+        # === 下半部：自選股清單 (升級版，不使用表情符號) ===
+        watchlist_frame = ttk.LabelFrame(paned, text="[Watchlist] by Industry", padding=5)
         paned.add(watchlist_frame, weight=3)  # 權重3，給予更多空間
         
-        # 工具列
+        # 工具列（使用文字按鈕，不用表情符號）
         tool_frame = ttk.Frame(watchlist_frame)
         tool_frame.pack(fill=tk.X, pady=(0, 5))
         
-        ttk.Button(tool_frame, text="➕ 加入", command=self.add_to_watchlist, width=6).pack(side=tk.LEFT, padx=2)
-        ttk.Button(tool_frame, text="➖ 移除", command=self.remove_from_watchlist, width=6).pack(side=tk.LEFT, padx=2)
-        ttk.Button(tool_frame, text="🔄 刷新", command=self.refresh_all_watchlist_analysis, width=6).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tool_frame, text="+Add", command=self.add_to_watchlist, width=5).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tool_frame, text="-Del", command=self.remove_from_watchlist, width=5).pack(side=tk.LEFT, padx=2)
+        ttk.Button(tool_frame, text="Scan", command=self.refresh_all_watchlist_analysis, width=5).pack(side=tk.LEFT, padx=2)
         
         # 排序按鈕
         ttk.Separator(tool_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=5, fill=tk.Y)
-        ttk.Button(tool_frame, text="⬆", command=self.move_watchlist_up, width=3).pack(side=tk.LEFT)
-        ttk.Button(tool_frame, text="⬇", command=self.move_watchlist_down, width=3).pack(side=tk.LEFT)
-        ttk.Button(tool_frame, text="⤒", command=self.move_watchlist_to_top, width=3).pack(side=tk.LEFT, padx=1)
-        ttk.Button(tool_frame, text="⤓", command=self.move_watchlist_to_bottom, width=3).pack(side=tk.LEFT, padx=1)
+        ttk.Button(tool_frame, text="Up", command=self.move_watchlist_up, width=3).pack(side=tk.LEFT)
+        ttk.Button(tool_frame, text="Dn", command=self.move_watchlist_down, width=3).pack(side=tk.LEFT)
+        ttk.Button(tool_frame, text="Top", command=self.move_watchlist_to_top, width=3).pack(side=tk.LEFT, padx=1)
+        ttk.Button(tool_frame, text="Bot", command=self.move_watchlist_to_bottom, width=3).pack(side=tk.LEFT, padx=1)
         
         # 刷新進度標籤
         self.watchlist_progress_label = ttk.Label(tool_frame, text="", foreground="gray")
@@ -5044,54 +5044,54 @@ class StockAnalysisApp(tk.Tk):
         # 用於記錄排序方向
         self._watchlist_sort_reverse = {}
         
-        # 版本資訊
+        # 版本資訊（標準金融字型）
         info_frame = ttk.Frame(watchlist_frame)
         info_frame.pack(fill=tk.X)
-        ttk.Label(info_frame, text="v4.5.17 族群分組 | 熱門題材掃描", 
-                 font=("Arial", 8), foreground="gray").pack()
+        ttk.Label(info_frame, text="v4.5.18 | Industry Groups | Quant Score", 
+                 font=("Consolas", 8), foreground="#666666").pack()
     
     def _build_stock_analysis_ui(self, parent):
-        """建立個股分析的 UI 內容（從原 _create_left_panel 分離）"""
-        # 標題區（含功能按鈕）
+        """建立個股分析的 UI 內容（v4.5.18 標準金融字型版）"""
+        # 標題區（含功能按鈕，不使用表情符號）
         header_frame = ttk.Frame(parent)
         header_frame.pack(fill=tk.X, pady=(0, 5))
         
-        ttk.Label(header_frame, text="股票代碼：").pack(side=tk.LEFT)
+        ttk.Label(header_frame, text="Symbol:").pack(side=tk.LEFT)
         
-        # 功能按鈕
-        ttk.Button(header_frame, text="📊 排行", 
-                  command=self._show_market_ranking, width=7).pack(side=tk.RIGHT)
-        ttk.Button(header_frame, text="💰 下單", 
-                  command=self._show_order_dialog, width=6).pack(side=tk.RIGHT, padx=2)
-        ttk.Button(header_frame, text="🤖 自動", 
-                  command=self._show_auto_trader, width=6).pack(side=tk.RIGHT, padx=2)
+        # 功能按鈕（不使用表情符號）
+        ttk.Button(header_frame, text="Rank", 
+                  command=self._show_market_ranking, width=5).pack(side=tk.RIGHT)
+        ttk.Button(header_frame, text="Order", 
+                  command=self._show_order_dialog, width=5).pack(side=tk.RIGHT, padx=2)
+        ttk.Button(header_frame, text="Auto", 
+                  command=self._show_auto_trader, width=5).pack(side=tk.RIGHT, padx=2)
         
         # 輸入框
         input_frame = ttk.Frame(parent)
         input_frame.pack(fill=tk.X, pady=5)
         
-        self.symbol_entry = ttk.Entry(input_frame, font=("Arial", 12))
+        self.symbol_entry = ttk.Entry(input_frame, font=("Consolas", 11))
         self.symbol_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.symbol_entry.bind('<Return>', lambda e: self.plot_chart())
         
-        ttk.Button(input_frame, text="查詢", command=self.plot_chart, width=8).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(input_frame, text="Query", command=self.plot_chart, width=6).pack(side=tk.LEFT, padx=(5, 0))
         
         # 市場選擇
         market_frame = ttk.Frame(parent)
         market_frame.pack(fill=tk.X, pady=3)
         
-        ttk.Label(market_frame, text="市場：").pack(side=tk.LEFT)
+        ttk.Label(market_frame, text="Market:").pack(side=tk.LEFT)
         self.market_var = tk.StringVar(value="台股")
-        ttk.Radiobutton(market_frame, text="台股", variable=self.market_var, value="台股").pack(side=tk.LEFT, padx=5)
-        ttk.Radiobutton(market_frame, text="美股", variable=self.market_var, value="美股").pack(side=tk.LEFT)
+        ttk.Radiobutton(market_frame, text="TW", variable=self.market_var, value="台股").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(market_frame, text="US", variable=self.market_var, value="美股").pack(side=tk.LEFT)
         
         # 週期選擇（水平排列節省空間）
         period_frame = ttk.Frame(parent)
         period_frame.pack(fill=tk.X, pady=3)
         
-        ttk.Label(period_frame, text="週期：").pack(side=tk.LEFT)
+        ttk.Label(period_frame, text="Period:").pack(side=tk.LEFT)
         self.period_var = tk.StringVar(value="6mo")
-        periods = [("1月", "1mo"), ("3月", "3mo"), ("6月", "6mo"), ("1年", "1y")]
+        periods = [("1M", "1mo"), ("3M", "3mo"), ("6M", "6mo"), ("1Y", "1y")]
         for text, value in periods:
             ttk.Radiobutton(period_frame, text=text, variable=self.period_var, 
                           value=value, command=self.plot_chart).pack(side=tk.LEFT, padx=2)
@@ -5102,14 +5102,14 @@ class StockAnalysisApp(tk.Tk):
         self.show_vol_var = tk.BooleanVar(value=True)
         self.show_bb_var = tk.BooleanVar(value=False)
         
-        # 策略回測區
-        strategy_frame = ttk.LabelFrame(parent, text="📈 策略回測", padding=5)
+        # 策略回測區（不使用表情符號）
+        strategy_frame = ttk.LabelFrame(parent, text="[Backtest]", padding=5)
         strategy_frame.pack(fill=tk.X, pady=5)
         
         # 策略選擇
         strategy_row = ttk.Frame(strategy_frame)
         strategy_row.pack(fill=tk.X)
-        ttk.Label(strategy_row, text="策略：").pack(side=tk.LEFT)
+        ttk.Label(strategy_row, text="Strategy:").pack(side=tk.LEFT)
         self.strategy_var = tk.StringVar(value="趨勢策略")
         strategies = ["趨勢策略", "動能策略", "通道策略", "均值回歸策略"]
         strategy_combo = ttk.Combobox(strategy_row, textvariable=self.strategy_var, 
@@ -5117,7 +5117,7 @@ class StockAnalysisApp(tk.Tk):
         strategy_combo.pack(side=tk.LEFT, padx=5)
         
         # 滑價設定
-        ttk.Label(strategy_row, text="滑價%:").pack(side=tk.LEFT, padx=(10, 0))
+        ttk.Label(strategy_row, text="Slip%:").pack(side=tk.LEFT, padx=(10, 0))
         self.slippage_var = tk.DoubleVar(value=0.3)
         ttk.Spinbox(strategy_row, from_=0, to=5, increment=0.1,
                    textvariable=self.slippage_var, width=5).pack(side=tk.LEFT, padx=2)
@@ -5125,32 +5125,32 @@ class StockAnalysisApp(tk.Tk):
         # 按鈕列
         btn_frame = ttk.Frame(strategy_frame)
         btn_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(btn_frame, text="執行回測", command=self.run_backtest, width=10).pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text="完整分析", command=self.show_analysis_report, width=10).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="Backtest", command=self.run_backtest, width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="Report", command=self.show_analysis_report, width=8).pack(side=tk.LEFT, padx=2)
         
-        # 歷史分析日期
+        # 歷史分析日期（不使用表情符號）
         date_frame = ttk.Frame(strategy_frame)
         date_frame.pack(fill=tk.X, pady=3)
         
-        ttk.Label(date_frame, text="📅 日期：").pack(side=tk.LEFT)
+        ttk.Label(date_frame, text="Date:").pack(side=tk.LEFT)
         self.analysis_date_mode = tk.StringVar(value="today")
-        ttk.Radiobutton(date_frame, text="今天", variable=self.analysis_date_mode, 
+        ttk.Radiobutton(date_frame, text="Today", variable=self.analysis_date_mode, 
                        value="today", command=self._toggle_date_entry).pack(side=tk.LEFT, padx=2)
-        ttk.Radiobutton(date_frame, text="指定", variable=self.analysis_date_mode,
+        ttk.Radiobutton(date_frame, text="Custom", variable=self.analysis_date_mode,
                        value="custom", command=self._toggle_date_entry).pack(side=tk.LEFT, padx=2)
         
         self.analysis_date_var = tk.StringVar(value=datetime.datetime.now().strftime('%Y-%m-%d'))
         self.analysis_date_entry = ttk.Entry(date_frame, textvariable=self.analysis_date_var, width=10, state='disabled')
         self.analysis_date_entry.pack(side=tk.LEFT, padx=3)
         
-        self.date_picker_btn = ttk.Button(date_frame, text="📆", width=3, 
+        self.date_picker_btn = ttk.Button(date_frame, text="...", width=3, 
                                           command=self._show_date_picker, state='disabled')
         self.date_picker_btn.pack(side=tk.LEFT)
     
     def _build_trend_scanner_ui(self, parent):
-        """建立熱門題材掃描的 UI（v4.5.17 新增）"""
-        # 強勢族群區塊
-        sector_frame = ttk.LabelFrame(parent, text="🔥 強勢族群 (5日動能)", padding=5)
+        """建立熱門題材掃描的 UI（v4.5.18 標準金融字型版）"""
+        # 強勢族群區塊（不使用表情符號）
+        sector_frame = ttk.LabelFrame(parent, text="[Hot Sectors] 5D Momentum", padding=5)
         sector_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
         
         # 族群列表
@@ -5159,10 +5159,10 @@ class StockAnalysisApp(tk.Tk):
             show="tree headings",
             height=6
         )
-        self.sector_tree.heading("#0", text="族群")
-        self.sector_tree.heading("momentum", text="5D動能")
-        self.sector_tree.heading("category", text="類別")
-        self.sector_tree.heading("leader", text="領頭羊")
+        self.sector_tree.heading("#0", text="Sector")
+        self.sector_tree.heading("momentum", text="5D%")
+        self.sector_tree.heading("category", text="Type")
+        self.sector_tree.heading("leader", text="Leader")
         
         self.sector_tree.column("#0", width=90)
         self.sector_tree.column("momentum", width=65)
@@ -5177,8 +5177,8 @@ class StockAnalysisApp(tk.Tk):
         self.sector_tree.pack(fill=tk.BOTH, expand=True)
         self.sector_tree.bind('<<TreeviewSelect>>', self._on_sector_select)
         
-        # 領頭羊區塊
-        leader_frame = ttk.LabelFrame(parent, text="🏆 成分股", padding=5)
+        # 領頭羊區塊（不使用表情符號）
+        leader_frame = ttk.LabelFrame(parent, text="[Constituents]", padding=5)
         leader_frame.pack(fill=tk.BOTH, expand=True)
         
         self.leader_tree = ttk.Treeview(leader_frame,
@@ -5186,26 +5186,26 @@ class StockAnalysisApp(tk.Tk):
             show="tree headings",
             height=5
         )
-        self.leader_tree.heading("#0", text="股票")
-        self.leader_tree.heading("price", text="股價")
-        self.leader_tree.heading("change", text="漲跌%")
+        self.leader_tree.heading("#0", text="Stock")
+        self.leader_tree.heading("price", text="Price")
+        self.leader_tree.heading("change", text="Chg%")
         
         self.leader_tree.column("#0", width=110)
         self.leader_tree.column("price", width=70)
         self.leader_tree.column("change", width=60)
         
-        self.leader_tree.tag_configure("up", foreground="#C0392B")
-        self.leader_tree.tag_configure("down", foreground="#27AE60")
+        self.leader_tree.tag_configure("up", foreground="#FF4444")
+        self.leader_tree.tag_configure("down", foreground="#44FF44")
         
         self.leader_tree.pack(fill=tk.BOTH, expand=True)
         self.leader_tree.bind('<Double-1>', self._on_leader_double_click)
         
-        # 控制按鈕
+        # 控制按鈕（不使用表情符號）
         btn_frame = ttk.Frame(parent)
         btn_frame.pack(fill=tk.X, pady=5)
         
-        ttk.Button(btn_frame, text="🔄 重新整理", 
-                  command=self._refresh_market_trends, width=12).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="Refresh", 
+                  command=self._refresh_market_trends, width=10).pack(side=tk.LEFT, padx=2)
         
         # 狀態標籤
         self.sector_status_label = ttk.Label(btn_frame, text="點擊「重新整理」載入數據", foreground="gray")
@@ -6064,6 +6064,29 @@ class StockAnalysisApp(tk.Tk):
                         result = QuickAnalyzer.analyze_stock(symbol, market)
                         
                         if result:
+                            # v4.5.18：計算量化評分
+                            quant_score = 0
+                            trend_status = "待分析"
+                            bias_20 = 0
+                            
+                            try:
+                                from analyzers import DecisionMatrix
+                                short_term_data = DecisionMatrix.calculate_short_term_score(result)
+                                long_term_data = DecisionMatrix.calculate_long_term_score(result)
+                                
+                                # 計算量化評分（短線60%+長線40%）
+                                short_score = short_term_data.get('score', 50)
+                                long_score = long_term_data.get('score', 50)
+                                quant_score = short_score * 0.6 + long_score * 0.4
+                                
+                                # 取得趨勢狀態
+                                trend_status = result.get('trend', {}).get('primary_trend', '盤整') if isinstance(result.get('trend'), dict) else '待分析'
+                                
+                                # 取得乖離率
+                                bias_20 = result.get('bias', {}).get('bias_20', 0) if isinstance(result.get('bias'), dict) else 0
+                            except Exception as dm_err:
+                                print(f"[自選股刷新] {symbol} 評分計算錯誤: {dm_err}")
+                            
                             rec = result['recommendation']
                             if isinstance(rec, dict):
                                 overall = rec.get('overall', '待分析')
@@ -6074,9 +6097,17 @@ class StockAnalysisApp(tk.Tk):
                                 recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
                             else:
                                 recommendation = str(rec)
+                            
+                            # v4.5.18：同時更新 recommendation 和 quant_data
                             self.db.update_recommendation(symbol, recommendation)
+                            self.db.update_quant_data(
+                                symbol,
+                                quant_score=quant_score,
+                                trend_status=trend_status,
+                                bias_20=bias_20
+                            )
                             success_count += 1
-                            print(f"[自選股刷新] {symbol} 分析完成: {overall}")
+                            print(f"[自選股刷新] {symbol} 分析完成: {overall} (Score: {quant_score:.0f})")
                         else:
                             self._refresh_errors.append(f"{symbol}: 無分析結果")
                             print(f"[自選股刷新] {symbol} 無分析結果")
@@ -6149,7 +6180,7 @@ class StockAnalysisApp(tk.Tk):
         CorrelationDialog(self, symbols, market)
     
     def auto_analyze_watchlist(self):
-        """自動分析所有自選股（v4.5.17 更新：支援族群分類）"""
+        """自動分析所有自選股（v4.5.18 更新：儲存評分到資料庫）"""
         if self.auto_analysis_done:
             return
         
@@ -6173,6 +6204,10 @@ class StockAnalysisApp(tk.Tk):
                         result = QuickAnalyzer.analyze_stock(symbol, market)
                         if result:
                             # v4.5.8：使用 DecisionMatrix 統一計算（與報告一致）
+                            quant_score = 0
+                            trend_status = "待分析"
+                            bias_20 = 0
+                            
                             try:
                                 short_term_data = DecisionMatrix.calculate_short_term_score(result)
                                 long_term_data = DecisionMatrix.calculate_long_term_score(result)
@@ -6181,9 +6216,19 @@ class StockAnalysisApp(tk.Tk):
                                     long_term_data.get('score', 50)
                                 )
                                 
+                                # v4.5.18：計算量化評分（短線+長線加權平均）
+                                short_score = short_term_data.get('score', 50)
+                                long_score = long_term_data.get('score', 50)
+                                quant_score = short_score * 0.6 + long_score * 0.4
+                                
+                                # 取得趨勢狀態
+                                trend_status = result.get('trend', {}).get('primary_trend', '盤整') if isinstance(result.get('trend'), dict) else '待分析'
+                                
+                                # 取得乖離率
+                                bias_20 = result.get('bias', {}).get('bias_20', 0) if isinstance(result.get('bias'), dict) else 0
+                                
                                 # v4.5.11 修正：場景顯示簡短名稱（與報告一致）
                                 scenario_code = investment_advice.get('scenario_code', 'E')
-                                # 場景代碼轉簡短名稱
                                 SCENARIO_SHORT_NAMES = {
                                     'A': '雙強共振', 'B': '拉回佈局', 'C': '投機反彈',
                                     'D': '高檔震盪', 'E': '多空不明', 'F': '弱勢盤整',
@@ -6192,21 +6237,19 @@ class StockAnalysisApp(tk.Tk):
                                 scenario_name = SCENARIO_SHORT_NAMES.get(scenario_code, scenario_code)
                                 action_zh = investment_advice.get('action_zh', '觀望')
                                 
-                                # 取得短線操作建議和進場時機（從 recommendation 取，與報告一致）
+                                # 取得短線操作建議和進場時機
                                 rec = result.get('recommendation', {})
                                 if isinstance(rec, dict):
                                     short_term = rec.get('short_term', {})
                                     short_action = short_term.get('action', action_zh) if isinstance(short_term, dict) else action_zh
-                                    # v4.5.10 修正：使用 recommendation['action_timing']
                                     timing = rec.get('action_timing', '觀望中')
-                                    # v4.5.10 修正：總結使用 recommendation['overall']（與報告一致）
                                     overall = rec.get('overall', action_zh)
                                 else:
                                     short_action = action_zh
                                     timing = '觀望中'
                                     overall = action_zh
                                 
-                                # 格式：總結|場景|短線|時機（場景改用簡短名稱）
+                                # 格式：總結|場景|短線|時機
                                 recommendation = f"{overall}|{scenario_name}|{short_action}|{timing}"
                             except Exception as dm_error:
                                 print(f"DecisionMatrix 計算錯誤 {symbol}: {dm_error}")
@@ -6222,7 +6265,14 @@ class StockAnalysisApp(tk.Tk):
                                 else:
                                     recommendation = str(rec)
                             
+                            # v4.5.18：同時更新 recommendation 和 quant_data
                             self.db.update_recommendation(symbol, recommendation)
+                            self.db.update_quant_data(
+                                symbol, 
+                                quant_score=quant_score,
+                                trend_status=trend_status,
+                                bias_20=bias_20
+                            )
                     except Exception as e:
                         print(f"自動分析 {symbol} 錯誤: {e}")
                 
@@ -6387,7 +6437,7 @@ class StockAnalysisApp(tk.Tk):
             self.refresh_watchlist()
     
     def refresh_watchlist(self):
-        """刷新自選股列表（v4.5.17 Bloomberg風格視覺優化版）"""
+        """刷新自選股列表（v4.5.18 標準金融字型版）"""
         # 清空舊資料
         for item in self.watchlist_tree.get_children():
             self.watchlist_tree.delete(item)
@@ -6402,27 +6452,39 @@ class StockAnalysisApp(tk.Tk):
         stocks = self.db.get_all_stocks(order_by=order_by)
         
         # ========================================
-        # v4.5.17 Bloomberg 風格配色升級
+        # v4.5.18 標準金融終端機風格
         # ========================================
+        # 標準金融字型：Consolas (數字等寬)、Segoe UI (中文)
+        FONT_FAMILY = "Consolas"
+        FONT_SIZE = 9
+        
         try:
             style = ttk.Style()
             style.configure("Treeview", 
-                            background="#1e1e1e",      # 深灰背景
-                            foreground="#e0e0e0",      # 米白文字
-                            fieldbackground="#1e1e1e", # 欄位背景
-                            rowheight=24)              # 增加行高
-            style.map('Treeview', background=[('selected', '#2d4a69')])  # 選中時深藍色
+                            background="#0a0a0a",      # 純黑背景
+                            foreground="#c0c0c0",      # 銀灰文字
+                            fieldbackground="#0a0a0a",
+                            font=(FONT_FAMILY, FONT_SIZE),
+                            rowheight=22)
+            style.configure("Treeview.Heading",
+                            font=(FONT_FAMILY, FONT_SIZE, "bold"))
+            style.map('Treeview', background=[('selected', '#1a3a5c')])
         except Exception:
-            pass  # 配色設定失敗不影響功能
+            pass
         
-        # 定義 Tag 顏色 (高對比/柔和色系)
-        self.watchlist_tree.tag_configure("group", background="#263238", foreground="#ffffff", font=("Arial", 10, "bold"))
-        self.watchlist_tree.tag_configure("buy", foreground="#ff5252", font=("Arial", 10, "bold"))   # Material Red 400
-        self.watchlist_tree.tag_configure("hold", foreground="#ffab40", font=("Arial", 10))          # Material Orange 400
-        self.watchlist_tree.tag_configure("sell", foreground="#69f0ae", font=("Arial", 10, "bold"))  # Material Green A200
-        self.watchlist_tree.tag_configure("wait", foreground="#b0bec5")                              # 柔和灰
-        self.watchlist_tree.tag_configure("hot", background="#4a1c1c")                               # 過熱深紅底
-        self.watchlist_tree.tag_configure("cold", background="#1c4a2e")                              # 超跌深綠底
+        # 定義 Tag 顏色 (Bloomberg 終端機風格，統一字體大小)
+        self.watchlist_tree.tag_configure("group", background="#1a1a2e", foreground="#ffffff", 
+                                          font=(FONT_FAMILY, FONT_SIZE, "bold"))
+        self.watchlist_tree.tag_configure("buy", foreground="#ff4444", 
+                                          font=(FONT_FAMILY, FONT_SIZE))      # 紅色 (買)
+        self.watchlist_tree.tag_configure("hold", foreground="#ffaa00", 
+                                          font=(FONT_FAMILY, FONT_SIZE))      # 橙色 (持有)
+        self.watchlist_tree.tag_configure("sell", foreground="#44ff44", 
+                                          font=(FONT_FAMILY, FONT_SIZE))      # 綠色 (賣)
+        self.watchlist_tree.tag_configure("wait", foreground="#888888", 
+                                          font=(FONT_FAMILY, FONT_SIZE))      # 灰色 (觀望)
+        self.watchlist_tree.tag_configure("hot", background="#3a1a1a")        # 過熱暗紅底
+        self.watchlist_tree.tag_configure("cold", background="#1a3a1a")       # 超跌暗綠底
         
         # 判斷是否使用分組模式
         use_grouping = (order_by == 'industry')
@@ -6433,7 +6495,7 @@ class StockAnalysisApp(tk.Tk):
             # ========================================
             grouped_data = {}
             for stock_data in stocks:
-                # ★★★ 安全讀取：使用索引存取，防止欄位數量不對時崩潰 ★★★
+                # 安全讀取
                 if len(stock_data) < 7:
                     stock_data = list(stock_data) + ['未分類'] * (7 - len(stock_data))
                 
@@ -6454,10 +6516,10 @@ class StockAnalysisApp(tk.Tk):
                         scores.append(s[8])
                 avg_score = sum(scores) / len(scores) if scores else 0
                 
-                # 建立族群父節點
-                group_text = f"📂 {industry}  [{len(items)}檔]"
+                # 建立族群父節點（不使用表情符號）
+                group_text = f"[{industry}] ({len(items)})"
                 if avg_score > 0:
-                    group_text += f" ★{avg_score:.0f}"
+                    group_text += f" Avg:{avg_score:.0f}"
                 
                 group_id = self.watchlist_tree.insert("", "end", 
                     text=group_text, 
@@ -6478,11 +6540,11 @@ class StockAnalysisApp(tk.Tk):
                     signal = "待分析"
                     if recommendation and '|' in recommendation:
                         parts = recommendation.split('|')
-                        signal = parts[0] if len(parts) > 0 else '待分析'  # 取總結
+                        signal = parts[0] if len(parts) > 0 else '待分析'
                     elif recommendation:
                         signal = recommendation
                     
-                    # 決定顏色標籤 (根據字串內容自動判斷)
+                    # 決定顏色標籤
                     tags = []
                     if any(x in signal for x in ["買", "多", "進場", "看好"]):
                         tags.append("buy")
@@ -6502,8 +6564,8 @@ class StockAnalysisApp(tk.Tk):
                     # 評分顯示
                     score_str = f"{quant_score:.0f}" if quant_score else "-"
                     
-                    # 使用 Emoji 增加可讀性
-                    display_signal = signal.replace("建議", "").replace("強力", "🔥").replace("觀望", "👀")[:8]
+                    # 清理建議文字（不使用表情符號）
+                    display_signal = signal.replace("建議", "")[:8]
                     
                     self.watchlist_tree.insert(group_id, "end", 
                         text=symbol, 
@@ -6513,7 +6575,7 @@ class StockAnalysisApp(tk.Tk):
                     total_count += 1
             
             # 更新計數標籤
-            self.watchlist_count_label.config(text=f"監控：{total_count}檔/{len(grouped_data)}族群")
+            self.watchlist_count_label.config(text=f"{total_count} / {len(grouped_data)} Groups")
         
         else:
             # ========================================
@@ -6559,12 +6621,12 @@ class StockAnalysisApp(tk.Tk):
                 )
             
             count = len(stocks)
-            self.watchlist_count_label.config(text=f"目前 {count}/100 檔")
+            self.watchlist_count_label.config(text=f"{count}/100")
             
             if count >= 100:
                 self.watchlist_count_label.config(foreground="red")
             else:
-                self.watchlist_count_label.config(foreground="blue")
+                self.watchlist_count_label.config(foreground="#00aaff")
     
     # ========================================================================
     # v4.4.7 新增：自選股排序功能
@@ -6719,9 +6781,20 @@ class StockAnalysisApp(tk.Tk):
 def main():
     """主程式"""
     print("=" * 60)
-    print("量化投資分析系統 v4.3")
+    print("量化投資分析系統 v4.5.18")
     print("=" * 60)
-    print("v4.3 新增功能：")
+    print("v4.5.18 更新：")
+    print(" - 標準金融終端機字型 (Consolas)")
+    print(" - 移除表情符號，統一字體大小")
+    print(" - 評分計算修復（短線60%+長線40%）")
+    print(" - 族群分組顯示")
+    print("-" * 60)
+    print("v4.5.17 新增功能：")
+    print(" - 熱門題材掃描（強勢族群、領頭羊）")
+    print(" - 資料庫族群欄位（自動標註）")
+    print(" - 進階分析器（VCP、RS、ATR停損）")
+    print("-" * 60)
+    print("v4.3 核心功能：")
     print(" 23. 核心決策變數（趨勢、乖離、盈虧比、量能）")
     print(" 24. 五大場景決策矩陣（A~E）")
     print(" 25. 強制濾網條件（RR<1.5降級、假突破警示）")
