@@ -36,16 +36,22 @@ from data_fetcher import RealtimePriceFetcher
 
 class DecisionMatrix:
     """
-    多因子決策矩陣 v4.5.19 - 高盛級量化優化版
+    多因子決策矩陣 v4.5.20 - 因子正交化版
+    
+    v4.5.20 因子正交化 (Orthogonalization)：
+    - 突破類訊號互斥：三盤突破、爆量長紅、VP05 只取最強一個
+    - RS 階梯式評分：領頭羊(+15) vs 強於大盤(+10) 互斥
+    - 布林壓縮+突破：合併為單一訊號（+10 或 +15）
+    - 解決同一事件被多個因子重複計分的問題
+    - 評分系統更具鑑別度
     
     v4.5.19 高盛級量化優化：
     - KD 動態權重：低檔強勢金叉 +8，普通金叉 +3
     - MACD 背離偵測：底背離 +15，頂背離 -15
     - RSI 區間判斷：多頭控盤區 (40~80 + MA20上揚) +8
-    - 相對強度 (RS)：強於大盤 +10，領頭羊 +10
-    - 布林壓縮：蓄勢待發 +10，壓縮突破加成 +5
-    - 高階量價訊號：VP09吸籌 +10，VP05帶量突破 +12，VP04良性回檔 +5
-    - 乖離率超跌：反彈機會 +5
+    - 相對強度 (RS)：核心選股因子
+    - 布林壓縮：蓄勢待發訊號
+    - 高階量價訊號：VP09吸籌、VP05帶量突破、VP04良性回檔
     
     v4.5.17 高盛級量化整合：
     - 新增 VCPScanner、RelativeStrengthCalculator、ATRStopLossCalculator
@@ -1577,23 +1583,15 @@ class DecisionMatrix:
                              f'{pattern_name}形成中，留意頸線支撐', 'Pattern')
         
         # ========================================
-        # 2. 波段評分 (Wave)
+        # 2. 波段評分 (Wave) - v4.5.20 正交化版
         # ========================================
+        # 【正交化說明】
+        # - 三盤突破/爆量長紅/VP05 已移至量能區段統一處理（互斥）
+        # - 此區段只處理「環境」和「跌破」訊號
         wave = result.get('wave_analysis', {})
+        
+        # 三盤跌破（負面訊號，獨立處理）
         if wave.get('available'):
-            breakout = wave.get('breakout_signal', {})
-            if breakout.get('detected'):
-                volume_confirmed = breakout.get('volume_confirmed', False)
-                if volume_confirmed:
-                    add_score('三盤突破（帶量）', w['WAVE_BREAKOUT'],
-                             '收盤價突破前三日高點，且成交量放大確認', 'Wave')
-                else:
-                    add_score('三盤突破（量縮）', int(w['WAVE_BREAKOUT'] * 0.6),
-                             '收盤價突破前三日高點，但成交量萎縮', 'Wave')
-            elif wave.get('is_bullish_env'):
-                add_score('多頭環境', w['WAVE_BULLISH_ENV'],
-                         '均線多頭排列，趨勢向上', 'Wave')
-            
             breakdown = wave.get('breakdown_signal', {})
             if breakdown.get('detected'):
                 add_score('三盤跌破', w['WAVE_BREAKDOWN'],
@@ -1603,62 +1601,112 @@ class DecisionMatrix:
                          '均線空頭排列，趨勢向下', 'Wave')
         
         # ========================================
-        # 3. 量能評分 (Volume) - v4.5.19 高盛級整合高階量價訊號
+        # 3. 量能評分 (Volume) - v4.5.20 因子正交化版
         # ========================================
+        # 【正交化原則】
+        # - 突破類訊號互斥：三盤突破、爆量長紅、VP05 只取最強一個
+        # - 吸籌/良性回檔是獨立維度，可累加
+        # - 放量不漲是負面訊號，獨立計算
+        
         vol = result.get('volume_analysis', {})
         vp = result.get('volume_price', {})
+        
+        # === 突破類訊號收集 (互斥，只取最高分) ===
+        breakout_signals = []  # [(score, name, reason)]
         
         if vol:
             volume_ratio = vol.get('volume_ratio', 1.0)
             price_change_pct = result.get('price_change_pct', 0)
             
+            # 候選1：爆量長紅
             if volume_ratio > 1.5 and price_change_pct > 2:
-                add_score('爆量長紅', w['VOLUME_BULLISH_SURGE'],
-                         f'成交量達均量{volume_ratio:.1f}倍，收漲{price_change_pct:.1f}%', 'Volume')
-            elif volume_ratio > 1.5 and price_change_pct < -2:
+                breakout_signals.append((
+                    w['VOLUME_BULLISH_SURGE'],
+                    '爆量長紅',
+                    f'成交量達均量{volume_ratio:.1f}倍，收漲{price_change_pct:.1f}%'
+                ))
+            
+            # 爆量長黑獨立處理（負面訊號）
+            if volume_ratio > 1.5 and price_change_pct < -2:
                 add_score('爆量長黑', w['VOLUME_BEARISH_SURGE'],
                          f'成交量達均量{volume_ratio:.1f}倍，收跌{abs(price_change_pct):.1f}%', 'Volume')
-            
-            # === 關鍵位置高 RVOL (高盛新增) ===
-            sr = result.get('support_resistance', {})
-            current_price = result.get('current_price', 0)
-            support = sr.get('support', 0) if isinstance(sr, dict) else 0
-            resistance = sr.get('resistance', 999999) if isinstance(sr, dict) else 999999
-            
-            if volume_ratio > 2.5 and current_price > 0:
-                # 在支撐位附近爆量
-                if support > 0 and abs(current_price - support) / current_price < 0.02:
-                    add_score('支撐位爆量', w.get('VOLUME_HIGH_RVOL_AT_KEY', 5),
-                             f'RVOL={volume_ratio:.1f}x，接近支撐位主力表態', 'Volume')
-                # 在突破位爆量
-                if resistance < 999999 and current_price > resistance:
-                    add_score('突破位爆量', w.get('VOLUME_HIGH_RVOL_AT_KEY', 5),
-                             f'RVOL={volume_ratio:.1f}x，突破壓力位主力表態', 'Volume')
         
-        # === 高階量價訊號 (高盛新增: 整合 VolumePriceAnalyzer) ===
+        # 高階量價訊號
+        vp_has_breakout = False
         if vp.get('available'):
             signals = vp.get('signals', [])
             signal_codes = {s.get('code') for s in signals}
             
-            # VP09: 吸籌跡象 (低位區量能抬升，價格不破底) - 聰明錢進場
+            # 候選2：VP05 帶量突破 (優先級更高，因為更精確)
+            if 'VP05' in signal_codes:
+                breakout_signals.append((
+                    w.get('VOLUME_VP05_VALID_BREAKOUT', 12),
+                    '帶量有效突破',
+                    '突破20日高點且成交量放大，突破有效'
+                ))
+                vp_has_breakout = True
+            
+            # VP09: 吸籌跡象 (獨立維度，不與突破互斥)
             if 'VP09' in signal_codes:
                 add_score('吸籌跡象', w.get('VOLUME_VP09_ACCUMULATION', 10),
                          '低位區量能漸增，聰明錢進場特徵', 'Volume')
             
-            # VP05: 帶量突破 (比爆量長紅更精確，確認突破20日高點)
-            if 'VP05' in signal_codes:
-                add_score('帶量有效突破', w.get('VOLUME_VP05_VALID_BREAKOUT', 12),
-                         '突破20日高點且成交量放大，突破有效', 'Volume')
-            
-            # VP04: 價跌量縮 (良性回檔，賣壓減緩)
+            # VP04: 價跌量縮 (獨立維度，良性回檔)
             if 'VP04' in signal_codes:
                 add_score('良性回檔', w.get('VOLUME_VP04_SELLING_EASING', 5),
                          '價跌量縮，賣壓減緩，拉回買點浮現', 'Volume')
             
-            # VP07: 放量不漲 (派發訊號)
+            # VP07: 放量不漲 (負面訊號)
             if 'VP07' in signal_codes:
                 add_score('放量不漲', w['VOLUME_NO_RISE'],
                          '高位放量但價格未漲，疑似派發', 'Volume')
+        
+        # === 從波段分析補充突破訊號 ===
+        # 注意：如果 VP05 已觸發，三盤突破不再重複加分
+        if not vp_has_breakout:
+            breakout = wave.get('breakout_signal', {}) if wave.get('available') else {}
+            if breakout.get('detected'):
+                volume_confirmed = breakout.get('volume_confirmed', False)
+                if volume_confirmed:
+                    breakout_signals.append((
+                        w['WAVE_BREAKOUT'],
+                        '三盤突破（帶量）',
+                        '收盤價突破前三日高點，且成交量放大確認'
+                    ))
+                else:
+                    breakout_signals.append((
+                        int(w['WAVE_BREAKOUT'] * 0.6),
+                        '三盤突破（量縮）',
+                        '收盤價突破前三日高點，但成交量萎縮'
+                    ))
+        
+        # === 正交化：突破類只取最高分 ===
+        if breakout_signals:
+            # 按分數排序，取最高
+            breakout_signals.sort(key=lambda x: x[0], reverse=True)
+            best_score, best_name, best_reason = breakout_signals[0]
+            add_score(best_name, best_score, best_reason, 'Volume')
+            
+            # 如果有多個突破訊號，記錄但不重複加分
+            if len(breakout_signals) > 1:
+                other_signals = [s[1] for s in breakout_signals[1:]]
+                # 可選：印出被過濾的訊號（調試用）
+                # print(f"[正交化] 過濾重複突破訊號: {other_signals}")
+        
+        # === 非突破類多頭/空頭環境 ===
+        if wave.get('available') and not breakout_signals:
+            if wave.get('is_bullish_env'):
+                add_score('多頭環境', w['WAVE_BULLISH_ENV'],
+                         '均線多頭排列，趨勢向上', 'Wave')
+        
+        if wave.get('available'):
+            breakdown = wave.get('breakdown_signal', {})
+            if breakdown.get('detected'):
+                add_score('三盤跌破', w['WAVE_BREAKDOWN'],
+                         '收盤價跌破前三日低點，趨勢轉空', 'Wave')
+            elif wave.get('is_bearish_env') and not breakdown.get('detected'):
+                add_score('空頭環境', w['WAVE_BEARISH_ENV'],
+                         '均線空頭排列，趨勢向下', 'Wave')
         
         # ========================================
         # 4. 技術指標評分 (Tech) - v4.5.19 高盛級動態權重
@@ -1724,21 +1772,28 @@ class DecisionMatrix:
                              'RSI 與價格背離，暗示反轉', 'Tech')
         
         # ========================================
-        # 4.5 動能/相對強度評分 (Momentum) - v4.5.19 高盛新增
+        # 4.5 動能/相對強度評分 (Momentum) - v4.5.20 正交化版
         # ========================================
-        # === 相對強度 (RS) - 核心選股因子 ===
+        # 【正交化說明】
+        # - RS 採用階梯式評分，不重複加分
+        # - 布林壓縮與突破加成是獨立維度
+        
+        # === 相對強度 (RS) - 核心選股因子（階梯式，互斥）===
         rs = result.get('relative_strength', {})
         if rs:
             rs_score = rs.get('rs_score', 0)
             rs_vs_market = rs.get('vs_market', 0)
             
-            if rs_score > 0 or rs_vs_market > 0:
+            # 階梯式評分（只取最高等級）
+            if rs_score > 80:
+                # 最高等級：市場領頭羊
+                add_score('市場領頭羊', w.get('MOMENTUM_RS_LEADER', 10) + 5,  # 合併為 +15
+                         f'RS={rs_score:.0f}，強度在市場前20%，領漲股特徵', 'Momentum')
+            elif rs_score > 50 or rs_vs_market > 0:
+                # 中等級：強於大盤
                 add_score('強於大盤', w.get('MOMENTUM_RS_POSITIVE', 10),
                          f'相對強度={rs_score:.0f}，逆勢抗跌，法人護盤特徵', 'Momentum')
-            
-            if rs_score > 80:
-                add_score('市場領頭羊', w.get('MOMENTUM_RS_LEADER', 10),
-                         f'RS={rs_score:.0f}，強度在市場前20%，領漲股特徵', 'Momentum')
+            # rs_score <= 50 且 rs_vs_market <= 0：不加分
         
         # === 布林通道壓縮 (BB Squeeze) - 捕捉變盤前夕 ===
         regime = result.get('market_regime', {})
@@ -1747,13 +1802,17 @@ class DecisionMatrix:
             bb_width = regime.get('bb_width', 0)
             
             if is_squeeze:
-                add_score('布林壓縮', w.get('MOMENTUM_BB_SQUEEZE', 10),
-                         f'BB寬度={bb_width:.2f}，波動率收窄，蓄勢待發', 'Momentum')
+                # 布林壓縮本身 +10
+                squeeze_score = w.get('MOMENTUM_BB_SQUEEZE', 10)
                 
-                # 壓縮後突破加成
+                # 壓縮後突破額外加成 +5（合併顯示）
                 if wave.get('breakout_signal', {}).get('detected'):
-                    add_score('壓縮突破', w.get('MOMENTUM_BB_SQUEEZE_BREAKOUT', 5),
-                             '布林壓縮後發生突破，大行情啟動訊號', 'Momentum')
+                    squeeze_score += w.get('MOMENTUM_BB_SQUEEZE_BREAKOUT', 5)
+                    add_score('布林壓縮突破', squeeze_score,
+                             f'BB寬度={bb_width:.2f}，壓縮後突破，大行情啟動', 'Momentum')
+                else:
+                    add_score('布林壓縮', squeeze_score,
+                             f'BB寬度={bb_width:.2f}，波動率收窄，蓄勢待發', 'Momentum')
         
         # ========================================
         # 5. 風險評分 (Risk)
