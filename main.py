@@ -1504,6 +1504,51 @@ class QuickAnalyzer:
             else:
                 result["pattern_analysis"] = {'available': False, 'message': '形態分析已停用'}
             
+            # === v4.5.19 新增：相對強度 (RS) 計算 ===
+            try:
+                # 計算個股相對大盤的強度
+                market_symbol = "^TWII" if market == "台股" else "^GSPC"
+                market_hist = DataSourceManager.get_history(
+                    market_symbol.replace("^", ""), "美股",  # 大盤用美股模式
+                    start_date=hist.index[0].to_pydatetime() if hasattr(hist.index[0], 'to_pydatetime') else hist.index[0],
+                    end_date=hist.index[-1].to_pydatetime() if hasattr(hist.index[-1], 'to_pydatetime') else hist.index[-1]
+                )
+                
+                if market_hist is not None and len(market_hist) > 20:
+                    # 計算 5/20/60 日相對表現
+                    stock_ret_5d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-5] - 1) * 100 if len(hist) > 5 else 0
+                    stock_ret_20d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-20] - 1) * 100 if len(hist) > 20 else 0
+                    
+                    market_ret_5d = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-5] - 1) * 100 if len(market_hist) > 5 else 0
+                    market_ret_20d = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-20] - 1) * 100 if len(market_hist) > 20 else 0
+                    
+                    rs_5d = stock_ret_5d - market_ret_5d
+                    rs_20d = stock_ret_20d - market_ret_20d
+                    
+                    # 加權 RS 分數 (5日60% + 20日40%)
+                    rs_score = rs_5d * 0.6 + rs_20d * 0.4
+                    
+                    # 標準化到 0-100
+                    normalized_rs = max(0, min(100, 50 + rs_score * 5))
+                    
+                    result["relative_strength"] = {
+                        'rs_score': round(normalized_rs, 1),
+                        'vs_market': round(rs_score, 2),
+                        'rs_5d': round(rs_5d, 2),
+                        'rs_20d': round(rs_20d, 2)
+                    }
+                else:
+                    result["relative_strength"] = {'rs_score': 50, 'vs_market': 0}
+            except Exception as rs_err:
+                print(f"[RS] 相對強度計算錯誤: {rs_err}")
+                result["relative_strength"] = {'rs_score': 50, 'vs_market': 0}
+            
+            # === v4.5.19 新增：trend 結構 (用於評分系統) ===
+            result["trend"] = {
+                'primary_trend': technical.get('trend', '盤整'),
+                'ma20_slope': technical.get('ma20_slope', 0)
+            }
+            
             # 歷史模式額外欄位
             if is_historical:
                 result["is_historical"] = True
@@ -2566,11 +2611,22 @@ class QuickAnalyzer:
     
     @staticmethod
     def _technical_analysis(hist):
-        """技術面分析"""
+        """
+        技術面分析 - v4.5.19 高盛級升級
+        
+        新增：
+        - KD 值 (k, d)
+        - MACD 完整數據 (macd, macd_signal, macd_histogram)
+        - MACD 背離偵測 (macd_divergence)
+        - MA20 斜率 (ma20_slope)
+        """
+        from analyzers import calculate_kd, calculate_macd
+        
         ma5 = hist['Close'].rolling(window=5).mean()
         ma20 = hist['Close'].rolling(window=20).mean()
         ma60 = hist['Close'].rolling(window=60).mean()
         
+        # RSI 計算
         delta = hist['Close'].diff()
         gain = delta.clip(lower=0).rolling(window=14).mean()
         loss = (-delta).clip(lower=0).rolling(window=14).mean()
@@ -2584,6 +2640,64 @@ class QuickAnalyzer:
         adx, plus_di, minus_di = MarketRegimeAnalyzer.calculate_adx(hist)
         current_adx = adx.iloc[-1] if not pd.isna(adx.iloc[-1]) else 20
         
+        # === v4.5.19 新增：KD 計算 ===
+        try:
+            k_series, d_series = calculate_kd(hist)
+            k_value = k_series.iloc[-1] if not pd.isna(k_series.iloc[-1]) else 50
+            d_value = d_series.iloc[-1] if not pd.isna(d_series.iloc[-1]) else 50
+        except:
+            k_value = 50
+            d_value = 50
+        
+        # === v4.5.19 新增：MACD 計算 ===
+        try:
+            macd_line, signal_line, macd_hist_series = calculate_macd(hist['Close'])
+            macd = macd_line.iloc[-1] if not pd.isna(macd_line.iloc[-1]) else 0
+            macd_signal = signal_line.iloc[-1] if not pd.isna(signal_line.iloc[-1]) else 0
+            macd_histogram = macd_hist_series.iloc[-1] if not pd.isna(macd_hist_series.iloc[-1]) else 0
+        except:
+            macd = 0
+            macd_signal = 0
+            macd_histogram = 0
+            macd_hist_series = pd.Series([0])
+        
+        # === v4.5.19 新增：MACD 背離偵測 ===
+        macd_divergence = {'bullish_divergence': False, 'bearish_divergence': False}
+        try:
+            if len(hist) >= 20 and len(macd_hist_series) >= 20:
+                prices = hist['Close'].values[-20:]
+                macd_vals = macd_hist_series.values[-20:]
+                
+                # 簡化版背離偵測
+                # 底背離：價格新低但 MACD 底部墊高
+                price_min_idx = np.argmin(prices[-10:])
+                price_prev_min_idx = np.argmin(prices[:10])
+                
+                if prices[-10:][price_min_idx] < prices[:10][price_prev_min_idx]:
+                    # 價格創新低
+                    if macd_vals[-10:][price_min_idx] > macd_vals[:10][price_prev_min_idx]:
+                        # MACD 底部墊高
+                        macd_divergence['bullish_divergence'] = True
+                
+                # 頂背離：價格新高但 MACD 頂部降低
+                price_max_idx = np.argmax(prices[-10:])
+                price_prev_max_idx = np.argmax(prices[:10])
+                
+                if prices[-10:][price_max_idx] > prices[:10][price_prev_max_idx]:
+                    # 價格創新高
+                    if macd_vals[-10:][price_max_idx] < macd_vals[:10][price_prev_max_idx]:
+                        # MACD 頂部降低
+                        macd_divergence['bearish_divergence'] = True
+        except:
+            pass
+        
+        # === v4.5.19 新增：MA20 斜率 (用於 RSI 區間判斷) ===
+        try:
+            ma20_slope = (ma20.iloc[-1] - ma20.iloc[-5]) / ma20.iloc[-5] if not pd.isna(ma20.iloc[-5]) else 0
+        except:
+            ma20_slope = 0
+        
+        # 趨勢判斷
         if current_price > ma20.iloc[-1] > ma60.iloc[-1]:
             trend = "上升趨勢"
             signal = "偏多"
@@ -2598,10 +2712,18 @@ class QuickAnalyzer:
             "trend": trend,
             "signal": signal,
             "rsi": round(current_rsi, 2),
-            "adx": round(current_adx, 2),  # v4.0 新增
+            "adx": round(current_adx, 2),
             "ma5": round(ma5.iloc[-1], 2) if not pd.isna(ma5.iloc[-1]) else "N/A",
             "ma20": round(ma20.iloc[-1], 2) if not pd.isna(ma20.iloc[-1]) else "N/A",
-            "ma60": round(ma60.iloc[-1], 2) if not pd.isna(ma60.iloc[-1]) else "N/A"
+            "ma60": round(ma60.iloc[-1], 2) if not pd.isna(ma60.iloc[-1]) else "N/A",
+            # === v4.5.19 新增欄位 ===
+            "k": round(k_value, 2),
+            "d": round(d_value, 2),
+            "macd": round(macd, 4),
+            "macd_signal": round(macd_signal, 4),
+            "macd_histogram": round(macd_histogram, 4),
+            "macd_divergence": macd_divergence,
+            "ma20_slope": round(ma20_slope, 4)
         }
     
     @staticmethod
