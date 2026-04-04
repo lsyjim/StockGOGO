@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Certificates & keys (sensitive)
+*.pfx
+*.p12
+*.pem
+*.key
+
+# SDK wheel (too large, install via pip)
+*.whl
+
+# Logs
+log/
+*.log
+
+# Data files (user-specific runtime data)
+trade_log.json
+simulation_data.json
+trailing_stop_data.json
+auto_trader_settings.json
+
+# Images (large binary)
+image.png
+
+# Mac
+.DS_Store
+.AppleDouble
+
+# IDE
+.vscode/
+.idea/
+*.swp

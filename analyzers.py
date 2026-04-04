@@ -33,6 +33,7 @@ from bs4 import BeautifulSoup
 
 from config import QuantConfig
 from data_fetcher import RealtimePriceFetcher
+from decision_engine import ThreeLayerEngine   # v2: 三層決策引擎
 
 class DecisionMatrix:
     """
@@ -117,182 +118,23 @@ class DecisionMatrix:
     @staticmethod
     def analyze(result):
         """
-        執行完整決策矩陣分析（v4.5.12 換腦手術版）
-        
-        =====================================================
-        重大架構變更：
-        =====================================================
-        
-        問題：原本同時存在兩套決策邏輯（雙頭馬車）
-        - 舊邏輯：determine_scenario_and_advice（if/else 硬規則）
-        - 新邏輯：DualTrackScorer（分數查表）
-        
-        結果：自選股列表和報告顯示矛盾的建議
-        
-        解決：完全依賴「雙軌評分系統」作為唯一決策核心
-        - 廢除 determine_scenario_and_advice
-        - 統一使用 calculate_short_term_score + calculate_long_term_score
-        - 用 get_investment_advice 查表決定場景
-        
+        v2.0 - 三層決策引擎
+
+        完全取代舊版的雙軌評分 + 查表邏輯。
+        現在由 ThreeLayerEngine 統一決策，不再有多套規則互搶主導。
+
+        三層架構：
+          Layer 1 方向分 → 否決門檻 40（趨勢不對直接跳過）
+          Layer 2 位置分 → 否決門檻 40（過熱/位置差等待）
+          Layer 3 時機分 → 輸出 A/B/C 分級（而非 0-100 的模糊分數）
+
         Args:
             result: QuickAnalyzer.analyze_stock() 的回傳結果
-        
+
         Returns:
-            dict: 決策矩陣分析結果（兼容現有格式）
+            dict: 決策結果，包含 three_layer 詳細分解供報告顯示
         """
-        try:
-            # Step 1: 計算核心決策變數（保留用於顯示和計算目標價）
-            decision_vars = DecisionMatrix._calculate_decision_variables(result)
-            
-            # ============================================================
-            # v4.5.12 換腦手術：使用雙軌評分系統作為唯一決策核心
-            # ============================================================
-            
-            # Step 2: 計算短線和長線評分
-            short_term_score_data = DecisionMatrix.calculate_short_term_score(result)
-            long_term_score_data = DecisionMatrix.calculate_long_term_score(result)
-            
-            short_score = short_term_score_data.get('score', 50)
-            long_score = long_term_score_data.get('score', 50)
-            
-            # Step 3: 根據分數取得投資建議（統一決策核心）
-            investment_advice = DecisionMatrix.get_investment_advice(short_score, long_score)
-            
-            # 從 investment_advice 提取關鍵資訊
-            scenario_code = investment_advice['scenario_code']
-            scenario_name = investment_advice['title']
-            recommendation = investment_advice['action_zh']
-            action_code = investment_advice['action']
-            weighted_score = investment_advice['weighted_score']
-            risk_level = investment_advice['risk_level']
-            position_advice = investment_advice['position_advice']
-            stop_loss_advice = investment_advice['stop_loss_advice']
-            description = investment_advice['description']
-            
-            # Step 4: 根據場景和分數決定進場時機
-            if weighted_score >= 70:
-                action_timing = '可立即進場'
-            elif weighted_score >= 60:
-                action_timing = '可考慮進場，設好停損'
-            elif weighted_score >= 50:
-                action_timing = '等待拉回或突破確認'
-            elif weighted_score >= 40:
-                action_timing = '觀望為主，等待訊號'
-            else:
-                action_timing = '不宜進場，風險過高'
-            
-            # 特殊場景調整
-            if scenario_code == 'B':  # 拉回佈局
-                action_timing = '等待止跌訊號，分批布局'
-            elif scenario_code == 'C':  # 投機反彈
-                action_timing = '短線搶反彈，嚴格停損'
-            elif scenario_code == 'G':  # 頭部確立
-                action_timing = '獲利了結，不宜追高'
-            elif scenario_code == 'H':  # 空頭確認
-                action_timing = '儘速離場，不要抄底'
-            
-            # Step 5: 檢查形態分析是否需要覆蓋建議
-            pattern_info = result.get('pattern_analysis', {})
-            warning_message = ''
-            
-            if pattern_info.get('detected') and pattern_info.get('available'):
-                pattern_status = pattern_info.get('status', '')
-                pattern_signal = pattern_info.get('signal', 'neutral')
-                pattern_name = pattern_info.get('pattern_name', '')
-                
-                # v4.5.11: 時效性濾網 - TARGET_REACHED 狀態不覆蓋
-                if pattern_status == 'TARGET_REACHED':
-                    distance = pattern_info.get('distance_from_neckline', 0)
-                    warning_message = f'{pattern_name}已突破一段時間（距頸線{distance:+.1f}%），不宜追價'
-                elif 'CONFIRMED' in pattern_status:
-                    # 形態剛確立，可以覆蓋建議
-                    if pattern_signal == 'buy':
-                        recommendation = f'強烈建議買進（{pattern_name}確立）'
-                        action_timing = '形態突破，可進場'
-                        target = pattern_info.get('target_price', 0)
-                        stop = pattern_info.get('stop_loss', 0)
-                        warning_message = f'{pattern_info.get("description", "")} 目標價${target:.2f}，停損${stop:.2f}'
-                    elif pattern_signal == 'sell':
-                        recommendation = f'建議賣出（{pattern_name}確立）'
-                        action_timing = '形態跌破，應出場'
-                        target = pattern_info.get('target_price', 0)
-                        warning_message = f'{pattern_info.get("description", "")} 目標價${target:.2f}'
-                elif 'FORMING' in pattern_status:
-                    # 形態形成中，加入警示
-                    neckline = pattern_info.get('neckline_price', 0)
-                    if pattern_signal == 'buy':
-                        warning_message = f'{pattern_name}形成中，頸線${neckline:.2f}，突破則確立'
-                    else:
-                        warning_message = f'{pattern_name}形成中，頸線${neckline:.2f}，跌破則確立'
-            
-            # Step 6: 計算動態目標價
-            temp_scenario = {
-                'scenario': scenario_code,
-                'recommendation': recommendation
-            }
-            price_targets = DecisionMatrix.calculate_price_targets(result, temp_scenario)
-            
-            # Step 7: 構建回傳結果（兼容現有格式）
-            analysis_result = {
-                'available': True,
-                'decision_vars': decision_vars,
-                
-                # 核心決策資訊（來自雙軌評分）
-                'scenario': scenario_code,
-                'scenario_name': scenario_name,
-                'recommendation': recommendation,
-                'action_timing': action_timing,
-                'warning_message': warning_message,
-                'explanation': description,
-                
-                # 評分資訊
-                'score': weighted_score,
-                'confidence': 'High' if weighted_score >= 70 else 'Medium' if weighted_score >= 50 else 'Low',
-                'risk_level': risk_level,
-                
-                # 詳細評分數據（供前端顯示）
-                'short_term_score': short_term_score_data,
-                'long_term_score': long_term_score_data,
-                'investment_advice': investment_advice,  # 完整的投資建議
-                
-                # 兼容舊格式的欄位
-                'filters_applied': [],
-                'downgraded': False,
-                'original_recommendation': recommendation,
-                'short_term_action': recommendation,
-                
-                # 目標價
-                'price_targets': price_targets
-            }
-            
-            # 如果是區間操作場景 (E, F)，加入 range_info
-            if scenario_code in ['E', 'F']:
-                tech = result.get('technical', {})
-                current_price = tech.get('current_price', 0)
-                ma20 = tech.get('ma20', current_price)
-                ma60 = tech.get('ma60', current_price)
-                
-                # 計算支撐壓力
-                support = min(ma20, ma60) * 0.98
-                resistance = max(ma20, ma60) * 1.02
-                
-                analysis_result['range_info'] = {
-                    'support': round(support, 2),
-                    'resistance': round(resistance, 2),
-                    'current_position': '靠近支撐' if current_price < (support + resistance) / 2 else '靠近壓力',
-                    'suggestion': '接近支撐可買' if current_price < (support + resistance) / 2 else '接近壓力可賣'
-                }
-            
-            return analysis_result
-            
-        except Exception as e:
-            print(f"決策矩陣分析錯誤: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                'available': False,
-                'message': f'分析錯誤: {str(e)}'
-            }
+        return ThreeLayerEngine.analyze(result)
     
     @staticmethod
     def determine_scenario_and_advice(decision_vars, result):
@@ -1497,10 +1339,18 @@ class DecisionMatrix:
     @staticmethod
     def calculate_short_term_score(result):
         """
-        計算短線波段評分
-        
+        v2.0 - 短線評分：對應三層引擎的 Layer 3（時機分）
+
+        回傳格式與舊版兼容，但分數來源改為時機分級：
+          A 級 → 85 分（主攻）
+          B 級 → 65 分（追蹤）
+          C 級 → 45 分（觀察）
+          X   → 35 分（無訊號）
+
+        此方法僅供報告顯示使用，實際買賣決策由 analyze() 主導。
+
         =====================================================
-        評分邏輯（加分制，基準 50 分）：
+        [已移除舊版加分制邏輯 v4.5.x]
         =====================================================
         
         【重要】數學邏輯修正 v4.4.9：
@@ -1533,7 +1383,59 @@ class DecisionMatrix:
         Returns:
             dict: 短線波段評分結果
         """
-        w = DecisionMatrix.SHORT_TERM_WEIGHTS
+        # v2.0: 直接呼叫三層引擎 Layer 3（時機分）
+        timing = ThreeLayerEngine.score_timing(result)
+        grade = timing['grade']
+
+        _grade_score = {'A': 85, 'B': 65, 'C': 45, 'X': 35}
+        score = _grade_score.get(grade, 45)
+
+        _grade_label = {
+            'A': '主攻（強觸發）',
+            'B': '追蹤（訊號形成）',
+            'C': '觀察（環境偏多）',
+            'X': '無訊號',
+        }
+        label = _grade_label.get(grade, '觀察')
+        action = timing['label']
+        confidence = 'High' if grade == 'A' else 'Medium' if grade == 'B' else 'Low'
+
+        # 將總加減分（score - 50）分配到各 trigger，供 GUI 明細顯示
+        total_adj = score - 50  # e.g. X=-15, C=-5, B=+15, A=+35
+        triggers = timing['triggers'] or ['無明確進場訊號']
+        n = len(triggers)
+        # 平均分配，餘數補到第一項
+        per = total_adj // n
+        remainder = total_adj - per * n
+        components = []
+        for i, t in enumerate(triggers):
+            s = per + (remainder if i == 0 else 0)
+            components.append({
+                'name':        t,
+                'score':       s,
+                'reason':      t,
+                'category':    'Timing',
+                'is_positive': s >= 0,
+            })
+
+        return {
+            'score':            score,
+            'grade':            grade,
+            'label':            label,
+            'action':           action,
+            'confidence':       confidence,
+            'components':       components,
+            'breakdown':        {'Timing': total_adj},
+            'raw_score':        score,
+            'base_score':       50,
+            'total_adjustment': total_adj,
+        }
+
+        # =====================================================
+        # [舊版加分制邏輯已移除，下方為廢棄程式碼，保留供比對]
+        # =====================================================
+        _DEAD_CODE_START = True  # 此行之後的程式碼不會被執行
+        w = DecisionMatrix.SHORT_TERM_WEIGHTS  # noqa
         base_score = 50
         raw_score = base_score  # 使用 raw_score 累計，不提前截斷
         components = []
@@ -1944,7 +1846,62 @@ class DecisionMatrix:
         Returns:
             dict: 中長線投資評分結果
         """
-        w = DecisionMatrix.LONG_TERM_WEIGHTS
+        # v2.0: 直接呼叫三層引擎 Layer 1（方向分）
+        # 方向分代表「長期趨勢」，是中長線投資最重要的單一因子
+        direction = ThreeLayerEngine.score_direction(result)
+        score     = direction['score']
+        label     = direction['label']
+        confidence = 'High' if score >= 65 else 'Medium' if score >= 45 else 'Low'
+        bull_count = direction['bull_count']
+        details    = direction['details']   # e.g. ['均線偏空排列（1/4）', '趨勢強 ADX=56']
+
+        # 計算兩個子因子的真實貢獻分，供 GUI 明細正確顯示
+        # 均線排列基礎分（相對中性基準 50）
+        alignment_raw = int(15 + bull_count * 16.25)   # 0/4→15, 1/4→31, 2/4→47, 3/4→63, 4/4→80
+        alignment_adj = alignment_raw - 50              # 相對 50 的貢獻
+
+        # ADX 修正（最大 ±10）— 剩餘差值
+        adx_adj = score - alignment_raw                 # 等於原始 adx_mod
+
+        components = []
+        if details:
+            components.append({
+                'name':        details[0],        # 均線排列描述
+                'score':       alignment_adj,
+                'reason':      details[0],
+                'category':    'Direction',
+                'is_positive': alignment_adj >= 0,
+            })
+        if len(details) > 1:
+            components.append({
+                'name':        details[1],        # ADX 描述
+                'score':       adx_adj,
+                'reason':      details[1],
+                'category':    'Direction',
+                'is_positive': adx_adj >= 0,
+            })
+
+        total_adj = alignment_adj + adx_adj       # 應等於 score - 50
+
+        return {
+            'score':            score,
+            'label':            label,
+            'action':           '持續關注' if score >= 55 else '暫時觀望',
+            'confidence':       confidence,
+            'components':       components,
+            'breakdown':        {'Direction': total_adj},
+            'raw_score':        score,
+            'base_score':       50,
+            'total_adjustment': total_adj,
+            'bull_count':       bull_count,
+            'bear_count':       direction['bear_count'],
+        }
+
+        # =====================================================
+        # [舊版加分制邏輯已移除，下方為廢棄程式碼，保留供比對]
+        # =====================================================
+        _DEAD_CODE_START = True  # 此行之後的程式碼不會被執行
+        w = DecisionMatrix.LONG_TERM_WEIGHTS  # noqa
         base_score = 50
         raw_score = base_score  # 使用 raw_score 累計，不提前截斷
         components = []
@@ -2636,35 +2593,63 @@ class DecisionMatrix:
                 'emoji': '🚀'                     # 情境表情符號
             }
         """
-        # 1. 判斷評分區間
-        short_zone = DecisionMatrix._get_score_zone(short_score)
-        long_zone = DecisionMatrix._get_score_zone(long_score)
-        
-        # 2. 決定場景代碼
-        scenario_code = DecisionMatrix._determine_scenario_code(short_zone, long_zone)
-        
-        # 3. 取得場景定義
-        scenario = DecisionMatrix.INVESTMENT_SCENARIOS[scenario_code]
-        
-        # 4. 計算加權總分（短線 40% + 長線 60%）
-        weighted_score = int(short_score * 0.4 + long_score * 0.6)
-        
-        # 5. 構建回傳結果
+        # v2.0: 根據三層引擎的分級輸出，而非九宮格查表
+        # short_score 對應時機分（A=85 / B=65 / C=45 / X=35）
+        # long_score  對應方向分（0-100 均線排列）
+
+        weighted_score = int(short_score * 0.35 + long_score * 0.65)
+
+        if short_score >= 80 and long_score >= 60:
+            action, action_zh = 'Strong Buy', 'A 級主攻'
+            scenario_code = 'A'
+            title = '【方向+位置+時機三者到位】'
+            risk_level = 'Low'
+            position_advice = '積極進場，部位 50-80%'
+            stop_loss_advice = '停損設前低，RR ≥ 2'
+        elif short_score >= 60 and long_score >= 50:
+            action, action_zh = 'Buy', 'B 級追蹤'
+            scenario_code = 'B'
+            title = '【方向對，等待時機確認】'
+            risk_level = 'Medium'
+            position_advice = '輕倉試單，等確認再加碼'
+            stop_loss_advice = '停損設近期支撐，RR ≥ 1.5'
+        elif long_score >= 60 and short_score < 60:
+            action, action_zh = 'Wait', 'C 級觀察'
+            scenario_code = 'C'
+            title = '【方向對，時機未到】'
+            risk_level = 'Medium'
+            position_advice = '列入追蹤，等待觸發訊號'
+            stop_loss_advice = '尚未進場，持續觀察'
+        elif long_score < 45:
+            action, action_zh = 'Skip', '方向不對，跳過'
+            scenario_code = 'H'
+            title = '【趨勢不佳，不宜進場】'
+            risk_level = 'High'
+            position_advice = '不建議進場'
+            stop_loss_advice = '不適用'
+        else:
+            action, action_zh = 'Hold', '觀望'
+            scenario_code = 'E'
+            title = '【混合訊號，等待明確方向】'
+            risk_level = 'Medium'
+            position_advice = '觀望為主'
+            stop_loss_advice = '不適用'
+
         return {
-            'action': scenario['action'],
-            'action_zh': scenario['action_zh'],
-            'scenario_code': scenario_code,
-            'title': scenario['title'],
-            'description': scenario['description'],
-            'short_score': short_score,
-            'long_score': long_score,
-            'weighted_score': weighted_score,
-            'short_zone': short_zone,
-            'long_zone': long_zone,
-            'risk_level': scenario['risk_level'],
-            'position_advice': scenario['position_advice'],
-            'stop_loss_advice': scenario['stop_loss_advice'],
-            'emoji': scenario['emoji']
+            'action':           action,
+            'action_zh':        action_zh,
+            'scenario_code':    scenario_code,
+            'title':            title,
+            'description':      f'時機分 {short_score}，方向分 {long_score}，加權 {weighted_score}',
+            'short_score':      short_score,
+            'long_score':       long_score,
+            'weighted_score':   weighted_score,
+            'short_zone':       'High' if short_score >= 70 else 'Mid' if short_score >= 50 else 'Low',
+            'long_zone':        'High' if long_score  >= 65 else 'Mid' if long_score  >= 45 else 'Low',
+            'risk_level':       risk_level,
+            'position_advice':  position_advice,
+            'stop_loss_advice': stop_loss_advice,
+            'emoji':            '' ,
         }
     
     @staticmethod
