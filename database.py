@@ -64,24 +64,24 @@ class WatchlistDatabase:
         cursor.execute("PRAGMA table_info(watchlist)")
         existing_columns = [col[1] for col in cursor.fetchall()]
         
-        # 新增欄位列表
+        # 新增欄位列表（使用單引號作為 SQL 字串預設值）
         new_columns = [
-            ('sort_order', 'INTEGER DEFAULT 0'),
-            ('industry', 'TEXT DEFAULT "未分類"'),
-            ('quant_score', 'REAL DEFAULT 0'),
-            ('trend_status', 'TEXT DEFAULT "待分析"'),
-            ('chip_signal', 'TEXT DEFAULT ""'),
-            ('bias_20', 'REAL DEFAULT 0'),
-            ('last_analyzed', 'TEXT DEFAULT ""'),
+            ('sort_order', "INTEGER DEFAULT 0"),
+            ('industry', "TEXT DEFAULT '未分類'"),
+            ('quant_score', "REAL DEFAULT 0"),
+            ('trend_status', "TEXT DEFAULT '待分析'"),
+            ('chip_signal', "TEXT DEFAULT ''"),
+            ('bias_20', "REAL DEFAULT 0"),
+            ('last_analyzed', "TEXT DEFAULT ''"),
         ]
-        
+
         for col_name, col_def in new_columns:
             if col_name not in existing_columns:
                 try:
                     cursor.execute(f'ALTER TABLE watchlist ADD COLUMN {col_name} {col_def}')
                     print(f"[Database] 資料庫升級：已添加 {col_name} 欄位")
-                except sqlite3.OperationalError:
-                    pass  # 欄位已存在
+                except sqlite3.OperationalError as e:
+                    print(f"[Database] 警告：無法添加 {col_name} 欄位: {e}")
         
         # 分析歷史表格
         cursor.execute('''

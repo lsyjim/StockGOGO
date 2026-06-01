@@ -59,9 +59,23 @@ class AutoTraderConfig:
     SELL_PRICE_DISCOUNT = 0.99               # 賣出讓利 1%（掛低確保成交）
     
     # v4.4.5 新增：停損設定
-    STOP_LOSS_PCT = 0.08                     # 停損百分比（預設 8%）
+    STOP_LOSS_PCT = 0.08                     # 停損百分比（後備預設，優先使用 ATR 動態停損）
     ENABLE_TRAILING_STOP = True              # 是否啟用移動停損（v4.4.7 更新：預設開啟）
     TRAILING_STOP_PCT = 0.05                 # 移動停損回撤百分比（5%）
+
+    # v5.0 新增：ATR 動態停損設定
+    USE_ATR_STOP_LOSS = True                 # 優先使用 ATR 動態停損（替代固定 8%）
+    ATR_STOP_K = 2.0                         # ATR 停損倍數（停損 = 進場價 - ATR × K）
+    ATR_STOP_MIN_PCT = 0.03                  # ATR 停損最小值（不低於 3%）
+    ATR_STOP_MAX_PCT = 0.12                  # ATR 停損最大值（不超過 12%）
+
+    # v5.0 新增：依信號強度動態調整倉位
+    GRADE_POSITION_PCT = {
+        'A_HIGH':   0.25,   # A 級 + High Confidence → 25%
+        'A_MEDIUM': 0.20,   # A 級 + Medium Confidence → 20%
+        'B':        0.13,   # B 級 → 13%
+        'C':        0.00,   # C 級 → 不主動建倉
+    }
     
     # v4.4.6 新增：零股交易設定
     ENABLE_ODD_LOT = True                    # 是否啟用零股交易
@@ -1141,9 +1155,11 @@ class AutoTrader:
         # ============================================================
         vetoes = []
         
-        # 否決 1：場景 A 過熱
-        if scenario == 'A':
-            vetoes.append(f"場景A過熱（{dm.get('scenario_name', '')}）")
+        # 否決 1：場景 D 高檔反轉（原本錯誤地否決場景A，已修正）
+        # 場景 A = 順勢多頭（Strong Bull），是最強買進信號，不應否決
+        # 場景 D = 高檔反轉（Reversal Risk），才是需要規避的情況
+        if scenario == 'D':
+            vetoes.append(f"場景D高檔反轉（{dm.get('scenario_name', '')}），規避風險")
         
         # 否決 2：信心度不足（v4.4.6 修正：Medium 也可以買進）
         # 只有 Low 信心度才會被否決
@@ -1390,43 +1406,67 @@ class AutoTrader:
     # v4.4.6 新增：智慧下單（自動拆分整張與零股）
     # ========================================================================
     
-    def _calculate_order_qty(self, price: float, target_amount: float = None) -> int:
+    def _calculate_order_qty(self, price: float, target_amount: float = None,
+                             signal_grade: str = 'B', signal_confidence: str = 'Medium',
+                             atr_value: float = 0) -> int:
         """
         計算可買股數
-        
-        v4.4.6 新增：根據資金和股價計算最佳買進股數
-        
+
+        v5.0 更新：
+        - 依信號強度（A/B/C grade）動態調整倉位比例
+        - 優先使用 ATR × K 計算停損距離，再換算為 Kelly 式倉位
+        - ATR 停損上下限保護（3%–12%）
+
         Args:
-            price: 股價
-            target_amount: 目標金額（預設使用可用預算）
-        
+            price:             股價
+            target_amount:     手動指定目標金額（優先於自動計算）
+            signal_grade:      信號等級 'A' / 'B' / 'C'
+            signal_confidence: 信心度 'High' / 'Medium' / 'Low'
+            atr_value:         ATR 數值（0 表示不使用 ATR 動態停損）
+
         Returns:
             int: 建議買進股數
         """
         if price <= 0:
             return 0
-        
-        # 計算可用預算
+
         available_budget = self.get_available_budget()
-        
-        # 單一部位上限
-        max_position_value = AutoTraderConfig.MAX_INVESTMENT_BUDGET * AutoTraderConfig.MAX_SINGLE_POSITION_PCT
-        
-        # 實際可用金額
+
+        # ── 依 grade 決定倉位比例 ────────────────────────────────
         if target_amount:
-            budget = min(target_amount, available_budget, max_position_value)
+            # 手動指定金額，跳過自動計算
+            budget = min(target_amount, available_budget)
         else:
-            budget = min(available_budget, max_position_value)
-        
-        # 計算可買股數
+            grade_key = signal_grade  # 預設
+            if signal_grade == 'A':
+                grade_key = 'A_HIGH' if signal_confidence == 'High' else 'A_MEDIUM'
+
+            grade_pct = AutoTraderConfig.GRADE_POSITION_PCT.get(grade_key, AutoTraderConfig.MAX_SINGLE_POSITION_PCT)
+
+            # ── ATR 動態停損倉位縮放 ─────────────────────────────
+            # 概念：停損越寬 → 倉位越小（風險金額相同）
+            # 公式：倉位 = 固定風險金額 / 停損幅度
+            if AutoTraderConfig.USE_ATR_STOP_LOSS and atr_value > 0 and price > 0:
+                atr_stop_pct = (atr_value * AutoTraderConfig.ATR_STOP_K) / price
+                atr_stop_pct = max(AutoTraderConfig.ATR_STOP_MIN_PCT,
+                                   min(AutoTraderConfig.ATR_STOP_MAX_PCT, atr_stop_pct))
+                # 以固定風險金額（總資金 × 1%）反推倉位
+                risk_amount   = AutoTraderConfig.MAX_INVESTMENT_BUDGET * 0.01
+                atr_based_pos = risk_amount / (price * atr_stop_pct)
+                atr_based_amt = atr_based_pos * price
+
+                # 取 grade 倉位上限 與 ATR 倉位 的較小值
+                grade_max_amt = AutoTraderConfig.MAX_INVESTMENT_BUDGET * grade_pct
+                budget = min(atr_based_amt, grade_max_amt, available_budget)
+            else:
+                grade_max_amt = AutoTraderConfig.MAX_INVESTMENT_BUDGET * grade_pct
+                budget = min(grade_max_amt, available_budget)
+
         max_qty = int(budget / price)
-        
-        # 決定是否只買整張
+
         if AutoTraderConfig.ENABLE_ODD_LOT:
-            # 啟用零股：直接返回可買股數
             return max_qty
         else:
-            # 不啟用零股：向下取整到 1000 股
             return (max_qty // 1000) * 1000
     
     def _smart_place_order(self, symbol: str, action: str, price: float, qty: int) -> List[Dict]:
@@ -1552,8 +1592,16 @@ class AutoTrader:
             AutoTraderConfig.ENABLE_ODD_LOT = False
         
         try:
-            # v4.4.6：使用智慧股數計算
-            qty = self._calculate_order_qty(order_price)
+            # v5.0：依信號強度 + ATR 動態計算倉位
+            _grade      = signal.get('signal_grade', 'B')
+            _confidence = signal.get('confidence', 'Medium')
+            _atr        = signal.get('atr_value', 0)
+            qty = self._calculate_order_qty(
+                order_price,
+                signal_grade=_grade,
+                signal_confidence=_confidence,
+                atr_value=_atr,
+            )
             
             # 檢查最小下單數量
             if force_round_lot_only or not original_odd_lot_setting:

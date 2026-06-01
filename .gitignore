@@ -39,3 +39,6 @@ image.png
 .vscode/
 .idea/
 *.swp
+
+# Claude local settings
+.claude/settings.local.json

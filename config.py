@@ -176,15 +176,7 @@ class QuantConfig:
     WARN_ON_DELAYED_DATA = True  # 延遲數據時是否警告
     
     # 2. 盤整盤過濾（避免雙巴）
-    RANGE_MARKET_FILTER = True  # 是否啟用盤整盤過濾
-    RANGE_MARKET_ADX_THRESHOLD = 20  # ADX < 此值視為盤整盤
-    RANGE_MARKET_POSITION_LIMIT = 0.5  # 盤整盤時部位上限（50%正常部位）
-    RANGE_MARKET_SKIP_BUY = False  # 盤整盤時是否完全禁止買進
-    
-    # 3. 訊號冷卻期（避免忽買忽賣）
-    SIGNAL_COOLDOWN_ENABLED = True  # 是否啟用訊號冷卻
-    SIGNAL_COOLDOWN_HOURS = 24  # 同一股票訊號冷卻時間（小時）
-    SIGNAL_REVERSAL_MIN_SCORE_DIFF = 30  # 訊號反轉最低分數差異
+    RANGE_MARKET_ADX_THRESHOLD = 20  # ADX < 此值視為盤整盤（auto_trader 使用）
     
     # 4. 移動停利（Trailing Stop）
     TRAILING_STOP_ENABLED = True  # 是否啟用移動停利

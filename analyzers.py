@@ -137,250 +137,6 @@ class DecisionMatrix:
         return ThreeLayerEngine.analyze(result)
     
     @staticmethod
-    def determine_scenario_and_advice(decision_vars, result):
-        """
-        v4.4.7 新增：綜合場景判斷
-        
-        根據「長期趨勢 (Market Regime)」與「短期訊號 (Short-term Signal)」交叉比對，
-        產生 6 種標準場景與解釋。
-        
-        這是解決訊號矛盾的核心方法。
-        """
-        # 取得市場背景
-        market_regime = result.get('market_regime', {})
-        regime = market_regime.get('regime', 'Unknown')
-        
-        # 取得形態分析
-        pattern = result.get('pattern_analysis', {})
-        pattern_detected = pattern.get('detected', False)
-        pattern_type = pattern.get('pattern_type', '')  # 'top' or 'bottom'
-        pattern_status = pattern.get('status', '')
-        pattern_name = pattern.get('pattern_name', '')
-        pattern_signal = pattern.get('signal', 'neutral')
-        
-        # 取得波段分析
-        wave = result.get('wave_analysis', {})
-        wave_breakout = wave.get('breakout_signal', {}).get('detected', False) if wave.get('available') else False
-        wave_breakdown = wave.get('breakdown_signal', {}).get('detected', False) if wave.get('available') else False
-        is_bullish_env = wave.get('is_bullish_env', False)
-        is_bearish_env = wave.get('is_bearish_env', False)
-        
-        # 取得技術指標
-        trend = decision_vars['trend_status']
-        bias_20 = decision_vars['bias_20']
-        rsi = decision_vars['rsi']
-        adx = decision_vars['adx']
-        left_buy = decision_vars.get('left_buy_triggered', False)
-        
-        # 判斷市場是多頭還是空頭
-        is_bull_regime = regime == 'Bullish' or trend == DecisionMatrix.TREND_BULL
-        is_bear_regime = regime == 'Bearish' or trend == DecisionMatrix.TREND_BEAR
-        
-        # 判斷短期訊號
-        has_buy_signal = (
-            wave_breakout or 
-            (pattern_detected and pattern_signal == 'buy' and 'CONFIRMED' in pattern_status) or
-            left_buy
-        )
-        has_sell_signal = (
-            wave_breakdown or
-            (pattern_detected and pattern_signal == 'sell' and 'CONFIRMED' in pattern_status)
-        )
-        has_bottom_pattern = pattern_detected and pattern_type == 'bottom'
-        has_top_pattern = pattern_detected and pattern_type == 'top'
-        
-        # ============================================================
-        # 場景 A：順勢多頭 (Strong Bull)
-        # 條件：市場多頭 + (波段突破 OR W底/頭肩底確立)
-        # ============================================================
-        if is_bull_regime and has_buy_signal and not has_top_pattern:
-            return {
-                'scenario': DecisionMatrix.SCENARIO_STRONG_BULL,
-                'scenario_name': '順勢多頭',
-                'recommendation': '強力買進',
-                'action_timing': '積極進場',
-                'warning_message': f'多頭趨勢確立，短線突破攻擊訊號出現。',
-                'explanation': '長線多頭趨勢確立，且短線出現突破攻擊訊號，勝率極高，建議積極進場。',
-                'action_code': 'STRONG_BUY',
-                'confidence': 'High',
-                'short_term_action': '買進',
-                'score_cap': 100  # 無評分上限
-            }
-        
-        # ============================================================
-        # 場景 D：高檔反轉 (Reversal Risk) - 優先於場景 B
-        # 條件：市場多頭 + M頭/頭肩頂/島狀反轉確立
-        # ============================================================
-        if is_bull_regime and has_top_pattern and 'CONFIRMED' in pattern_status:
-            return {
-                'scenario': DecisionMatrix.SCENARIO_REVERSAL_RISK,
-                'scenario_name': '高檔反轉風險',
-                'recommendation': '獲利了結 / 減碼',
-                'action_timing': '優先保住獲利',
-                'warning_message': f'{pattern_name}確立，頭部形態浮現，多頭趨勢可能結束。',
-                'explanation': '股價創新高後動能衰竭，出現頭部確立訊號，多頭趨勢可能結束，建議優先保住獲利。',
-                'action_code': 'TAKE_PROFIT',
-                'confidence': 'High',
-                'short_term_action': '減碼',
-                'score_cap': 45  # 強制評分上限
-            }
-        
-        # ============================================================
-        # 場景 B：多頭拉回 (Bullish Pullback)
-        # 條件：市場多頭 + 技術面回檔 (RSI < 40 或 乖離負) + 無頭部形態
-        # ============================================================
-        if is_bull_regime and not has_top_pattern and (
-            rsi < 40 or 
-            bias_20 < 0 or
-            (QuantConfig.GOLDEN_BUY_BIAS_MIN <= bias_20 <= QuantConfig.GOLDEN_BUY_BIAS_MAX)
-        ):
-            return {
-                'scenario': DecisionMatrix.SCENARIO_BULLISH_PULLBACK,
-                'scenario_name': '多頭拉回',
-                'recommendation': '逢低布局',
-                'action_timing': '低風險切入點',
-                'warning_message': f'多頭趨勢中修正（乖離{bias_20:+.1f}%，RSI={rsi:.0f}），技術指標進入超賣區。',
-                'explanation': '長期趨勢向上，目前僅為漲多修正，技術指標進入超賣區，是低風險的切入點。',
-                'action_code': 'BUY_DIP',
-                'confidence': 'High',
-                'short_term_action': '買進',
-                'score_cap': 100
-            }
-        
-        # ============================================================
-        # 場景 C：空頭反彈 (Bearish Rebound) —— 解決矛盾的關鍵
-        # 條件：市場空頭 + (W底/V轉確立 OR 技術面買訊)
-        # ★ 這裡是形態學看多但大趨勢看空的矛盾場景
-        # ============================================================
-        if is_bear_regime and (has_bottom_pattern or has_buy_signal):
-            # 取得形態目標價
-            pattern_target = pattern.get('target_price', 0) if pattern_detected else 0
-            neckline = pattern.get('neckline_price', 0) if pattern_detected else 0
-            
-            return {
-                'scenario': DecisionMatrix.SCENARIO_BEARISH_REBOUND,
-                'scenario_name': '空頭反彈',
-                'recommendation': '搶短反彈（輕倉）',
-                'action_timing': '快進快出，嚴設停損',
-                'warning_message': f'整體處於空頭趨勢，但底部形態確立，預期有短線反彈行情。建議縮小部位。',
-                'explanation': '雖然整體處於空頭趨勢，上方有均線壓力，但底部形態確立，預期有短線反彈行情。建議縮小部位，嚴設停損，快進快出。',
-                'action_code': 'SCALP_LONG',
-                'confidence': 'Medium',
-                'short_term_action': '搶短（輕倉）',
-                'score_cap': 70,  # ★ 關鍵：評分上限 70，不會出現強力買進
-                'pattern_target': pattern_target,
-                'neckline': neckline
-            }
-        
-        # ============================================================
-        # 場景 E：順勢空頭 (Strong Bear)
-        # 條件：市場空頭 + (三盤跌破 OR 頭部形態確立)
-        # ============================================================
-        if is_bear_regime and (has_sell_signal or wave_breakdown):
-            return {
-                'scenario': DecisionMatrix.SCENARIO_STRONG_BEAR,
-                'scenario_name': '順勢空頭',
-                'recommendation': '清倉觀望',
-                'action_timing': '不宜接刀',
-                'warning_message': '空頭排列成形且跌破關鍵支撐，下檔風險極大。',
-                'explanation': '空頭排列成形且跌破關鍵支撐，下檔風險極大，不宜貿然接刀。',
-                'action_code': 'SELL',
-                'confidence': 'High',
-                'short_term_action': '賣出',
-                'score_cap': 30  # 強制低分
-            }
-        
-        # ============================================================
-        # 場景 F：盤整震盪 (Range)
-        # 條件：ADX < 20 或趨勢不明
-        # ============================================================
-        if trend == DecisionMatrix.TREND_RANGE or adx < QuantConfig.ADX_RANGE_THRESHOLD:
-            # 計算箱頂箱底
-            current_price = result.get('current_price', 0)
-            sr = result.get('support_resistance', {})
-            box_top = sr.get('resistance1', 0)
-            box_bottom = sr.get('support1', 0)
-            
-            if not box_top or not box_bottom:
-                mr = result.get('mean_reversion', {})
-                ma20 = mr.get('bias_analysis', {}).get('ma_20', current_price)
-                if not ma20 or ma20 == 0:
-                    ma20 = current_price
-                if not box_top or box_top == 0:
-                    box_top = round(ma20 * 1.05, 2)
-                if not box_bottom or box_bottom == 0:
-                    box_bottom = round(ma20 * 0.95, 2)
-            
-            # 判斷位置
-            if box_top > box_bottom and box_top > 0:
-                range_width = box_top - box_bottom
-                position_pct = ((current_price - box_bottom) / range_width) * 100 if range_width > 0 else 50
-                
-                if position_pct <= 30:
-                    suggestion = '靠近箱底，適合買進'
-                    action = '買進'
-                elif position_pct >= 70:
-                    suggestion = '靠近箱頂，適合賣出'
-                    action = '賣出'
-                else:
-                    suggestion = '區間中段，觀望'
-                    action = '觀望'
-            else:
-                position_pct = 50
-                suggestion = '觀望為主'
-                action = '觀望'
-            
-            return {
-                'scenario': DecisionMatrix.SCENARIO_RANGE,
-                'scenario_name': '盤整震盪',
-                'recommendation': '區間操作',
-                'action_timing': f'箱底${box_bottom:.1f}↔箱頂${box_top:.1f}',
-                'warning_message': f'ADX={adx:.0f}，趨勢不明，高拋低吸為宜。{suggestion}',
-                'explanation': f'均線糾結，趨勢不明確，建議區間操作。目前{suggestion}。',
-                'action_code': 'RANGE_TRADE',
-                'confidence': 'Low',
-                'short_term_action': action,
-                'score_cap': 65,
-                'range_info': {
-                    'box_top': round(box_top, 2),
-                    'box_bottom': round(box_bottom, 2),
-                    'position_pct': round(position_pct, 1),
-                    'suggestion': suggestion
-                }
-            }
-        
-        # ============================================================
-        # 預設：多頭正常（無明顯訊號）
-        # ============================================================
-        if is_bull_regime:
-            return {
-                'scenario': 'B2',
-                'scenario_name': '多頭正常',
-                'recommendation': '建議買進',
-                'action_timing': '趨勢向上，可考慮進場',
-                'warning_message': f'多頭趨勢中，乖離正常（{bias_20:+.1f}%），順勢操作。',
-                'explanation': '長期趨勢向上，目前無特殊訊號，可順勢操作。',
-                'action_code': 'BUY',
-                'confidence': 'Medium',
-                'short_term_action': '買進',
-                'score_cap': 85
-            }
-        
-        # 預設：觀望
-        return {
-            'scenario': 'X',
-            'scenario_name': '待觀察',
-            'recommendation': '建議觀望',
-            'action_timing': '等待明確訊號',
-            'warning_message': '目前無明確交易訊號，建議持續觀察。',
-            'explanation': '市場方向不明，建議等待明確訊號再行動。',
-            'action_code': 'WAIT',
-            'confidence': 'Low',
-            'short_term_action': '觀望',
-            'score_cap': 50
-        }
-    
-    @staticmethod
     def calculate_price_targets(result, scenario_result):
         """
         v4.4.7 新增：計算動態目標價
@@ -508,57 +264,6 @@ class DecisionMatrix:
             'rr_ratio': round(rr_ratio, 2),
             'current_price': current_price
         }
-    
-    @staticmethod
-    def _apply_signal_cooldown(final_result, result):
-        """
-        v4.4.7 新增：訊號冷卻期
-        
-        避免「忽買忽賣」：若昨天是 SELL，今天變成 BUY，
-        除非分數差異超過 30 分，否則維持「觀望 (HOLD)」。
-        """
-        symbol = result.get('symbol', '')
-        if not symbol:
-            return final_result
-        
-        action_code = final_result.get('action_code', '')
-        current_score = final_result.get('score', 50)
-        
-        # 取得昨天的訊號
-        last_signal = DecisionMatrix._last_signals.get(symbol, {})
-        last_action = last_signal.get('action', '')
-        last_score = last_signal.get('score', 50)
-        
-        # 檢查是否需要冷卻
-        if last_action and action_code:
-            score_diff = abs(current_score - last_score)
-            
-            # 訊號反轉（BUY -> SELL 或 SELL -> BUY）
-            is_reversal = (
-                (last_action in ['BUY', 'STRONG_BUY'] and action_code in ['SELL', 'TAKE_PROFIT']) or
-                (last_action in ['SELL', 'TAKE_PROFIT'] and action_code in ['BUY', 'STRONG_BUY', 'BUY_DIP'])
-            )
-            
-            if is_reversal and score_diff < 30:
-                # 強制觀望
-                final_result = final_result.copy()
-                final_result['recommendation'] = '觀望（訊號冷卻中）'
-                final_result['warning_message'] = (
-                    f"⚠️ 訊號反轉但分數差異不足（{score_diff:.0f}分 < 30分），"
-                    f"可能處於盤整區，建議觀望避免被雙巴。"
-                )
-                final_result['action_code'] = 'HOLD'
-                final_result['confidence'] = 'Low'
-                final_result['cooldown_applied'] = True
-        
-        # 更新訊號記錄
-        DecisionMatrix._last_signals[symbol] = {
-            'action': action_code,
-            'score': current_score,
-            'date': datetime.datetime.now().strftime('%Y-%m-%d')
-        }
-        
-        return final_result
     
     @staticmethod
     def _calculate_decision_variables(result):
@@ -765,416 +470,6 @@ class DecisionMatrix:
             'has_anomaly': len(anomalies) > 0,
             'anomalies': anomalies
         }
-    
-    @staticmethod
-    def _evaluate_scenario(decision_vars, result):
-        """執行五大場景決策矩陣"""
-        
-        trend = decision_vars['trend_status']
-        bias = decision_vars['position_bias']
-        bias_20 = decision_vars['bias_20']
-        rsi = decision_vars['rsi']
-        adx = decision_vars['adx']
-        left_buy = decision_vars['left_buy_triggered']
-        left_sell = decision_vars['left_sell_triggered']
-        
-        # ============================================================
-        # 場景 A：多頭趨勢 + 乖離過大 (Trend=Bull, Bias=High)
-        # ============================================================
-        if trend == DecisionMatrix.TREND_BULL and (
-            bias == DecisionMatrix.BIAS_HIGH or 
-            rsi > QuantConfig.RSI_OVERBOUGHT_LEVEL or 
-            left_sell
-        ):
-            return {
-                'scenario': 'A',
-                'scenario_name': '多頭過熱',
-                'recommendation': '持股續抱 / 暫停加碼',
-                'action_timing': '過熱，等待拉回',
-                'warning_message': f'多頭趨勢強勁，但短線乖離過高（{bias_20:+.1f}%），切勿追價。',
-                'action_code': 'HOLD',
-                'confidence': 'High'
-            }
-        
-        # ============================================================
-        # 場景 B：多頭趨勢 + 拉回修正 (Trend=Bull, Bias=Low/Neutral) —— 黃金買點
-        # ============================================================
-        if trend == DecisionMatrix.TREND_BULL and (
-            QuantConfig.GOLDEN_BUY_BIAS_MIN <= bias_20 <= QuantConfig.GOLDEN_BUY_BIAS_MAX and
-            rsi < QuantConfig.GOLDEN_BUY_RSI_MAX
-        ):
-            return {
-                'scenario': 'B',
-                'scenario_name': '黃金買點',
-                'recommendation': '強烈建議買進',
-                'action_timing': '拉回支撐有守，甜蜜點浮現',
-                'warning_message': f'趨勢向上且修正完畢（乖離{bias_20:+.1f}%），盈虧比極佳。',
-                'action_code': 'STRONG_BUY',
-                'confidence': 'High'
-            }
-        
-        # 場景 B-2：多頭趨勢 + 乖離正常（可買但非最佳）
-        if trend == DecisionMatrix.TREND_BULL and bias == DecisionMatrix.BIAS_NEUTRAL:
-            return {
-                'scenario': 'B2',
-                'scenario_name': '多頭正常',
-                'recommendation': '建議買進',
-                'action_timing': '趨勢向上，可考慮進場',
-                'warning_message': f'多頭趨勢中，乖離正常（{bias_20:+.1f}%），順勢操作。',
-                'action_code': 'BUY',
-                'confidence': 'Medium'
-            }
-        
-        # ============================================================
-        # 場景 C：空頭趨勢 + 嚴重超賣 (Trend=Bear, Bias=DeepLow)
-        # ============================================================
-        if trend == DecisionMatrix.TREND_BEAR and (
-            bias == DecisionMatrix.BIAS_DEEP_LOW or
-            rsi < QuantConfig.RSI_OVERSOLD_LEVEL or
-            left_buy
-        ):
-            return {
-                'scenario': 'C',
-                'scenario_name': '空頭超賣',
-                'recommendation': '不建議殺低 / 高手可搶反彈',
-                'action_timing': '空手觀望，激進者可嘗試搶反彈',
-                'warning_message': f'負乖離過大（{bias_20:+.1f}%），隨時可能出現技術性反彈，持有者勿恐慌殺低。',
-                'action_code': 'DONT_SELL_LOW',
-                'confidence': 'Medium'
-            }
-        
-        # ============================================================
-        # 場景 D：空頭趨勢 + 跌勢確認 (Trend=Bear, Bias=Neutral/High)
-        # ============================================================
-        if trend == DecisionMatrix.TREND_BEAR:
-            return {
-                'scenario': 'D',
-                'scenario_name': '空頭確認',
-                'recommendation': '建議賣出 / 反彈空',
-                'action_timing': '趨勢偏空，現金為王',
-                'warning_message': '空頭排列成形，上方壓力重重，反彈視為出場機會。',
-                'action_code': 'SELL',
-                'confidence': 'High'
-            }
-        
-        # ============================================================
-        # 場景 E：盤整震盪 (Trend=Range) - 修正：增加箱頂箱底價格
-        # ============================================================
-        if trend == DecisionMatrix.TREND_RANGE or adx < QuantConfig.ADX_RANGE_THRESHOLD:
-            # 計算箱頂箱底價格
-            current_price = result.get('current_price', 0)
-            sr = result.get('support_resistance', {})
-            
-            # 箱頂：使用近期壓力位或布林通道上軌
-            box_top = sr.get('resistance1', 0)
-            # 箱底：使用近期支撐位或布林通道下軌
-            box_bottom = sr.get('support1', 0)
-            
-            # 如果支撐壓力位不可用，使用 MA20 +/- 一個標準差估算
-            if not box_top or not box_bottom:
-                mr = result.get('mean_reversion', {})
-                ma20 = mr.get('bias_analysis', {}).get('ma_20', current_price)
-                if not ma20 or ma20 == 0:
-                    ma20 = current_price
-                # 估算區間（使用 5% 作為預設波動）
-                if not box_top or box_top == 0:
-                    box_top = round(ma20 * 1.05, 2)
-                if not box_bottom or box_bottom == 0:
-                    box_bottom = round(ma20 * 0.95, 2)
-            
-            # 判斷目前在區間中的位置
-            if box_top > box_bottom and box_top > 0:
-                range_width = box_top - box_bottom
-                position_pct = ((current_price - box_bottom) / range_width) * 100 if range_width > 0 else 50
-                
-                if position_pct <= 25:
-                    position_desc = '靠近箱底'
-                    suggestion = '適合買進，設停損於箱底下方'
-                elif position_pct >= 75:
-                    position_desc = '靠近箱頂'
-                    suggestion = '適合賣出，或等突破箱頂'
-                elif position_pct <= 40:
-                    position_desc = '中間偏下'
-                    suggestion = '可小量佈局，等待靠近箱底'
-                elif position_pct >= 60:
-                    position_desc = '中間偏上'
-                    suggestion = '觀望或減碼，等待靠近箱頂'
-                else:
-                    position_desc = '區間中段'
-                    suggestion = '觀望為主，等待靠近區間邊緣'
-            else:
-                position_pct = 50
-                position_desc = '無法判斷'
-                suggestion = '觀望為主'
-            
-            # 判斷盤整中的位置（原有邏輯）
-            if bias_20 < -5:
-                sub_advice = '靠近箱底，可小量佈局'
-            elif bias_20 > 5:
-                sub_advice = '靠近箱頂，考慮減碼'
-            else:
-                sub_advice = '區間中段，觀望為主'
-            
-            return {
-                'scenario': 'E',
-                'scenario_name': '盤整震盪',
-                'recommendation': '區間操作 / 觀望',
-                'action_timing': f'箱底接、箱頂出（{sub_advice}）',
-                'warning_message': f'均線糾結（ADX={adx:.0f}），趨勢不明，高拋低吸為宜。',
-                'action_code': 'RANGE_TRADE',
-                'confidence': 'Low',
-                # 新增：區間操作詳細資訊
-                'range_info': {
-                    'box_top': round(box_top, 2) if box_top else 'N/A',
-                    'box_bottom': round(box_bottom, 2) if box_bottom else 'N/A',
-                    'position_pct': round(position_pct, 1),
-                    'position': position_desc,
-                    'suggestion': suggestion,
-                    'current_price': current_price
-                }
-            }
-        
-        # 預設：觀望
-        return {
-            'scenario': 'X',
-            'scenario_name': '待觀察',
-            'recommendation': '建議觀望',
-            'action_timing': '等待明確訊號',
-            'warning_message': '目前無明確交易訊號，建議持續觀察。',
-            'action_code': 'WAIT',
-            'confidence': 'Low'
-        }
-    
-    @staticmethod
-    def _apply_filters(scenario_result, decision_vars, result):
-        """
-        執行強制濾網檢查（v4.4.7 更新）
-        
-        新增：
-        1. 趨勢濾網：空頭反彈場景評分上限 70 分
-        2. 成交量確認：量縮訊號視為「假訊號」，權重減半
-        """
-        
-        final_result = scenario_result.copy()
-        filters_applied = []
-        downgraded = False
-        original_rec = scenario_result['recommendation']
-        
-        rr_ratio = decision_vars['rr_ratio']
-        vol_anomaly = decision_vars['vol_anomaly']
-        action_code = scenario_result.get('action_code', '')
-        scenario = scenario_result.get('scenario', '')
-        
-        # v4.4.1 新增：量價分析因子
-        vp_factors = decision_vars.get('volume_price', {})
-        
-        # ============================================================
-        # v4.4.7 新增：濾網 0：趨勢濾網（場景評分上限）
-        # ============================================================
-        score_cap = scenario_result.get('score_cap', 100)
-        if score_cap < 100:
-            filters_applied.append({
-                'filter': 'TREND_CAP',
-                'reason': f'場景{scenario}評分上限{score_cap}分',
-                'action': '限制評分上限'
-            })
-            final_result['score_cap'] = score_cap
-        
-        # ============================================================
-        # v4.4.7 新增：濾網 0.5：成交量確認
-        # 量縮訊號視為「假訊號」，降級處理
-        # ============================================================
-        vol_analysis = result.get('volume_analysis', {})
-        volume_ratio = vol_analysis.get('volume_ratio', 1.0)
-        
-        if volume_ratio < 0.8 and action_code in ['STRONG_BUY', 'BUY', 'BUY_DIP']:
-            # 量縮買訊 -> 降級
-            filters_applied.append({
-                'filter': 'VOLUME_SHRINK',
-                'reason': f'成交量萎縮（僅{volume_ratio*100:.0f}%均量）',
-                'action': '訊號可信度降低'
-            })
-            
-            if not downgraded:
-                # 將強力買進降級為買進
-                if action_code == 'STRONG_BUY':
-                    final_result['recommendation'] = '建議買進（量能不足）'
-                    final_result['action_code'] = 'BUY'
-                else:
-                    final_result['recommendation'] = '觀望（量能不足）'
-                    final_result['action_code'] = 'HOLD'
-                
-                final_result['warning_message'] = (
-                    f"⚠️ 買訊出現但成交量萎縮（{volume_ratio*100:.0f}%均量），"
-                    f"可能為假突破，建議等量能放大再進場。"
-                )
-                final_result['confidence'] = 'Low'
-                # 不設 downgraded = True，讓後續濾網可以進一步檢查
-        
-        # ============================================================
-        # 濾網 1：風險回報比檢查
-        # ============================================================
-        if action_code in ['STRONG_BUY', 'BUY'] and rr_ratio < QuantConfig.MIN_RR_RATIO:
-            filters_applied.append({
-                'filter': 'RR_RATIO',
-                'reason': f'盈虧比不佳（RR={rr_ratio:.2f} < {QuantConfig.MIN_RR_RATIO}）',
-                'action': '降級為觀望'
-            })
-            
-            final_result['recommendation'] = '觀望（盈虧比不佳）'
-            final_result['action_timing'] = '等待更低價格'
-            final_result['warning_message'] = (
-                f"⚠️ 雖然趨勢向上，但上方空間有限（盈虧比 {rr_ratio:.2f} < {QuantConfig.MIN_RR_RATIO}），"
-                f"建議等待更低價格或設定更遠停利目標。"
-            )
-            final_result['confidence'] = 'Low'
-            downgraded = True
-        
-        # ============================================================
-        # 濾網 2：成交量異常檢查（創高量縮）
-        # ============================================================
-        if vol_anomaly['has_anomaly']:
-            for anomaly in vol_anomaly['anomalies']:
-                if anomaly['type'] == 'breakout_low_volume' and action_code in ['STRONG_BUY', 'BUY']:
-                    filters_applied.append({
-                        'filter': 'VOLUME_ANOMALY',
-                        'reason': anomaly['message'],
-                        'action': '降級警示假突破'
-                    })
-                    
-                    if not downgraded:  # 避免重複降級
-                        final_result['recommendation'] = '小心假突破'
-                        final_result['warning_message'] = (
-                            f"⚠️ 創高量縮（量價背離），多頭力道可疑，提防假突破拉回。"
-                            f"建議等量能確認後再行動。"
-                        )
-                        final_result['confidence'] = 'Low'
-                        downgraded = True
-                
-                elif anomaly['type'] == 'high_volume_no_rise':
-                    filters_applied.append({
-                        'filter': 'VOLUME_ANOMALY',
-                        'reason': anomaly['message'],
-                        'action': '增加警示'
-                    })
-                    
-                    # 不降級但增加警示
-                    if '高檔爆量' not in final_result.get('warning_message', ''):
-                        final_result['warning_message'] += f" ⚠️ {anomaly['message']}。"
-        
-        # ============================================================
-        # v4.4.1 新增：濾網 2.5：量價分析高風險訊號檢查
-        # ============================================================
-        if vp_factors.get('available') and not downgraded:
-            # 放量跌破（VP08）- 最高風險
-            if vp_factors.get('has_breakdown') and action_code in ['STRONG_BUY', 'BUY', 'HOLD']:
-                filters_applied.append({
-                    'filter': 'VP_BREAKDOWN',
-                    'reason': '量價分析：放量跌破支撐',
-                    'action': '強制降級為賣出'
-                })
-                final_result['recommendation'] = '建議出場（放量跌破）'
-                final_result['action_timing'] = '立即'
-                final_result['warning_message'] = '⚠️ 量價分析偵測到放量跌破，建議停損出場。'
-                final_result['confidence'] = 'High'
-                downgraded = True
-            
-            # 跳空下跌帶量（VP12）- 高風險
-            elif vp_factors.get('has_gap_down') and action_code in ['STRONG_BUY', 'BUY', 'HOLD']:
-                filters_applied.append({
-                    'filter': 'VP_GAP_DOWN',
-                    'reason': '量價分析：跳空下跌帶量',
-                    'action': '強制降級為賣出'
-                })
-                final_result['recommendation'] = '建議出場（跳空下跌）'
-                final_result['action_timing'] = '立即'
-                final_result['warning_message'] = '⚠️ 量價分析偵測到跳空下跌帶量，風險最高，建議撤退。'
-                final_result['confidence'] = 'High'
-                downgraded = True
-            
-            # 放量不漲（VP07）- 高位派發風險
-            elif vp_factors.get('has_supply_overhang') and action_code in ['STRONG_BUY', 'BUY']:
-                filters_applied.append({
-                    'filter': 'VP_SUPPLY_OVERHANG',
-                    'reason': '量價分析：放量不漲（派發跡象）',
-                    'action': '降級為觀望'
-                })
-                final_result['recommendation'] = '觀望（放量不漲）'
-                final_result['action_timing'] = '暫緩進場'
-                final_result['warning_message'] = '⚠️ 量價分析偵測到放量不漲，可能為派發，建議觀望。'
-                final_result['confidence'] = 'Low'
-                downgraded = True
-            
-            # 帶量突破（VP05）- 加強買進信心
-            elif vp_factors.get('has_valid_breakout') and action_code in ['BUY', 'HOLD']:
-                # 不降級，但增加信心度
-                if final_result.get('confidence') != 'High':
-                    final_result['confidence'] = 'High'
-                final_result['warning_message'] = (
-                    final_result.get('warning_message', '') + 
-                    ' ✅ 量價分析確認：帶量突破，多方力道強勁。'
-                ).strip()
-            
-            # 高風險訊號數量過多
-            elif len(vp_factors.get('high_risk_signals', [])) >= 2:
-                filters_applied.append({
-                    'filter': 'VP_MULTIPLE_RISK',
-                    'reason': f"量價分析：多個高風險訊號（{len(vp_factors['high_risk_signals'])}個）",
-                    'action': '降低信心度'
-                })
-                final_result['confidence'] = 'Low'
-                final_result['warning_message'] = (
-                    final_result.get('warning_message', '') + 
-                    f" ⚠️ 量價分析偵測到多個高風險訊號，謹慎操作。"
-                ).strip()
-        
-        # ============================================================
-        # 濾網 3：三盤跌破強制出場（最高優先級）
-        # ============================================================
-        wave = result.get('wave_analysis', {})
-        if wave.get('available'):
-            breakdown = wave.get('breakdown_signal', {}).get('detected', False)
-            if breakdown and action_code not in ['SELL', 'DONT_SELL_LOW']:
-                filters_applied.append({
-                    'filter': 'THREE_BAR_BREAKDOWN',
-                    'reason': '三盤跌破',
-                    'action': '強制出場訊號'
-                })
-                
-                final_result['recommendation'] = '建議出場'
-                final_result['action_timing'] = '立即'
-                final_result['warning_message'] = '⚠️ 三盤跌破確立，波段結束，建議離場觀望。'
-                final_result['confidence'] = 'High'
-                downgraded = True
-        
-        # ============================================================
-        # v4.4.1 新增：濾網 4：流動性檢查
-        # ============================================================
-        risk_mgr = result.get('risk_manager', {})
-        if risk_mgr.get('available'):
-            liquidity = risk_mgr.get('liquidity', {})
-            if liquidity.get('liquidity_flag') and action_code in ['STRONG_BUY', 'BUY']:
-                filters_applied.append({
-                    'filter': 'LIQUIDITY_GATE',
-                    'reason': '流動性不足',
-                    'action': '降級為觀望'
-                })
-                final_result['recommendation'] = '觀望（流動性不足）'
-                final_result['warning_message'] = '⚠️ 該股流動性不足，不建議大量進場。'
-                final_result['confidence'] = 'Low'
-                downgraded = True
-        
-        final_result['filters_applied'] = filters_applied
-        final_result['downgraded'] = downgraded
-        final_result['original_recommendation'] = original_rec
-        final_result['rr_ratio'] = rr_ratio
-        
-        # v4.4.1 新增：加入量價分析提示到結果
-        if vp_factors.get('available'):
-            final_result['volume_price_hint'] = vp_factors.get('decision_hint', '')
-            final_result['volume_price_risk'] = vp_factors.get('risk_notes', '')
-        
-        return final_result
     
     @staticmethod
     def generate_report_text(decision_result, result):
@@ -5757,18 +5052,42 @@ class PatternAnalyzer:
                 patterns_detected.append(v_reversal)
             
             # ========================================
-            # Step 5: 選擇最可靠的形態
+            # Step 5: 選擇最可靠的形態（優先級 + 信心度）
             # ========================================
+            #
+            # 優先級設計（底部信號可信度排序）：
+            #   頭肩底 (3) > W底 (2) > V型反轉 (1)
+            #   頭肩頂 (2) > M頭 (1)
+            #
+            # 選擇規則：
+            #   1. CONFIRMED > FORMING（已確立優先）
+            #   2. 同狀態時：優先級高者勝出
+            #   3. 同優先級時：信心度高者勝出
+            # ========================================
+            _PATTERN_PRIORITY = {
+                '頭肩底':   3,
+                'W底':      2,
+                'V型反轉':  1,
+                '頭肩頂':   2,
+                'M頭':      1,
+            }
+
+            def _pattern_sort_key(p):
+                priority  = _PATTERN_PRIORITY.get(p.get('pattern_name', ''), 0)
+                is_confirmed = 1 if 'CONFIRMED' in p.get('status', '') else 0
+                confidence = p.get('confidence', 0)
+                return (is_confirmed, priority, confidence)
+
             if patterns_detected:
                 # 優先選擇已確立的形態（CONFIRMED）
                 confirmed = [p for p in patterns_detected if 'CONFIRMED' in p.get('status', '')]
-                
+
                 if confirmed:
-                    # 在已確立的形態中，選擇信心度最高的
-                    best_pattern = max(confirmed, key=lambda x: x.get('confidence', 0))
+                    # 在已確立的形態中：優先級優先，相同優先級時取信心度最高
+                    best_pattern = max(confirmed, key=_pattern_sort_key)
                 else:
-                    # 若沒有確立的形態，選擇形成中信心度最高的
-                    best_pattern = max(patterns_detected, key=lambda x: x.get('confidence', 0))
+                    # 若沒有確立的形態，選擇優先級/信心度最高的
+                    best_pattern = max(patterns_detected, key=_pattern_sort_key)
                 
                 return {
                     'available': True,
@@ -6932,27 +6251,52 @@ class PatternAnalyzer:
         
         if current_close >= recovery_threshold or (above_ma and rebound_pct >= abs(drop_pct) * 0.6):
             # ========================================
-            # 形態確立
+            # 形態確立 — 先檢查目標價是否已被超越
             # ========================================
-            result = {
-                'detected': True,
-                'pattern_name': PatternType.V_REVERSAL.value,
-                'pattern_type': 'bottom',
-                'status': PatternStatus.CONFIRMED_BREAKOUT.value,
-                'neckline_price': round(ma10 if pd.notna(ma10) else pre_drop_high, 2),
-                'target_price': round(target_price, 2),
-                'stop_loss': round(stop_loss, 2),
-                'confidence': 80 if volume_confirmed else 60,
-                'volume_confirmed': volume_confirmed,
-                'description': (
-                    f'V型反轉確立！急跌{abs(drop_pct)*100:.1f}%後反彈{rebound_pct*100:.1f}%，'
-                    f'{reversal_candle_type}'
-                    + ('，量能確認' if volume_confirmed else '')
-                ),
-                'signal': 'buy',
-                'score_impact': 35 if volume_confirmed else 20,
-                'geometry_checks': result['geometry_checks']
-            }
+            # 目標失效判斷：現價已超過起跌點（V型目標）超過 5%
+            # 表示買進視窗已過，繼續追高風險極大
+            target_already_exceeded = (current_close > target_price * 1.05)
+
+            if target_already_exceeded:
+                # 目標早已達成 → 形態失效，降為中性
+                result = {
+                    'detected': True,
+                    'pattern_name': PatternType.V_REVERSAL.value,
+                    'pattern_type': 'bottom',
+                    'status': 'TARGET_REACHED',          # 自定義狀態：目標已達
+                    'neckline_price': round(ma10 if pd.notna(ma10) else pre_drop_high, 2),
+                    'target_price': round(target_price, 2),
+                    'stop_loss': round(stop_loss, 2),
+                    'confidence': 40,
+                    'volume_confirmed': volume_confirmed,
+                    'description': (
+                        f'V型反轉目標已達成（起跌點 ${target_price:.2f}，現價 ${current_close:.2f}）。'
+                        f'原始買進視窗已過，追高風險大，不建議進場。'
+                    ),
+                    'signal': 'neutral',     # 不再輸出買進信號
+                    'score_impact': 0,        # 對評分無加分
+                    'geometry_checks': result['geometry_checks']
+                }
+            else:
+                result = {
+                    'detected': True,
+                    'pattern_name': PatternType.V_REVERSAL.value,
+                    'pattern_type': 'bottom',
+                    'status': PatternStatus.CONFIRMED_BREAKOUT.value,
+                    'neckline_price': round(ma10 if pd.notna(ma10) else pre_drop_high, 2),
+                    'target_price': round(target_price, 2),
+                    'stop_loss': round(stop_loss, 2),
+                    'confidence': 80 if volume_confirmed else 60,
+                    'volume_confirmed': volume_confirmed,
+                    'description': (
+                        f'V型反轉確立！急跌{abs(drop_pct)*100:.1f}%後反彈{rebound_pct*100:.1f}%，'
+                        f'{reversal_candle_type}'
+                        + ('，量能確認' if volume_confirmed else '')
+                    ),
+                    'signal': 'buy',
+                    'score_impact': 35 if volume_confirmed else 20,
+                    'geometry_checks': result['geometry_checks']
+                }
         else:
             # ========================================
             # 形態形成中
@@ -7738,6 +7082,126 @@ PatternAnalyzer.STATUS_FAILED = PatternStatus.FAILED.value
 PatternAnalyzer.DEFAULT_LOOKBACK = 60
 PatternAnalyzer.DEFAULT_PEAK_THRESHOLD = 0.03
 PatternAnalyzer.DEFAULT_VOLUME_CONFIRM = 1.0
+
+
+# ============================================================================
+# BranchAnalyzer — 分點分析框架 v1.0 (Stub)
+# ============================================================================
+#
+# 設計說明：
+#   分點分析是台灣市場特有的 alpha 因子。主力券商分點持續買進，
+#   代表知情交易者（informed trader）正在建倉，是趨勢啟動前的領先指標。
+#
+# 資料結構規格（供外部餵入 result['branch_analysis']）：
+#   {
+#     'available':            bool,     # 是否有分點資料
+#     'main_branch_name':     str,      # 主力分點名稱（如「富邦-古亭」）
+#     'main_branch_buy_days': int,      # 主力分點連續買進天數
+#     'main_branch_net_lot':  int,      # 主力分點淨買張數（正=買，負=賣）
+#     'branch_concentration': float,    # 籌碼集中度（主力/全體，0~1）
+#     'multi_branch_buy':     bool,     # 是否多個知名分點同步買進
+#     'data_date':            str,      # 資料日期（'YYYY-MM-DD'）
+#     'source':               str,      # 資料來源（'goodinfo'/'cmoney' 等）
+#   }
+#
+# Layer 3 整合邏輯（decision_engine.py score_timing() 已實裝）：
+#   _branch_trigger:  main_branch_buy_days ≥ 3 → 分點觸發
+#   _branch_strong:   main_branch_buy_days ≥ 5 → 強分點（可升 A）
+#
+# 實作路線圖（待接上真實爬蟲/API）：
+#   1. 串接 GoodInfo 或 Fugle 分點資料 API
+#   2. 以 TWSE 代碼 → 查詢近 N 天各分點買賣超
+#   3. 識別「主力分點」：連買天數最多 / 淨買張最大的單一分點
+#   4. 計算 branch_concentration（主力張數 / 當日全體成交張數）
+#   5. 偵測多空分點同步（multi_branch_buy）
+#   6. 輸出標準化 dict 填入 result['branch_analysis']
+# ============================================================================
+
+class BranchAnalyzer:
+    """
+    分點分析器（台灣市場主力分點追蹤）
+
+    目前為 Stub 框架：analyze() 回傳 available=False 的空結構，
+    等待外部資料源接入後補充實作。
+    實際資料由外部爬蟲或 API 產生後，填入 result['branch_analysis'] 即可，
+    decision_engine.py 的 Layer 3 已可直接讀取。
+    """
+
+    # 觸發門檻（與 decision_engine.py 中的邏輯一致）
+    STRONG_BUY_DAYS = 5   # 強分點：連買 ≥5 天 → B→A 升級
+    WEAK_BUY_DAYS   = 3   # 弱分點：連買 ≥3 天 → 觸發訊號
+
+    @staticmethod
+    def empty_result() -> dict:
+        """回傳空的分點分析結構（資料不可用時使用）"""
+        return {
+            'available':            False,
+            'main_branch_name':     None,
+            'main_branch_buy_days': 0,
+            'main_branch_net_lot':  0,
+            'branch_concentration': 0.0,
+            'multi_branch_buy':     False,
+            'data_date':            None,
+            'source':               None,
+        }
+
+    @staticmethod
+    def analyze(symbol: str, df=None, branch_data: dict = None) -> dict:
+        """
+        執行分點分析。
+
+        Args:
+            symbol:      股票代碼（如 '2330'）
+            df:          日K DataFrame（目前 stub 不使用）
+            branch_data: 外部傳入的分點原始資料（dict），若 None 則回傳空結構
+
+        Returns:
+            dict:  符合 result['branch_analysis'] 規格的標準化結構
+        """
+        if branch_data is None:
+            # Stub：尚未接上資料源，回傳空結構
+            return BranchAnalyzer.empty_result()
+
+        # ── 外部資料正規化 ──────────────────────────────────────────
+        # 允許外部傳入已整理好的 dict，做基本驗證後直接返回
+        main_name     = branch_data.get('main_branch_name', '') or ''
+        main_buy_days = int(branch_data.get('main_branch_buy_days', 0) or 0)
+        main_net_lot  = int(branch_data.get('main_branch_net_lot',  0) or 0)
+        concentration = float(branch_data.get('branch_concentration', 0.0) or 0.0)
+        multi_buy     = bool(branch_data.get('multi_branch_buy', False))
+        data_date     = branch_data.get('data_date', '')
+        source        = branch_data.get('source', 'external')
+
+        if not main_name or main_buy_days < 1:
+            return BranchAnalyzer.empty_result()
+
+        return {
+            'available':            True,
+            'main_branch_name':     main_name,
+            'main_branch_buy_days': main_buy_days,
+            'main_branch_net_lot':  main_net_lot,
+            'branch_concentration': round(concentration, 4),
+            'multi_branch_buy':     multi_buy,
+            'data_date':            data_date,
+            'source':               source,
+        }
+
+    @staticmethod
+    def describe(branch_result: dict) -> str:
+        """產生人類可讀的分點摘要，供 UI 顯示"""
+        if not branch_result.get('available'):
+            return '無分點資料'
+        name     = branch_result['main_branch_name']
+        days     = branch_result['main_branch_buy_days']
+        net_lot  = branch_result['main_branch_net_lot']
+        conc     = branch_result['branch_concentration'] * 100
+        strength = '強勢' if days >= BranchAnalyzer.STRONG_BUY_DAYS else '持續'
+        direction = '買超' if net_lot >= 0 else '賣超'
+        return (
+            f'{name} {strength}進場 連{days}天'
+            f'（淨{direction}{abs(net_lot):,}張'
+            f'，集中度{conc:.1f}%）'
+        )
 
 
 if __name__ == '__main__':

@@ -1247,18 +1247,49 @@ class QuickAnalyzer:
     
     # 籌碼緩存資料庫實例（類別層級）
     _db = None
-    
+
+    # A2/B：大盤指數歷史快取（避免每檔重抓，RS 計算共用）
+    # 結構：{ index_symbol: (date_str, DataFrame) }，同一天內有效
+    _index_hist_cache = {}
+
     @classmethod
     def get_db(cls):
         if cls._db is None:
             cls._db = WatchlistDatabase()
         return cls._db
-    
+
+    @staticmethod
+    def _get_index_history_cached(index_symbol, period=None):
+        """
+        取得大盤指數歷史（含當日快取）。
+
+        用 yf.Ticker(index_symbol).history()，與 beta 計算相同的可運作路徑。
+        index_symbol 應為 yfinance 格式（例如 "^TWII" / "^GSPC"）。
+        回傳 DataFrame（含 'Close'）或 None。
+        """
+        import datetime as _dt
+        period = period or f"{QuantConfig.RISK_DATA_YEARS}y"
+        today = _dt.date.today().isoformat()
+        cache_key = f"{index_symbol}|{period}"
+        cached = QuickAnalyzer._index_hist_cache.get(cache_key)
+        if cached and cached[0] == today:
+            return cached[1]
+        try:
+            idx = yf.Ticker(index_symbol)
+            hist = idx.history(period=period)
+            if hist is None or hist.empty:
+                return None
+            QuickAnalyzer._index_hist_cache[cache_key] = (today, hist)
+            return hist
+        except Exception as e:
+            print(f"[RS] 大盤指數 {index_symbol} 取得失敗: {e}")
+            return None
+
     @staticmethod
     def analyze_stock(symbol, market="台股", analysis_date=None):
         """
         快速分析股票 - v4.3 增強版（整合即時與歷史分析）
-        
+
         v4.4.7 更新：加入 YFinance 速率限制處理
         
         Args:
@@ -1504,16 +1535,15 @@ class QuickAnalyzer:
             else:
                 result["pattern_analysis"] = {'available': False, 'message': '形態分析已停用'}
             
-            # === v4.5.19 新增：相對強度 (RS) 計算 ===
+            # === v4.5.19 相對強度 (RS) 計算 ===
+            # A2 修正：原本用 DataSourceManager.get_history("TWII","美股") 取大盤，
+            # 但 yfinance 需要 "^TWII"，去掉 "^" 後變成查無此代碼（404）→ RS 永遠
+            # fallback 成 50/0，導致全系統 RS 因子（含 L1 ±12、L2 動能模式）失效。
+            # 改用與 beta 計算相同、可正常運作的 yf.Ticker(MARKET_INDEX) 路徑，並加快取。
             try:
-                # 計算個股相對大盤的強度
-                market_symbol = "^TWII" if market == "台股" else "^GSPC"
-                market_hist = DataSourceManager.get_history(
-                    market_symbol.replace("^", ""), "美股",  # 大盤用美股模式
-                    start_date=hist.index[0].to_pydatetime() if hasattr(hist.index[0], 'to_pydatetime') else hist.index[0],
-                    end_date=hist.index[-1].to_pydatetime() if hasattr(hist.index[-1], 'to_pydatetime') else hist.index[-1]
-                )
-                
+                market_symbol = QuantConfig.MARKET_INDEX_TW if market == "台股" else QuantConfig.MARKET_INDEX_US
+                market_hist = QuickAnalyzer._get_index_history_cached(market_symbol)
+
                 if market_hist is not None and len(market_hist) > 20:
                     # 計算 5/20/60 日相對表現
                     stock_ret_5d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-5] - 1) * 100 if len(hist) > 5 else 0
@@ -2512,9 +2542,9 @@ class QuickAnalyzer:
                 "dealer": f"{dealer_text} ({format_volume(dealer_net)})",
                 "foreign_continuous": foreign_text,
                 "trust_continuous": trust_text,
-                "foreign_net": foreign_net * 1000,  # 張轉股，供數值判斷
-                "trust_net": trust_net * 1000,
-                "dealer_net": dealer_net * 1000,
+                "foreign_net": foreign_net,   # 單位：張（不再 ×1000，全系統統一用張）
+                "trust_net": trust_net,
+                "dealer_net": dealer_net,
                 "foreign_consecutive_days": foreign_consecutive_days,
                 "trust_consecutive_days": trust_consecutive_days,
                 "signal": overall_signal,
@@ -3248,24 +3278,74 @@ class QuickAnalyzer:
             rr_ratio = dv.get('rr_ratio', 0)
             bias_20 = dv.get('bias_20', 0)
             
-            # v4.4.6：形態分析可能覆蓋建議
+            # v5.0：形態分析覆蓋建議（加入三道防線，避免矛盾訊號）
             if pattern_info and pattern_info.get('detected'):
                 pattern_status = pattern_info.get('status', '')
                 pattern_signal = pattern_info.get('signal', 'neutral')
-                pattern_name = pattern_info.get('pattern_name', '')
-                
-                # 形態確立時覆蓋建議
-                if 'CONFIRMED' in pattern_status:
-                    if pattern_signal == 'buy':
+                pattern_name   = pattern_info.get('pattern_name', '')
+                p_target       = pattern_info.get('target_price', 0) or 0
+                p_stop         = pattern_info.get('stop_loss', 0) or 0
+                current_px     = result.get('current_price', 0) or 0
+
+                # ── 買進形態覆蓋：必須通過三道防線 ──────────────────
+                if 'CONFIRMED' in pattern_status and pattern_signal == 'buy':
+
+                    # 防線 1：目標價必須高於現價（目標已達則形態失效）
+                    _target_valid = (p_target <= 0) or (p_target > current_px * 1.02)
+
+                    # 防線 2：三層引擎的場景不能是 SKIP / WAIT（方向或位置否決）
+                    _engine_ok = dm.get('scenario', '') not in ('SKIP', 'WAIT')
+
+                    # 防線 3：乖離率不能過熱（> 15% 時 Layer 2 硬上限 20 分，不應再鼓勵進場）
+                    _bias_ok = abs(bias_20) <= 15
+
+                    if _target_valid and _engine_ok and _bias_ok:
+                        # 三道防線全過 → 允許形態覆蓋，輸出買進建議
                         overall = f'強烈建議買進（{pattern_name}確立）'
                         action_timing = '形態突破，可進場'
-                        warning_message = pattern_info.get('description', '') + f" 目標價${pattern_info.get('target_price', 0):.2f}，停損${pattern_info.get('stop_loss', 0):.2f}"
+                        warning_message = (
+                            pattern_info.get('description', '')
+                            + (f' 目標價${p_target:.2f}，停損${p_stop:.2f}' if p_target > 0 else '')
+                        )
                         confidence = 'High'
-                    elif pattern_signal == 'sell':
-                        overall = f'建議賣出（{pattern_name}確立）'
-                        action_timing = '形態跌破，應出場'
-                        warning_message = pattern_info.get('description', '') + f" 目標價${pattern_info.get('target_price', 0):.2f}"
-                        confidence = 'High'
+                    else:
+                        # 任一防線失守 → 降為觀察，附上原因
+                        _block_reasons = []
+                        if not _target_valid:
+                            _block_reasons.append(
+                                f'目標價 ${p_target:.2f} 已低於現價 ${current_px:.2f}（形態目標已達成，追高風險大）'
+                            )
+                        if not _engine_ok:
+                            _block_reasons.append(
+                                f'三層引擎否決（場景：{dm.get("scenario_name", dm.get("scenario", ""))}）'
+                            )
+                        if not _bias_ok:
+                            _block_reasons.append(
+                                f'乖離率過大（{bias_20:+.1f}%），追高風險高'
+                            )
+                        overall = f'形態確立但暫緩買進（{pattern_name}）'
+                        action_timing = '等待拉回或乖離收斂後再進場'
+                        warning_message = (
+                            pattern_info.get('description', '')
+                            + ' ⚠️ 覆蓋條件未達：' + '；'.join(_block_reasons)
+                        )
+                        confidence = 'Medium'
+
+                # ── 賣出形態覆蓋（無需防線，頭部形態確立直接賣）──────
+                elif 'CONFIRMED' in pattern_status and pattern_signal == 'sell':
+                    overall = f'建議賣出（{pattern_name}確立）'
+                    action_timing = '形態跌破，應出場'
+                    warning_message = (
+                        pattern_info.get('description', '')
+                        + (f' 目標價${p_target:.2f}' if p_target > 0 else '')
+                    )
+                    confidence = 'High'
+
+                # ── TARGET_REACHED 狀態：形態已完成，不再建議買進 ─────
+                elif pattern_status == 'TARGET_REACHED':
+                    # 不覆蓋 overall，保留三層引擎的裁決
+                    # 只補充說明
+                    warning_message = pattern_info.get('description', warning_message)
             
             # 生成分段操作建議（基於場景）
             short_term = QuickAnalyzer._get_short_term_from_scenario(scenario, dv, result)
@@ -4245,42 +4325,92 @@ class RecommendationDialog:
     def _build_summary_section(self):
         """2. 綜合評價區塊（最重要！置頂）"""
         card = self._create_card(self.content_frame, "🎯 綜合評價 INVESTMENT SUMMARY", DarkTheme.ACCENT_GOLD)
-        
-        # 場景判定（來自 DecisionMatrix，作為參考）
-        scenario_code = self.investment_advice.get('scenario_code', 'E')
-        scenario_title = self.investment_advice.get('title', '')
-        emoji = self.investment_advice.get('emoji', '🤷')
-        
-        # 場景框
-        scenario_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE, 
+
+        # ── 取得三層引擎裁決（唯一的權威來源）────────────────────
+        rec = self.result.get('recommendation', {})
+        if not isinstance(rec, dict):
+            rec = {}
+
+        # three_layer 場景（來自 ThreeLayerEngine）
+        dm_result      = self.result.get('decision_matrix', {}) or {}
+        three_layer    = dm_result.get('three_layer', {}) or {}
+        engine_scenario      = dm_result.get('scenario', 'X')          # A/B/C/SKIP/WAIT/SELL
+        engine_scenario_name = dm_result.get('scenario_name', '未分析')
+
+        # 雙軌評分場景（舊版參考，不再作為主建議來源）
+        old_scenario_code  = self.investment_advice.get('scenario_code', 'E')
+        old_scenario_title = self.investment_advice.get('title', '')
+        old_emoji          = self.investment_advice.get('emoji', '🤷')
+
+        # ── 場景框：三層引擎為主，雙軌評分降為副標題（參考）────────
+        scenario_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE,
                                  highlightbackground=DarkTheme.BORDER_COLOR, highlightthickness=1)
         scenario_frame.pack(fill=tk.X, pady=5)
-        
-        tk.Label(scenario_frame, text=f"  {emoji} 投資場景: 場景 {scenario_code}",
-                font=("Arial", 16, "bold"), fg=DarkTheme.ACCENT_GOLD, bg=DarkTheme.BG_HEADER,
-                pady=10, padx=10, anchor="w").pack(fill=tk.X)
-        tk.Label(scenario_frame, text=f"     {scenario_title}",
-                font=("Arial", 13), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_HEADER,
-                padx=10, anchor="w").pack(fill=tk.X, pady=(0, 10))
-        
-        # 投資評級和風險等級
+
+        # 主場景：三層引擎
+        _engine_colors = {
+            'A': DarkTheme.UP_COLOR,
+            'B': DarkTheme.UP_COLOR,
+            'C': DarkTheme.NEUTRAL_COLOR,
+            'SELL': DarkTheme.DOWN_COLOR,
+            'SKIP': DarkTheme.TEXT_SECONDARY,
+            'WAIT': DarkTheme.NEUTRAL_COLOR,
+        }
+        engine_color = _engine_colors.get(engine_scenario, DarkTheme.NEUTRAL_COLOR)
+
+        tk.Label(scenario_frame,
+                 text=f"  🔬 三層引擎裁決: {engine_scenario_name}（{engine_scenario}）",
+                 font=("Arial", 16, "bold"), fg=engine_color, bg=DarkTheme.BG_HEADER,
+                 pady=8, padx=10, anchor="w").pack(fill=tk.X)
+
+        # 副場景：雙軌評分（灰色小字，僅參考）
+        tk.Label(scenario_frame,
+                 text=f"     📊 雙軌評分參考：場景 {old_scenario_code} {old_scenario_title}",
+                 font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_HEADER,
+                 padx=10, anchor="w").pack(fill=tk.X, pady=(0, 8))
+
+        # ── 投資評級：唯一來源 = 三層引擎裁決（engine_scenario）──
+        # v4.5.x 修正：原本用 rec['overall']（舊決策矩陣）會與三層引擎矛盾；
+        # 現在改為直接從 engine_scenario 映射，確保徽章與上方裁決一致。
+        _ENGINE_ACTION_MAP = {
+            'A':    '主攻買進（A級）',
+            'B':    '追蹤買進（B級）',
+            'C':    'C級觀察，列入追蹤',
+            'SELL': '賣出訊號',
+            'WAIT': '等待拉回',
+            'SKIP': '方向不佳，跳過',
+            'X':    '觀望',
+        }
+        action_zh = _ENGINE_ACTION_MAP.get(engine_scenario,
+                        dm_result.get('recommendation', '觀望') or '觀望')
+
+        # 舊矩陣的 overall 只用於矛盾偵測（不再決定徽章文字）
+        overall_from_rec = rec.get('overall', '')
+        _old_is_buy  = any(x in (self.investment_advice.get('action_zh', '')) for x in ['買進', '做多'])
+        _old_is_bear = old_scenario_code in ('H', 'G', 'F')
+        _engine_is_sell = engine_scenario == 'SELL'
+        _rec_is_buy  = any(x in overall_from_rec for x in ['買進', '做多'])
+
+        # 矛盾情境：舊矩陣說買、三層說賣（或反之）→ 警示，三層為準
+        if _engine_is_sell and _rec_is_buy:
+            tk.Label(card,
+                     text=("⚠️ 訊號矛盾已仲裁：形態/舊矩陣觸發買進，但三層引擎偵測到賣出訊號，"
+                           "已以三層引擎裁決為準（顯示：賣出訊號）。"),
+                     font=("Arial", 11, "bold"), fg="#FF8C00",
+                     bg=DarkTheme.BG_CARD, wraplength=950, justify=tk.LEFT
+                     ).pack(anchor="w", padx=10, pady=(5, 0))
+        elif _old_is_bear and _rec_is_buy:
+            tk.Label(card,
+                     text=("⚠️ 雙軌參考顯示空頭（場景 " + old_scenario_code +
+                           "），但形態分析觸發買進，以三層引擎上方裁決為準。"),
+                     font=("Arial", 11, "bold"), fg="#FF8C00",
+                     bg=DarkTheme.BG_CARD, wraplength=950, justify=tk.LEFT
+                     ).pack(anchor="w", padx=10, pady=(5, 0))
+
         rating_frame = tk.Frame(card, bg=DarkTheme.BG_CARD)
         rating_frame.pack(fill=tk.X, pady=10)
-        
-        # v4.5.10 修正：投資評級改用 recommendation['overall']（與短線操作一致）
-        rec = self.result.get('recommendation', {})
-        if isinstance(rec, dict):
-            overall = rec.get('overall', '')
-        else:
-            overall = ''
-        
-        # 如果 recommendation 沒有，才用 DecisionMatrix 的
-        if not overall:
-            action_zh = self.investment_advice.get('action_zh', '觀望')
-        else:
-            action_zh = overall
-        
-        # 根據中文建議判斷顏色
+
+        # ── 顏色邏輯（同原版）─────────────────────────────────────
         if any(x in action_zh for x in ["強烈建議買進", "強力買進", "買進", "適合買進", "建議買進", "動能買進"]):
             action_bg = DarkTheme.STRONG_BUY_BG
             action_fg = DarkTheme.STRONG_BUY_FG
