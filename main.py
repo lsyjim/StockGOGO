@@ -2174,10 +2174,12 @@ class QuickAnalyzer:
             else:
                 index_symbol = QuantConfig.MARKET_INDEX_US
             
-            index_data = yf.Ticker(index_symbol)
-            index_hist = index_data.history(period=f"{QuantConfig.RISK_DATA_YEARS}y")
-            
-            if index_hist.empty:
+            # B2 #4：改用當日快取的大盤指數（原本每檔都重抓 2y，純浪費網路）
+            index_hist = QuickAnalyzer._get_index_history_cached(
+                index_symbol, period=f"{QuantConfig.RISK_DATA_YEARS}y"
+            )
+
+            if index_hist is None or index_hist.empty:
                 return None
             
             index_returns = index_hist['Close'].pct_change(fill_method=None).dropna()
