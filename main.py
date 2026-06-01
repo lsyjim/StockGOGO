@@ -5922,16 +5922,20 @@ class StockAnalysisApp(tk.Tk):
             ttk.Label(price_info_frame, text=f"{source_icon} 現價: ${current_price:.2f}", 
                      font=("SimHei", 12, "bold")).pack(side=tk.LEFT, padx=10)
             
-            # 漲跌幅（根據漲跌顯示不同顏色）
+            # 漲跌幅（台股紅漲綠跌，走 theme token）
+            _th = getattr(self, '_theme', None)
+            _UP   = _th.UP   if _th else "red"
+            _DOWN = _th.DOWN if _th else "green"
+            _FLAT = _th.FLAT if _th else "gray"
             if price_change > 0:
                 change_text = f"▲ {price_change:.2f} (+{price_change_pct:.2f}%)"
-                change_color = "red"
+                change_color = _UP
             elif price_change < 0:
                 change_text = f"▼ {abs(price_change):.2f} ({price_change_pct:.2f}%)"
-                change_color = "green"
+                change_color = _DOWN
             else:
                 change_text = f"－ 0.00 (0.00%)"
-                change_color = "gray"
+                change_color = _FLAT
             
             change_label = ttk.Label(price_info_frame, text=change_text, 
                                     font=("SimHei", 12, "bold"), foreground=change_color)
@@ -5950,14 +5954,18 @@ class StockAnalysisApp(tk.Tk):
             if self.show_ma_var.get():
                 mav = (5, 20, 60)
             
-            # 設定樣式
-            mc = mpf.make_marketcolors(up='red', down='green', edge='black', wick='black', volume='inherit')
-            s = mpf.make_mpf_style(
-            marketcolors=mc, 
-            gridcolor='lightgray', 
-            gridstyle='--',
-            rc={'font.sans-serif': ['SimHei', 'Microsoft JhengHei', 'PingFang SC', 'Heiti TC', 'Arial Unicode MS']}
-        )
+            # 設定樣式（暗色面板 + 紅漲綠跌；走 theme，失敗則退回原淺色樣式）
+            if getattr(self, '_theme', None) is not None:
+                try:
+                    mc, s = self._theme.mpf_market_style()
+                except Exception:
+                    mc = mpf.make_marketcolors(up='red', down='green', edge='black', wick='black', volume='inherit')
+                    s = mpf.make_mpf_style(marketcolors=mc, gridcolor='lightgray', gridstyle='--',
+                        rc={'font.sans-serif': ['SimHei', 'Microsoft JhengHei', 'PingFang SC', 'Heiti TC', 'Arial Unicode MS']})
+            else:
+                mc = mpf.make_marketcolors(up='red', down='green', edge='black', wick='black', volume='inherit')
+                s = mpf.make_mpf_style(marketcolors=mc, gridcolor='lightgray', gridstyle='--',
+                    rc={'font.sans-serif': ['SimHei', 'Microsoft JhengHei', 'PingFang SC', 'Heiti TC', 'Arial Unicode MS']})
             
             # 繪製蠟燭圖
             add_plots = []
