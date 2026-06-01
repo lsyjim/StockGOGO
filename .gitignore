@@ -42,3 +42,6 @@ image.png
 
 # Claude local settings
 .claude/settings.local.json
+
+# B2 #3 基本面快取（執行期資料）
+info_cache.json

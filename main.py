@@ -263,6 +263,11 @@ class YFinanceRateLimiter:
     _min_interval = 1.0  # 最小請求間隔（秒）- 加大到 1 秒
     _cache = {}  # 簡易快取 {ticker: {'data': df, 'timestamp': time}}
     _cache_ttl = 600  # 快取有效期（秒）- 加長到 10 分鐘
+
+    # B2 #3：基本面 .info 跨日磁碟快取（.info 盤中幾乎不變，每日抓一次即可）
+    _info_disk_cache = None          # 延遲載入的當日磁碟快取 {ticker: data}
+    _info_disk_cache_date = None     # 磁碟快取的日期字串
+    _info_disk_dirty = False         # 是否有新資料待寫回
     
     # 熔斷機制
     _consecutive_failures = 0  # 連續失敗次數
@@ -435,32 +440,42 @@ class YFinanceRateLimiter:
         ticker_symbol = ticker_obj.ticker if hasattr(ticker_obj, 'ticker') else str(ticker_obj)
         cache_key = f"{ticker_symbol}_info"
         
-        # 檢查快取
+        # 檢查記憶體快取
         if cache_key in cls._cache:
             cached = cls._cache[cache_key]
             if time.time() - cached['timestamp'] < cls._cache_ttl:
                 cls._total_cache_hits += 1
                 return cached['data'].copy()
-        
+
+        # B2 #3：檢查當日磁碟快取（.info 盤中幾乎不變，跨執行/重啟仍有效）
+        _disk = cls._info_disk_get(ticker_symbol)
+        if _disk is not None:
+            cls._total_cache_hits += 1
+            cls._cache[cache_key] = {'data': _disk, 'timestamp': time.time()}
+            return _disk.copy()
+
         # 速率限制
         current_time = time.time()
         time_since_last = current_time - cls._last_request_time
         if time_since_last < cls._min_interval:
             time.sleep(cls._min_interval - time_since_last)
-        
+
         try:
             cls._last_request_time = time.time()
             cls._total_requests += 1
-            
+
             info = ticker_obj.info
-            
+
             # 成功，重置失敗計數並存入快取
             cls._consecutive_failures = 0
             cls._cache[cache_key] = {
                 'data': info.copy() if info else {},
                 'timestamp': time.time()
             }
-            
+            # B2 #3：寫入當日磁碟快取
+            if info:
+                cls._info_disk_put(ticker_symbol, info)
+
             return info if info else {}
             
         except Exception as e:
@@ -475,10 +490,59 @@ class YFinanceRateLimiter:
             print(f"⚠️ [YFinance] 取得 info 失敗: {e}")
             return {}
     
+    # ── B2 #3：基本面 .info 跨日磁碟快取 ──────────────────────────────
+    @classmethod
+    def _info_disk_path(cls):
+        import os as _os
+        return _os.path.join(
+            _os.path.dirname(_os.path.abspath(__file__)), 'info_cache.json'
+        )
+
+    @classmethod
+    def _load_info_disk_cache(cls):
+        """載入當日磁碟快取（檔案含日期，跨日自動失效）。"""
+        import os as _os, json as _json, datetime as _dt
+        today = _dt.date.today().isoformat()
+        if cls._info_disk_cache is not None and cls._info_disk_cache_date == today:
+            return
+        cls._info_disk_cache = {}
+        cls._info_disk_cache_date = today
+        try:
+            p = cls._info_disk_path()
+            if _os.path.exists(p):
+                with open(p, 'r', encoding='utf-8') as f:
+                    raw = _json.load(f)
+                if raw.get('date') == today:
+                    cls._info_disk_cache = raw.get('data', {}) or {}
+        except Exception:
+            cls._info_disk_cache = {}
+
+    @classmethod
+    def _info_disk_get(cls, ticker_symbol):
+        cls._load_info_disk_cache()
+        return cls._info_disk_cache.get(ticker_symbol)
+
+    @classmethod
+    def _info_disk_put(cls, ticker_symbol, info):
+        import json as _json
+        cls._load_info_disk_cache()
+        try:
+            # 僅保留可 JSON 序列化的純量欄位，避免寫入失敗
+            slim = {k: v for k, v in (info or {}).items()
+                    if isinstance(v, (str, int, float, bool, type(None)))}
+            cls._info_disk_cache[ticker_symbol] = slim
+            with open(cls._info_disk_path(), 'w', encoding='utf-8') as f:
+                _json.dump({'date': cls._info_disk_cache_date,
+                            'data': cls._info_disk_cache}, f, ensure_ascii=False)
+        except Exception:
+            pass  # 磁碟快取寫入失敗不影響主流程
+
     @classmethod
     def clear_cache(cls):
         """清除快取"""
         cls._cache.clear()
+        cls._info_disk_cache = None
+        cls._info_disk_cache_date = None
         print(f"[YFinance] 快取已清除")
     
     @classmethod
