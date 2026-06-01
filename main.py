@@ -1331,15 +1331,24 @@ class QuickAnalyzer:
         """
         import datetime as _dt
         try:
-            if df is None or len(df) < 1:
+            if df is None or 'Close' not in df:
                 return None
-            last_date = df.index[-1].date() if hasattr(df.index[-1], 'date') else None
+            # NaN-safe：先濾掉空值收盤（避免今日空 K 棒/資料缺漏導致回傳 nan）
+            closes = df['Close'].dropna()
+            if len(closes) < 1:
+                return None
+            last_idx = closes.index[-1]
+            last_date = last_idx.date() if hasattr(last_idx, 'date') else None
             today = _dt.date.today()
-            if last_date is not None and last_date >= today and len(df) > 1:
-                return round(float(df['Close'].iloc[-2]), 2)
-            return round(float(df['Close'].iloc[-1]), 2)
+            if last_date is not None and last_date >= today and len(closes) > 1:
+                return round(float(closes.iloc[-2]), 2)
+            return round(float(closes.iloc[-1]), 2)
         except Exception:
-            return round(float(df['Close'].iloc[-2]), 2) if len(df) > 1 else round(float(df['Close'].iloc[-1]), 2)
+            try:
+                closes = df['Close'].dropna()
+                return round(float(closes.iloc[-2]), 2) if len(closes) > 1 else round(float(closes.iloc[-1]), 2)
+            except Exception:
+                return None
 
     @staticmethod
     def _get_index_history_cached(index_symbol, period=None):
