@@ -1557,7 +1557,15 @@ class QuickAnalyzer:
                 prev_close = prev_close_hist
                 price_change = round(current_price - prev_close, 2)
                 price_change_pct = round((current_price / prev_close - 1) * 100, 2) if prev_close > 0 else 0
-            
+
+            # 資料異常防護：台股有 ±10% 漲跌停限制，單日漲跌幅不可能超過約 10%。
+            # 若超過，多半是即時報價與 hist 昨收來自不同日期/來源（資料未對齊），
+            # 標記為可疑，避免使用者誤信（例如鴻海顯示 +11.6%）。
+            price_anomaly = bool(market == "台股" and abs(price_change_pct) > 10.5)
+            if price_anomaly:
+                print(f"⚠️ [{symbol}] 漲跌幅異常 {price_change_pct:+.1f}%（超過±10%漲跌停），"
+                      f"即時價 {current_price} 與昨收 {prev_close} 可能未對齊")
+
             result = {
                 "symbol": symbol,
                 "name": stock_name,  # v4.3 新增：股票名稱
@@ -1565,6 +1573,7 @@ class QuickAnalyzer:
                 "prev_close": prev_close,
                 "price_change": price_change,
                 "price_change_pct": price_change_pct,
+                "price_anomaly": price_anomaly,  # 漲跌幅超過±10%漲跌停 → 資料可疑
                 "price_source": price_source,  # v4.3 新增：標註價格來源
                 "technical": technical,
                 "fundamental": fundamental,
@@ -3452,9 +3461,12 @@ class QuickAnalyzer:
                     # 只補充說明
                     warning_message = pattern_info.get('description', warning_message)
             
-            # 生成分段操作建議（基於場景）
-            short_term = QuickAnalyzer._get_short_term_from_scenario(scenario, dv, result)
-            mid_term = QuickAnalyzer._get_mid_term_from_scenario(scenario, dv, result)
+            # 生成分段操作建議
+            # 修正：改傳 action_code（與上方三層引擎裁決同源），避免 scenario
+            # 代碼撞號（三層引擎 'A'=A級主攻，舊字典 'A'=多頭過熱，意思相反）。
+            _action_code = dm.get('action_code', '')
+            short_term = QuickAnalyzer._get_short_term_from_scenario(scenario, dv, result, _action_code)
+            mid_term = QuickAnalyzer._get_mid_term_from_scenario(scenario, dv, result, _action_code)
             long_term = QuickAnalyzer._get_long_term_recommendation(result, final_score)
             
             # 構建基本建議結果
@@ -3499,6 +3511,13 @@ class QuickAnalyzer:
                 else:
                     recommendation_result["warning_message"] = f"🛑 {veto_reason}"
             
+            # 資料異常：漲跌幅超過漲跌停 → 最高優先警示（整份分析可能不可信）
+            if result.get('price_anomaly'):
+                _pa = (f"🛑 資料異常：漲跌幅 {result.get('price_change_pct', 0):+.1f}% 超過±10%漲跌停，"
+                       f"即時價與昨收可能未對齊，本檔分析請勿採信")
+                _ew = recommendation_result.get("warning_message", "")
+                recommendation_result["warning_message"] = f"{_pa} | {_ew}" if _ew else _pa
+
             # A2 改動4：強勢股的過熱/形態風險提示（不壓分，純資訊）併入警示
             if risk_notes:
                 existing_warning = recommendation_result.get("warning_message", "")
@@ -3547,12 +3566,37 @@ class QuickAnalyzer:
             return QuickAnalyzer._generate_recommendation(result)
     
     @staticmethod
-    def _get_short_term_from_scenario(scenario, decision_vars, result):
-        """根據場景生成短線建議"""
+    def _get_short_term_from_scenario(scenario, decision_vars, result, action_code=''):
+        """根據三層引擎的 action_code 生成短線建議（與上方裁決同源）。
+
+        修正：原本依 scenario 查舊字典，但三層引擎的 scenario 代碼（'A'=A級主攻）
+        與舊字典（'A'=多頭過熱）撞號，導致「A級主攻」卻顯示「暫停加碼」的自相矛盾。
+        改以 action_code 為主。
+        """
         bias_20 = decision_vars.get('bias_20', 0)
         rsi = decision_vars.get('rsi', 50)
         rr_ratio = decision_vars.get('rr_ratio', 0)
-        
+
+        # 與三層引擎裁決同源（action_code 明確、不撞號）
+        _ac_map = {
+            'STRONG_BUY': {'action': '積極進場（A級主攻）',
+                           'reason': '方向+位置+時機三者到位，順勢操作'},
+            'BUY':        {'action': '可進場、分批佈局（B級追蹤）',
+                           'reason': '訊號成形，等量能/拉回確認可加碼'},
+            'HOLD':       {'action': '持股續抱、暫不加碼',
+                           'reason': '已有部位者續抱，空手者等更好位置'},
+            'WAIT':       {'action': '等待拉回再進場',
+                           'reason': '方向偏多但位置偏高，等乖離收斂'},
+            'SKIP':       {'action': '不參與',
+                           'reason': '趨勢/方向不利，避開'},
+            'SELL':       {'action': '賣出 / 出場',
+                           'reason': '觸發賣出訊號'},
+            'TAKE_PROFIT': {'action': '分批停利',
+                            'reason': '高檔過熱，獲利了結'},
+        }
+        if action_code in _ac_map:
+            return _ac_map[action_code]
+
         # 場景 E 或 F 特殊處理：加入區間詳細資訊
         if scenario in ['E', 'F']:
             # 嘗試從支撐壓力位取得箱頂箱底
@@ -3611,21 +3655,26 @@ class QuickAnalyzer:
         return scenario_short_term.get(scenario, {'action': '觀望', 'reason': '無明確訊號'})
     
     @staticmethod
-    def _get_mid_term_from_scenario(scenario, decision_vars, result):
-        """根據場景生成中線建議"""
+    def _get_mid_term_from_scenario(scenario, decision_vars, result, action_code=''):
+        """根據三層引擎 action_code 生成中線建議（與上方裁決同源）。"""
         trend = decision_vars.get('trend_status', 'Range')
-        bias = decision_vars.get('position_bias', 'Neutral')
-        
-        if scenario in ['A', 'B', 'B2']:
-            if trend == 'Bull':
-                return {'action': '持有', 'reason': '多頭趨勢持續，持股續抱'}
-        elif scenario in ['C']:
-            return {'action': '觀望反彈', 'reason': '空頭中但超賣，可能有反彈'}
-        elif scenario == 'D':
-            return {'action': '減碼', 'reason': '空頭趨勢，逢高減碼'}
-        elif scenario == 'E':
+
+        _ac_map = {
+            'STRONG_BUY': {'action': '偏多持有', 'reason': '多頭趨勢成立，持股續抱'},
+            'BUY':        {'action': '偏多持有', 'reason': '趨勢向上，順勢操作'},
+            'HOLD':       {'action': '中線持有 / 觀望', 'reason': '維持部位，留意趨勢變化'},
+            'WAIT':       {'action': '中線偏多、等位置', 'reason': '趨勢偏多但等更好進場點'},
+            'SKIP':       {'action': '避開', 'reason': '趨勢偏弱，不宜中線佈局'},
+            'SELL':       {'action': '減碼 / 出場', 'reason': '趨勢轉弱或觸發賣訊'},
+            'TAKE_PROFIT': {'action': '逢高減碼', 'reason': '高檔過熱，分批了結'},
+        }
+        if action_code in _ac_map:
+            return _ac_map[action_code]
+
+        # 舊場景碼相容（三層引擎不產生 E/F，保留以防其他呼叫路徑）
+        if scenario == 'E':
             return {'action': '區間操作', 'reason': '盤整格局，高拋低吸'}
-        
+
         return {'action': '中線觀望', 'reason': '等待趨勢明確'}
     
     @staticmethod
