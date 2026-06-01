@@ -973,6 +973,48 @@ class DataSourceManager:
     # 結構：{ "{SYMBOL}|{MARKET}": (date_str, DataFrame_long) }
     _batch_hist_cache = {}
 
+    # ── B2 #2：即時報價併發預抓快取（短 TTL，掃描期間有效）──
+    _realtime_cache = {}          # { "{SYMBOL}|{MARKET}": (timestamp, dict) }
+    _realtime_cache_ttl = 90      # 秒（即時報價需新鮮，僅供一次掃描內共用）
+
+    @classmethod
+    def prefetch_realtime(cls, symbols, market="台股", max_workers=10):
+        """
+        B2 #2：併發預抓多檔即時報價（逐檔 Yahoo 爬蟲不受 yfinance 限速器序列化，
+        可安全併發）。結果存入 _realtime_cache，get_realtime_price 命中即回。
+        Returns: int 成功快取的檔數
+        """
+        import time as _t
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        if not symbols or (market == "台股" and cls.is_fubon_available()):
+            return 0
+        now = _t.time()
+        want = [s for s in symbols
+                if not (cls._realtime_cache.get(f"{s}|{market}")
+                        and now - cls._realtime_cache[f"{s}|{market}"][0] < cls._realtime_cache_ttl)]
+        if not want:
+            return 0
+
+        def _fetch(sym):
+            try:
+                return sym, RealtimePriceFetcher.get_realtime_price(sym, market)
+            except Exception:
+                return sym, None
+
+        cached = 0
+        try:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(want))) as ex:
+                for fut in as_completed([ex.submit(_fetch, s) for s in want]):
+                    sym, data = fut.result()
+                    if data and data.get('price', 0):
+                        cls._realtime_cache[f"{sym}|{market}"] = (_t.time(), data)
+                        cached += 1
+        except Exception as e:
+            print(f"[DataSourceManager] 即時報價併發預抓略過: {e}")
+        if cached:
+            print(f"[DataSourceManager] 即時報價併發預抓：{cached}/{len(want)} 檔")
+        return cached
+
     @classmethod
     def prefetch_histories(cls, symbols, market="台股", period="2y"):
         """
@@ -1237,8 +1279,14 @@ class DataSourceManager:
         
         優先使用富邦 API，失敗時 fallback 到其他來源
         """
+        import time as _t
         result = None
-        
+
+        # B2 #2：命中併發預抓快取（短 TTL）即回
+        _rc = cls._realtime_cache.get(f"{symbol}|{market}")
+        if _rc and _t.time() - _rc[0] < cls._realtime_cache_ttl:
+            return _rc[1]
+
         # 台股優先使用富邦 API
         if market == "台股" and cls.is_fubon_available():
             result = FubonMarketData.get_quote(symbol)

@@ -6399,6 +6399,7 @@ class StockAnalysisApp(tk.Tk):
                     _tw = [s[0] for s in stocks if (s[2] if len(s) > 2 else '台股') == '台股']
                     if _tw:
                         DataSourceManager.prefetch_histories(_tw, '台股')
+                        DataSourceManager.prefetch_realtime(_tw, '台股')
                 except Exception as _pe:
                     print(f'[B2] 批次預抓略過: {_pe}')
 
@@ -6569,6 +6570,7 @@ class StockAnalysisApp(tk.Tk):
                     _tw = [s[0] for s in stocks if (s[2] if len(s) > 2 else '台股') == '台股']
                     if _tw:
                         DataSourceManager.prefetch_histories(_tw, '台股')
+                        DataSourceManager.prefetch_realtime(_tw, '台股')
                 except Exception as _pe:
                     print(f'[B2] 批次預抓略過: {_pe}')
 
