@@ -6328,8 +6328,16 @@ class StockAnalysisApp(tk.Tk):
             # v4.5.13: 進入背景線程，禁用自動垃圾回收
             ThreadSafeGC.enter_background_thread()
             success_count = 0
-            
+
             try:
+                # B2 #1：刷新前批次預抓歷史，逐檔 get_history 命中快取
+                try:
+                    _tw = [s[0] for s in stocks if (s[2] if len(s) > 2 else '台股') == '台股']
+                    if _tw:
+                        DataSourceManager.prefetch_histories(_tw, '台股')
+                except Exception as _pe:
+                    print(f'[B2] 批次預抓略過: {_pe}')
+
                 for idx, stock_data in enumerate(stocks, 1):
                     # v4.5.17：安全取出欄位（支援新資料格式）
                     symbol = stock_data[0]
@@ -6490,7 +6498,16 @@ class StockAnalysisApp(tk.Tk):
             ThreadSafeGC.enter_background_thread()
             try:
                 from analyzers import DecisionMatrix
-                
+
+                # B2 #1：掃描前批次預抓歷史（單次 yf.download），
+                # 後續逐檔 analyze_stock 的 get_history 直接命中快取。
+                try:
+                    _tw = [s[0] for s in stocks if (s[2] if len(s) > 2 else '台股') == '台股']
+                    if _tw:
+                        DataSourceManager.prefetch_histories(_tw, '台股')
+                except Exception as _pe:
+                    print(f'[B2] 批次預抓略過: {_pe}')
+
                 for stock in stocks:
                     # v4.5.17：支援新的資料格式（12個欄位）
                     symbol = stock[0]

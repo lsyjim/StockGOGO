@@ -968,7 +968,87 @@ class DataSourceManager:
     _fubon_failed_count = 0
     _fubon_disabled_until = 0
     _fubon_disable_duration = 300  # 富邦失敗後暫停 5 分鐘
-    
+
+    # ── B2 #1：批次 history 快取（掃描題材前一次抓完，逐檔 get_history 命中快取）──
+    # 結構：{ "{SYMBOL}|{MARKET}": (date_str, DataFrame_long) }
+    _batch_hist_cache = {}
+
+    @classmethod
+    def prefetch_histories(cls, symbols, market="台股", period="2y"):
+        """
+        B2 #1：批次預抓多檔歷史數據（單次 yf.download，threads 併發）。
+        把整個題材的 history 一次抓完並灌進 _batch_hist_cache，之後逐檔
+        get_history 直接命中快取、切片回傳，省下逐檔 yfinance 呼叫與限速 sleep。
+        Returns: int 成功快取的檔數
+        """
+        import datetime as _dt
+        if not symbols:
+            return 0
+        if market == "台股" and cls.is_fubon_available():
+            return 0  # 富邦可用時維持原逐檔路徑
+
+        today = _dt.date.today().isoformat()
+        want = [s for s in symbols
+                if not (cls._batch_hist_cache.get(f"{s}|{market}")
+                        and cls._batch_hist_cache[f"{s}|{market}"][0] == today)]
+        if not want:
+            return 0
+
+        suffix = ".TW" if market == "台股" else ""
+        tickers = [f"{s}{suffix}" for s in want]
+        try:
+            data = yf.download(tickers, period=period, group_by='ticker',
+                               threads=True, progress=False, auto_adjust=False)
+        except Exception as e:
+            print(f"[DataSourceManager] 批次預抓失敗，回退逐檔: {e}")
+            return 0
+
+        cached = 0
+        for s, tk in zip(want, tickers):
+            try:
+                df = data if len(tickers) == 1 else (
+                    data[tk] if tk in data.columns.get_level_values(0) else None)
+                if df is None:
+                    continue
+                df = df.dropna(how='all')
+                if df is None or df.empty or 'Close' not in df.columns:
+                    continue
+                cls._batch_hist_cache[f"{s}|{market}"] = (today, df.copy())
+                cached += 1
+            except Exception:
+                continue
+        if cached:
+            print(f"[DataSourceManager] 批次預抓完成：{cached}/{len(want)} 檔")
+        return cached
+
+    @classmethod
+    def _serve_from_batch(cls, symbol, market, start_date, end_date, period):
+        """從批次快取切片回傳；無快取/過期則回 None。"""
+        import datetime as _dt
+        c = cls._batch_hist_cache.get(f"{symbol}|{market}")
+        if not c or c[0] != _dt.date.today().isoformat():
+            return None
+        df = c[1]
+        try:
+            if period:
+                days_map = {'5d': 7, '1mo': 31, '3mo': 95, '6mo': 190,
+                            '1y': 370, '2y': 740}
+                n_days = days_map.get(period)
+                if n_days is None:
+                    return df.copy()
+                cutoff = df.index[-1] - _dt.timedelta(days=n_days)
+                return df[df.index >= cutoff].copy()
+            out = df
+            idx_naive = out.index.tz_localize(None) if out.index.tz is not None else out.index
+            if isinstance(start_date, _dt.datetime):
+                out = out[idx_naive >= start_date]
+                idx_naive = out.index.tz_localize(None) if out.index.tz is not None else out.index
+            if isinstance(end_date, _dt.datetime):
+                out = out[idx_naive <= end_date]
+            return out.copy()
+        except Exception:
+            return None
+
     @classmethod
     def initialize(cls, fubon_sdk=None):
         """
@@ -1028,7 +1108,12 @@ class DataSourceManager:
         """
         result = None
         source_used = None
-        
+
+        # B2 #1：優先命中批次預抓快取（掃描題材時最大加速來源）
+        _batch = cls._serve_from_batch(symbol, market, start_date, end_date, period)
+        if _batch is not None and not _batch.empty:
+            return _batch
+
         # 台股優先使用富邦 API
         if market == "台股" and cls.is_fubon_available():
             result = cls._get_history_fubon(symbol, start_date, end_date, period)
