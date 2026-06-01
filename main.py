@@ -5386,18 +5386,121 @@ class StockAnalysisApp(tk.Tk):
     
     def _create_widgets(self):
         """建立UI元件"""
+        # 頂部行情/狀態列（純呈現層）
+        self._build_status_bar()
+
         main_container = ttk.Frame(self)
-        main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
+        main_container.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+
         left_panel = ttk.Frame(main_container, width=380)
-        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 5))
+        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
         left_panel.pack_propagate(False)
-        
+
         right_panel = ttk.Frame(main_container)
         right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
+
         self._create_left_panel(left_panel)
         self._create_right_panel(right_panel)
+
+    # ── 頂部行情/狀態列 ──────────────────────────────────────────────
+    def _build_status_bar(self):
+        """頂部行情/狀態列：加權、櫃買（紅綠）、盤別、即時時鐘、最後更新。
+        純呈現層；指數資料用既有 yf 路徑延遲填入，失敗則維持佔位。"""
+        bar = ttk.Frame(self)
+        bar.pack(fill=tk.X, side=tk.TOP, padx=8, pady=6)
+
+        _th = getattr(self, '_theme', None)
+        f_label = _th.ui_font(_th.SIZE_SMALL) if _th else ("TkDefaultFont", 11)
+        f_num   = _th.num_font(_th.SIZE_SMALL, bold=True) if _th else ("TkFixedFont", 11, "bold")
+
+        def _cell(parent, caption):
+            box = ttk.Frame(parent); box.pack(side=tk.LEFT, padx=(0, 16))
+            ttk.Label(box, text=caption, font=f_label,
+                      foreground=(_th.TEXT_3 if _th else "gray")).pack(side=tk.LEFT, padx=(0, 4))
+            val = ttk.Label(box, text="—", font=f_num,
+                            foreground=(_th.TEXT if _th else "black"))
+            val.pack(side=tk.LEFT)
+            return val
+
+        self._sb_taiex = _cell(bar, "加權")
+        self._sb_tpex  = _cell(bar, "櫃買")
+
+        # 右側：最後更新、盤別、即時時鐘
+        self._sb_clock = ttk.Label(bar, text="--:--:--", font=f_num,
+                                   foreground=(_th.TEXT if _th else "black"))
+        self._sb_clock.pack(side=tk.RIGHT, padx=(8, 0))
+        self._sb_session = ttk.Label(bar, text="", font=f_label,
+                                    foreground=(_th.ACCENT if _th else "orange"))
+        self._sb_session.pack(side=tk.RIGHT, padx=(8, 0))
+        self._sb_update = ttk.Label(bar, text="更新 --:--", font=f_label,
+                                   foreground=(_th.TEXT_2 if _th else "gray"))
+        self._sb_update.pack(side=tk.RIGHT, padx=(8, 0))
+
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, side=tk.TOP)
+
+        self._tick_status_clock()
+        self.after(1500, self._refresh_status_indices)
+
+    def _tick_status_clock(self):
+        """每秒更新時鐘與盤別（純時間判斷，不抓資料）。"""
+        import datetime as _dt
+        now = _dt.datetime.now()
+        try:
+            self._sb_clock.config(text=now.strftime("%H:%M:%S"))
+            # 台股盤別（一般交易時段 09:00–13:30）
+            hm = now.hour * 60 + now.minute
+            wd = now.weekday()  # 5,6 = 週末
+            if wd >= 5:
+                sess = "休市"
+            elif hm < 9 * 60:
+                sess = "盤前"
+            elif hm <= 13 * 60 + 30:
+                sess = "盤中"
+            else:
+                sess = "收盤"
+            self._sb_session.config(text=sess)
+        except Exception:
+            return
+        self.after(1000, self._tick_status_clock)
+
+    def _refresh_status_indices(self):
+        """延遲填入加權/櫃買指數漲跌（用既有 yf 路徑，純呈現、失敗即略過）。"""
+        _th = getattr(self, '_theme', None)
+
+        def _fmt(label_widget, pct):
+            if pct is None:
+                return
+            try:
+                color = _th.trend_color(pct) if _th else ("red" if pct > 0 else "green" if pct < 0 else "gray")
+                txt = (f"{pct:+.2f}%")
+                label_widget.config(text=txt, foreground=color)
+            except Exception:
+                pass
+
+        def _idx_pct(symbol):
+            try:
+                import yfinance as yf
+                h = yf.Ticker(symbol).history(period="5d")
+                if h is None or len(h) < 2:
+                    return None
+                c = h['Close'].dropna()
+                return (c.iloc[-1] / c.iloc[-2] - 1) * 100
+            except Exception:
+                return None
+
+        import threading, datetime as _dt
+        def _work():
+            taiex = _idx_pct("^TWII")
+            tpex  = _idx_pct("^TWOII")
+            def _apply():
+                _fmt(self._sb_taiex, taiex)
+                _fmt(self._sb_tpex, tpex)
+                self._sb_update.config(text=f"更新 {_dt.datetime.now().strftime('%H:%M')}")
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
+        threading.Thread(target=_work, daemon=True).start()
     
     def _create_left_panel(self, parent):
         """建立左側控制面板 (v4.5.18 標準金融字型版)"""
