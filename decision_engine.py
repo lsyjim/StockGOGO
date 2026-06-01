@@ -301,7 +301,35 @@ class ThreeLayerEngine:
                 rs_mod = -8
                 details.append(f'明顯落後大盤 RS={rs_score:.0f}（{vs_market:.1f}%）')
 
-        score = max(0, min(100, int(base_score + slope_mod + adx_mod + rs_mod)))
+        # ── 修正 4：量能（±8）— 趨勢健康度（一級因子）──────────────
+        # 量能是短線最具預測力的變數之一。帶量上攻=趨勢有量支撐(+)，
+        # 價漲量縮=無量虛漲警訊(-)，帶量下殺=趨勢轉弱(-)。
+        # 量能資料缺失時 vol_mod=0（不懲罰缺資料，比照 RR 處理原則）。
+        # 資料來源：result['volume_price']（technical 不含量能欄位）。
+        # 方向用 current vs ma5（近5日短期方向），量能用 vol_ratio（今日量/20日均量）。
+        vol_mod = 0
+        vp = result.get('volume_price', {}) or {}
+        if vp.get('available'):
+            vol_ratio = vp.get('vol_ratio', 1.0) or 1.0
+            ma5_v     = tech.get('ma5', current) or current
+            if isinstance(ma5_v, str):
+                ma5_v = current
+            short_up   = (current > ma5_v) if (current and ma5_v) else False
+            short_down = (current < ma5_v) if (current and ma5_v) else False
+            if short_up:
+                if vol_ratio >= 1.2:
+                    vol_mod = 8
+                    details.append(f'量能放大配合上攻（量比{vol_ratio:.1f}）+8')
+                elif vol_ratio < 0.8:
+                    vol_mod = -8
+                    details.append(f'價漲量縮背離，無量虛漲（量比{vol_ratio:.1f}）−8')
+                else:
+                    details.append(f'量能持平（量比{vol_ratio:.1f}）')
+            elif short_down and vol_ratio >= 1.5:
+                vol_mod = -6
+                details.append(f'帶量下殺，趨勢轉弱（量比{vol_ratio:.1f}）−6')
+
+        score = max(0, min(100, int(base_score + slope_mod + adx_mod + rs_mod + vol_mod)))
 
         if score >= 70:
             label = '強多頭'
@@ -322,6 +350,7 @@ class ThreeLayerEngine:
             'bear_count': bear_count,
             'slope_mod':  slope_mod,
             'rs_mod':     rs_mod,
+            'vol_mod':    vol_mod,
         }
 
     # ─── Layer 2: 位置分 ─────────────────────────────────────────────────────
@@ -787,13 +816,23 @@ class ThreeLayerEngine:
             _bias_z_ov = _bias_ov / (2.0 * _sigma_ov)
 
             if _rsi_ov > 85 and _bias_z_ov > 1.5:
-                # A2 改動2：強勢領漲股（RS 領先+多頭排列）不因超買強制降級，
-                # 只給風險提示；非強勢股維持原本 A→B 降級。
+                # A2 改動2 + 修正2：強勢領漲股的超買處理分兩段（與 L2 動能分支
+                # 對「極度延伸 bias_z>2.5」的態度對齊）：
+                #   1.5σ < bias_z ≤ 2.5σ：動能股只警示、不降級（維持 A2 寬鬆待遇）。
+                #   bias_z > 2.5σ（極度延伸）：即使動能股也強制 A→B，防噴出末端追高。
+                # 非動能股：維持原本 A→B 降級。
                 if ThreeLayerEngine._is_momentum(result):
-                    triggers.append(
-                        f'⚠️ 過熱提示（強勢股不降級）：RSI={_rsi_ov:.0f} 且 '
-                        f'乖離{_bias_ov:+.1f}%（{_bias_z_ov:.1f}σ），續抱但留意追高風險'
-                    )
+                    if _bias_z_ov > 2.5:
+                        grade = 'B'
+                        triggers.append(
+                            f'⚠️ 極度延伸硬上限：RSI={_rsi_ov:.0f} 且 乖離{_bias_ov:+.1f}%'
+                            f'（{_bias_z_ov:.1f}σ）→ A→B 降級為追蹤，不宜立即追進'
+                        )
+                    else:
+                        triggers.append(
+                            f'⚠️ 過熱提示（強勢股不降級）：RSI={_rsi_ov:.0f} 且 '
+                            f'乖離{_bias_ov:+.1f}%（{_bias_z_ov:.1f}σ），續抱但留意追高風險'
+                        )
                 else:
                     grade = 'B'
                     triggers.append(

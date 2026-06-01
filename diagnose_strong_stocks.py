@@ -24,15 +24,20 @@ from decision_engine import ThreeLayerEngine
 
 # ── Monkey-patch：在三層引擎各層加上 log ──────────────────────────────
 
-_orig_direction = ThreeLayerEngine.score_direction.__func__
-_orig_position  = ThreeLayerEngine.score_position.__func__
-_orig_timing    = ThreeLayerEngine.score_timing.__func__
+# staticmethod 在 Py3 取出即為函式（無 __func__），相容處理
+_orig_direction = getattr(ThreeLayerEngine.score_direction, '__func__', ThreeLayerEngine.score_direction)
+_orig_position  = getattr(ThreeLayerEngine.score_position,  '__func__', ThreeLayerEngine.score_position)
+_orig_timing    = getattr(ThreeLayerEngine.score_timing,    '__func__', ThreeLayerEngine.score_timing)
 
 def _patched_direction(result):
     out = _orig_direction(result)
     rs = result.get('relative_strength', {})
+    vp = result.get('volume_price', {}) or {}
+    vr = vp.get('vol_ratio', '-') if vp.get('available') else '-'
+    vr_s = f"{vr:.2f}" if isinstance(vr, (int, float)) else str(vr)
     print(f"  [L1-方向] score={out['score']:3d}  bull={out['bull_count']}/4  "
           f"slope_mod={out.get('slope_mod',0):+d}  rs_mod={out.get('rs_mod',0):+d}  "
+          f"vol_mod={out.get('vol_mod',0):+d}  量比={vr_s}  "
           f"RS={rs.get('rs_score','-'):.1f}  label={out['label']}")
     return out
 
@@ -40,7 +45,8 @@ def _patched_position(result):
     out = _orig_position(result)
     print(f"  [L2-位置] score={out['score']:3d}  bias_20={out.get('bias_20',0):+.1f}%  "
           f"bias_z={out.get('bias_z',0):+.2f}σ  rsi={out.get('rsi',0):.0f}  "
-          f"chip_relax={out.get('chip_relax',0):+d}  label={out['label']}")
+          f"is_momentum={out.get('is_momentum','-')}  chip_relax={out.get('chip_relax',0):+d}  "
+          f"label={out['label']}")
     return out
 
 def _patched_timing(result):
@@ -109,11 +115,16 @@ def diagnose(symbols):
             else:
                 stuck = '通過三層'
 
+            vp_obj = result.get('volume_price', {}) or {}
+            vr = vp_obj.get('vol_ratio') if vp_obj.get('available') else None
             summary.append({
                 'sym':        sym,
                 'stuck':      stuck,
                 'dir':        d_score,
                 'pos':        p_score,
+                'vol_mod':    direction.get('vol_mod', 0),
+                'vol_ratio':  f"{vr:.2f}" if isinstance(vr, (int, float)) else '-',
+                'momentum':   position.get('is_momentum', '-') if position else '-',
                 'bias_z':     position.get('bias_z', 'N/A') if position else 'N/A',
                 'grade':      grade,
                 'action':     action_code,
@@ -129,10 +140,12 @@ def diagnose(symbols):
     print(f"\n\n{'='*80}")
     print(f"  診斷摘要")
     print(f"{'='*80}")
-    print(f"  {'代碼':6s}  {'卡點':18s}  {'L1':4s}  {'L2':4s}  {'bias_z':8s}  {'L3':4s}  {'action':12s}")
-    print(f"  {'-'*6}  {'-'*18}  {'-'*4}  {'-'*4}  {'-'*8}  {'-'*4}  {'-'*12}")
+    print(f"  {'代碼':6s} {'L1':4s} {'vol':4s} {'量比':6s} {'L2':4s} {'mom':5s} {'bias_z':7s} {'L3':3s} {'action':11s} {'overall'}")
+    print(f"  {'-'*6} {'-'*4} {'-'*4} {'-'*6} {'-'*4} {'-'*5} {'-'*7} {'-'*3} {'-'*11} {'-'*22}")
     for r in summary:
-        print(f"  {r['sym']:6s}  {r['stuck']:18s}  {r['dir']:4}  {r['pos']:4}  {str(r['bias_z']):8s}  {r['grade']:4s}  {r['action']:12s}")
+        print(f"  {r['sym']:6s} {r['dir']:4} {r['vol_mod']:+4d} {r['vol_ratio']:6s} "
+              f"{r['pos']:4} {str(r['momentum']):5s} {str(r['bias_z']):7s} {r['grade']:3s} "
+              f"{r['action']:11s} {r['overall']}")
     print()
 
 
