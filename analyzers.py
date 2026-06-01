@@ -3,36 +3,16 @@ analyzers.py - Analysis Tools Module
 """
 
 import datetime
-import sqlite3
-import json
-import threading
-import time
-import hashlib
 import warnings
-import sys
-import os
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 
 import yfinance as yf
-import mplfinance as mpf
 import pandas as pd
 import numpy as np
-from scipy.stats import linregress, percentileofscore
-import twstock
-
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
-from matplotlib.figure import Figure
-
-from io import StringIO
-import requests
-from bs4 import BeautifulSoup
+from scipy.stats import linregress
 
 from config import QuantConfig
-from data_fetcher import RealtimePriceFetcher
 from decision_engine import ThreeLayerEngine   # v2: 三層決策引擎
 
 class DecisionMatrix:
@@ -4836,7 +4816,7 @@ PatternAnalyzer v2.0 - 嚴格形態識別分析器
 
 import pandas as pd
 import numpy as np
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, List
 from dataclasses import dataclass
 from enum import Enum
 

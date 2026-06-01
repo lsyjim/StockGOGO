@@ -182,16 +182,12 @@ v4.0 重大改進清單：
 10. 相關性矩陣：自選股組合相關性分析
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
+from tkinter import ttk, messagebox
 import datetime
-import sqlite3
-import json
 import threading
 import time
-import hashlib
 import warnings
 import gc
-import atexit
 
 # 抑制 yfinance 的警告訊息
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -246,7 +242,7 @@ import yfinance as yf
 import mplfinance as mpf
 import pandas as pd
 import numpy as np
-from scipy.stats import linregress, percentileofscore
+from scipy.stats import percentileofscore
 import twstock
 
 # ============================================================================
@@ -513,9 +509,7 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.figure import Figure
 
-from io import StringIO
 import requests
-from bs4 import BeautifulSoup
 
 # 設定中文字體
 plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft JhengHei", "PingFang SC", "Heiti TC"]
