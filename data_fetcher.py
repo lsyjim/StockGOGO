@@ -178,10 +178,15 @@ class RealtimePriceFetcher:
             except:
                 pass
             
+            # 同源昨收：用爬蟲自身的現價與漲跌推算（與現價同來源同時刻，
+            # 不會與 hist 昨收錯位）。change 解析失敗(=0)時 prev_close=price，
+            # 顯示 0% 雖不精確但安全，不會出現跨日的假漲幅。
+            prev_close = round(price - change, 2) if change else price
             return {
                 'price': price,
                 'change': change,
                 'change_pct': change_pct,
+                'prev_close': prev_close,
                 'name': name,
                 'source': 'yahoo_scrape',
                 'time': datetime.datetime.now().strftime('%H:%M:%S'),
@@ -232,6 +237,7 @@ class RealtimePriceFetcher:
                 'price': round(current_price, 2),
                 'change': round(change, 2),
                 'change_pct': round(change_pct, 2),
+                'prev_close': round(prev_close, 2),  # 同源昨收（同一 2d fetch）
                 'name': name,
                 'source': 'yfinance',
                 'time': datetime.datetime.now().strftime('%H:%M:%S'),

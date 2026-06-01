@@ -1484,8 +1484,9 @@ class QuickAnalyzer:
             realtime_price = None
             realtime_change = None
             realtime_change_pct = None
+            realtime_prev_close = None
             price_source = 'unknown'
-            
+
             if not is_historical and market == "台股":
                 # 優先使用 DataSourceManager（會嘗試富邦 API）
                 realtime_data = DataSourceManager.get_realtime_price(symbol, market)
@@ -1493,6 +1494,7 @@ class QuickAnalyzer:
                     realtime_price = realtime_data['price']
                     realtime_change = realtime_data.get('change', 0)
                     realtime_change_pct = realtime_data.get('change_pct', 0)
+                    realtime_prev_close = realtime_data.get('prev_close')  # 同源昨收
                     price_source = realtime_data.get('source', 'unknown')
             
             # ============================================================
@@ -1548,10 +1550,18 @@ class QuickAnalyzer:
             
             if realtime_price is not None:
                 current_price = realtime_price
-                # 使用 hist 的昨收價重新計算漲跌幅（不依賴爬蟲的值）
-                prev_close = prev_close_hist
-                price_change = round(current_price - prev_close, 2)
-                price_change_pct = round((current_price / prev_close - 1) * 100, 2) if prev_close > 0 else 0
+                # 修正錯位 bug：優先用即時報價「同源」的昨收（current 與 prev 來自
+                # 同一來源同一時刻，數學上不可能超過漲跌停）。原本改用 hist 的
+                # iloc[-2]，若 hist 最後一根不是今天就會差兩天，算出 +11.6% 假漲幅。
+                if realtime_prev_close and realtime_prev_close > 0:
+                    prev_close = realtime_prev_close
+                    price_change = round(current_price - prev_close, 2)
+                    price_change_pct = round((current_price / prev_close - 1) * 100, 2)
+                else:
+                    # 爬蟲未提供昨收 → 退回 hist 昨收（可能錯位，由 price_anomaly 防護）
+                    prev_close = prev_close_hist
+                    price_change = round(current_price - prev_close, 2)
+                    price_change_pct = round((current_price / prev_close - 1) * 100, 2) if prev_close > 0 else 0
             else:
                 current_price = round(hist['Close'].iloc[-1], 2)
                 prev_close = prev_close_hist
