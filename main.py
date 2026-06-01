@@ -5305,10 +5305,20 @@ class StockAnalysisApp(tk.Tk):
     
     def __init__(self):
         super().__init__()
-        
-        self.title("📊 量化投資分析系統 v4.3")
+
+        self.title("量化投資分析系統 v4.3")
         self.geometry("1550x1000")
-        
+
+        # === UI 改造：套用專業投資終端外觀（純呈現層）===
+        try:
+            import theme
+            self._theme = theme
+            theme.apply_theme(self)
+            theme.apply_matplotlib_dark()
+        except Exception as _te:
+            print(f"[UI] 主題套用略過: {_te}")
+            self._theme = None
+
         self.db = WatchlistDatabase()
         
         self.df = None
@@ -5474,17 +5484,20 @@ class StockAnalysisApp(tk.Tk):
         
         self.watchlist_tree.column("#0", width=130, minwidth=100)
         self.watchlist_tree.column("name", width=70, minwidth=50)
-        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="center")
+        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="e")   # 數字右對齊
         self.watchlist_tree.column("signal", width=90, minwidth=70, anchor="center")
         
-        # 設定顏色 (高盛風格)
-        self.watchlist_tree.tag_configure("group", background="#E0E0E0", foreground="#2C3E50", font=("Arial", 10, "bold"))
-        self.watchlist_tree.tag_configure("buy", foreground="#C0392B")   # 紅 (買)
-        self.watchlist_tree.tag_configure("hold", foreground="#F39C12")  # 橘 (持有)
-        self.watchlist_tree.tag_configure("sell", foreground="#27AE60")  # 綠 (賣)
-        self.watchlist_tree.tag_configure("wait", foreground="#7F8C8D")  # 灰 (觀望)
-        self.watchlist_tree.tag_configure("hot", background="#FFEBEE")   # 過熱背景
-        self.watchlist_tree.tag_configure("cold", background="#E8F5E9")  # 超跌背景
+        # 設定顏色：建立時即套用主題（深色終端 + 紅漲綠跌 token）
+        if getattr(self, '_theme', None) is not None:
+            self._theme.style_treeview(self.watchlist_tree)
+        else:
+            self.watchlist_tree.tag_configure("group", background="#E0E0E0", foreground="#2C3E50", font=("Arial", 10, "bold"))
+            self.watchlist_tree.tag_configure("buy", foreground="#C0392B")
+            self.watchlist_tree.tag_configure("hold", foreground="#F39C12")
+            self.watchlist_tree.tag_configure("sell", foreground="#27AE60")
+            self.watchlist_tree.tag_configure("wait", foreground="#7F8C8D")
+            self.watchlist_tree.tag_configure("hot", background="#FFEBEE")
+            self.watchlist_tree.tag_configure("cold", background="#E8F5E9")
         
         # 滾動條
         v_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.watchlist_tree.yview)
@@ -5627,11 +5640,17 @@ class StockAnalysisApp(tk.Tk):
         self.sector_tree.column("category", width=55)
         self.sector_tree.column("leader", width=90)
         
-        # 顏色標籤
-        self.sector_tree.tag_configure("hot", foreground="#FF4444")
-        self.sector_tree.tag_configure("warm", foreground="#FF8800")
-        self.sector_tree.tag_configure("cool", foreground="#4488FF")
-        
+        # 顏色標籤（套用主題；hot/warm/cool 為動能強弱）
+        if getattr(self, '_theme', None) is not None:
+            self._theme.style_treeview(self.sector_tree)
+            self.sector_tree.tag_configure("hot",  foreground=self._theme.UP)
+            self.sector_tree.tag_configure("warm", foreground=self._theme.ACCENT)
+            self.sector_tree.tag_configure("cool", foreground=self._theme.TEXT_2)
+        else:
+            self.sector_tree.tag_configure("hot", foreground="#FF4444")
+            self.sector_tree.tag_configure("warm", foreground="#FF8800")
+            self.sector_tree.tag_configure("cool", foreground="#4488FF")
+
         self.sector_tree.pack(fill=tk.BOTH, expand=True)
         self.sector_tree.bind('<<TreeviewSelect>>', self._on_sector_select)
         
@@ -5649,12 +5668,16 @@ class StockAnalysisApp(tk.Tk):
         self.leader_tree.heading("change", text="Chg%")
         
         self.leader_tree.column("#0", width=110)
-        self.leader_tree.column("price", width=70)
-        self.leader_tree.column("change", width=60)
+        self.leader_tree.column("price", width=70, anchor="e")    # 數字右對齊
+        self.leader_tree.column("change", width=60, anchor="e")   # 數字右對齊
         
-        self.leader_tree.tag_configure("up", foreground="#FF4444")
-        self.leader_tree.tag_configure("down", foreground="#44FF44")
-        
+        # 套用主題（up/down 紅漲綠跌走 token）
+        if getattr(self, '_theme', None) is not None:
+            self._theme.style_treeview(self.leader_tree)
+        else:
+            self.leader_tree.tag_configure("up", foreground="#FF4444")
+            self.leader_tree.tag_configure("down", foreground="#44FF44")
+
         self.leader_tree.pack(fill=tk.BOTH, expand=True)
         self.leader_tree.bind('<Double-1>', self._on_leader_double_click)
         
@@ -6942,34 +6965,21 @@ class StockAnalysisApp(tk.Tk):
         FONT_FAMILY = "Consolas"
         FONT_SIZE = 9
         
-        try:
-            style = ttk.Style()
-            style.configure("Treeview", 
-                            background="#0a0a0a",      # 純黑背景
-                            foreground="#c0c0c0",      # 銀灰文字
-                            fieldbackground="#0a0a0a",
-                            font=(FONT_FAMILY, FONT_SIZE),
-                            rowheight=22)
-            style.configure("Treeview.Heading",
-                            font=(FONT_FAMILY, FONT_SIZE, "bold"))
-            style.map('Treeview', background=[('selected', '#1a3a5c')])
-        except Exception:
-            pass
-        
-        # 定義 Tag 顏色 (Bloomberg 終端機風格，統一字體大小)
-        self.watchlist_tree.tag_configure("group", background="#1a1a2e", foreground="#ffffff", 
-                                          font=(FONT_FAMILY, FONT_SIZE, "bold"))
-        self.watchlist_tree.tag_configure("buy", foreground="#ff4444", 
-                                          font=(FONT_FAMILY, FONT_SIZE))      # 紅色 (買)
-        self.watchlist_tree.tag_configure("hold", foreground="#ffaa00", 
-                                          font=(FONT_FAMILY, FONT_SIZE))      # 橙色 (持有)
-        self.watchlist_tree.tag_configure("sell", foreground="#44ff44", 
-                                          font=(FONT_FAMILY, FONT_SIZE))      # 綠色 (賣)
-        self.watchlist_tree.tag_configure("wait", foreground="#888888", 
-                                          font=(FONT_FAMILY, FONT_SIZE))      # 灰色 (觀望)
-        self.watchlist_tree.tag_configure("hot", background="#3a1a1a")        # 過熱暗紅底
-        self.watchlist_tree.tag_configure("cold", background="#1a3a1a")       # 超跌暗綠底
-        
+        # UI 改造：Treeview 樣式統一由 theme.style_treeview 管理（在建立時已套用），
+        # 不再於每次刷新重設 ttk.Style（避免覆蓋主題、且省去重複設定）。
+        # tag 顏色一律走 theme token。
+        if getattr(self, '_theme', None) is not None:
+            self._theme.style_treeview(self.watchlist_tree)
+        else:
+            # 後備：主題未載入時維持可讀的深色 tag
+            self.watchlist_tree.tag_configure("group", background="#1a1a2e", foreground="#ffffff")
+            self.watchlist_tree.tag_configure("buy", foreground="#ff4444")
+            self.watchlist_tree.tag_configure("hold", foreground="#ffaa00")
+            self.watchlist_tree.tag_configure("sell", foreground="#44ff44")
+            self.watchlist_tree.tag_configure("wait", foreground="#888888")
+            self.watchlist_tree.tag_configure("hot", background="#3a1a1a")
+            self.watchlist_tree.tag_configure("cold", background="#1a3a1a")
+
         # 判斷是否使用分組模式
         use_grouping = (order_by == 'industry')
         
