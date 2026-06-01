@@ -1319,6 +1319,29 @@ class QuickAnalyzer:
         return cls._db
 
     @staticmethod
+    def aligned_prev_close(df):
+        """
+        日期對齊的昨收價（主程式與分析報告共用，確保漲跌幅一致）。
+
+        即時報價的「現價」是今日盤中價；昨收應為「前一交易日的收盤」。
+        - 若 df 最後一根 K 棒的日期 >= 今天（df 已含今日盤中/收盤），昨收 = 倒數第二根。
+        - 否則（df 最後一根是前一交易日），昨收 = 最後一根。
+        這樣不論資料源是否已更新今日 K 棒，都能取到正確的昨收，
+        避免用 iloc[-2] 在「df 未含今日」時誤差一天。
+        """
+        import datetime as _dt
+        try:
+            if df is None or len(df) < 1:
+                return None
+            last_date = df.index[-1].date() if hasattr(df.index[-1], 'date') else None
+            today = _dt.date.today()
+            if last_date is not None and last_date >= today and len(df) > 1:
+                return round(float(df['Close'].iloc[-2]), 2)
+            return round(float(df['Close'].iloc[-1]), 2)
+        except Exception:
+            return round(float(df['Close'].iloc[-2]), 2) if len(df) > 1 else round(float(df['Close'].iloc[-1]), 2)
+
+    @staticmethod
     def _get_index_history_cached(index_symbol, period=None):
         """
         取得大盤指數歷史（含當日快取）。
@@ -1545,8 +1568,10 @@ class QuickAnalyzer:
             # ============================================================
             # 組裝結果（使用即時股價如果有的話）
             # ============================================================
-            # 先取得昨收價（從 hist）
-            prev_close_hist = round(hist['Close'].iloc[-2], 2) if len(hist) > 1 else round(hist['Close'].iloc[-1], 2)
+            # 先取得昨收價（日期對齊；與主程式 K 線視窗共用同一邏輯確保一致）
+            prev_close_hist = QuickAnalyzer.aligned_prev_close(hist)
+            if prev_close_hist is None:
+                prev_close_hist = round(hist['Close'].iloc[-1], 2)
             
             if realtime_price is not None:
                 current_price = realtime_price
@@ -5828,13 +5853,18 @@ class StockAnalysisApp(tk.Tk):
             if market == "台股":
                 realtime_data = RealtimePriceFetcher.get_realtime_price(symbol, market)
             
-            # 取得昨收價（從 yfinance）
-            prev_close = self.df['Close'].iloc[-2] if len(self.df) > 1 else self.df['Close'].iloc[-1]
-            
+            # 取得昨收價（日期對齊；與分析報告共用同一邏輯確保漲跌幅一致）
+            prev_close = QuickAnalyzer.aligned_prev_close(self.df)
+            if prev_close is None:
+                prev_close = self.df['Close'].iloc[-1]
+
             # 使用即時股價或 yfinance 數據
             if realtime_data and realtime_data.get('price'):
                 current_price = realtime_data['price']
-                # 重新計算漲跌幅（不依賴爬蟲的值，因為可能解析失敗）
+                # 即時報價若提供同源昨收則優先用（與分析報告一致）
+                _rt_prev = realtime_data.get('prev_close')
+                if _rt_prev and _rt_prev > 0:
+                    prev_close = _rt_prev
                 price_change = current_price - prev_close
                 price_change_pct = (price_change / prev_close * 100) if prev_close != 0 else 0
                 update_time = f"即時 {realtime_data.get('time', '')}"

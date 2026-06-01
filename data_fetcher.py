@@ -178,10 +178,10 @@ class RealtimePriceFetcher:
             except:
                 pass
             
-            # 同源昨收：用爬蟲自身的現價與漲跌推算（與現價同來源同時刻，
-            # 不會與 hist 昨收錯位）。change 解析失敗(=0)時 prev_close=price，
-            # 顯示 0% 雖不精確但安全，不會出現跨日的假漲幅。
-            prev_close = round(price - change, 2) if change else price
+            # 同源昨收：用爬蟲自身的現價與漲跌推算（與現價同來源同時刻）。
+            # change 解析失敗或平盤(=0)時回 None，讓呼叫端改用「日期對齊」的
+            # hist 昨收，避免錯誤地把現價當昨收（顯示 0%）。
+            prev_close = round(price - change, 2) if change else None
             return {
                 'price': price,
                 'change': change,
