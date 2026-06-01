@@ -1053,9 +1053,11 @@ class MarketRankingDialog:
             except Exception as e:
                 print(f"[MarketRankingDialog] 載入數據錯誤: {e}")
                 # v4.4.4 Fix: 錯誤時更新 UI 顯示
+                # 修正：先把訊息字串抽出，避免 lambda 延遲執行時 except 變數 e 已被刪除
+                _err_text = f"⚠️ 載入錯誤：{str(e)[:30]}"
                 if not self._closed:
                     self._safe_after(0, self._safe_ui_update(
-                        lambda: self.status_label.config(text=f"⚠️ 載入錯誤：{str(e)[:30]}")
+                        lambda: self.status_label.config(text=_err_text)
                     ))
             finally:
                 self.loading = False
@@ -5633,7 +5635,9 @@ class StockAnalysisApp(tk.Tk):
                     text=f"更新: {datetime.datetime.now().strftime('%H:%M:%S')}"
                 ))
             except Exception as e:
-                self.after(0, lambda: self.sector_status_label.config(text=f"錯誤: {str(e)[:15]}"))
+                # 修正：先抽出訊息字串，避免 lambda 延遲執行時 except 變數 e 已被刪除
+                _err_text = f"錯誤: {str(e)[:15]}"
+                self.after(0, lambda: self.sector_status_label.config(text=_err_text))
         
         import threading
         threading.Thread(target=load_sectors, daemon=True).start()
