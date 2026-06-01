@@ -3205,29 +3205,49 @@ class QuickAnalyzer:
         veto_applied = False
         veto_reason = ""
         score_cap = 100  # 評分上限（預設無限制）
-        
+        risk_notes = []  # A2 改動4：強勢股的過熱/形態風險改為提示，不壓分
+
         # 取得乖離率
         mr = result.get('mean_reversion', {})
         bias_20 = mr.get('bias_analysis', {}).get('bias_20', 0) if mr.get('available') else 0
-        
+
+        # A2 改動4：動能模式（RS 領先+多頭排列）由三層引擎判定，覆蓋層共用同一旗標。
+        # 強勢領漲股的「過熱/頭部」一律降為風險提示，不把 overall 蓋成觀望/暫緩。
+        _is_mom = bool(
+            ((decision_matrix.get('three_layer', {}) or {}).get('position') or {}).get('is_momentum', False)
+        ) if decision_matrix.get('available') else False
+
         # 否決權 1：RSI 極度過熱 (> 85)
         if rsi > 85:
-            score_cap = min(score_cap, 55)  # 鎖定評分上限，不會出現強力買進
-            veto_applied = True
-            veto_reason = f"RSI極度過熱（{rsi:.0f}），禁止追價"
-        
+            if _is_mom:
+                risk_notes.append(f"RSI過熱（{rsi:.0f}），強勢股續抱、留意追高")
+            else:
+                score_cap = min(score_cap, 55)  # 鎖定評分上限，不會出現強力買進
+                veto_applied = True
+                veto_reason = f"RSI極度過熱（{rsi:.0f}），禁止追價"
+
         # 否決權 2：乖離率過大 (> 20%)
         if bias_20 > 20:
-            score_cap = min(score_cap, 50)
-            veto_applied = True
-            veto_reason = f"乖離率過大（{bias_20:.1f}%），禁止追價"
-        
+            if _is_mom:
+                risk_notes.append(f"乖離率偏大（{bias_20:.1f}%），強勢延伸、留意追高")
+            else:
+                score_cap = min(score_cap, 50)
+                veto_applied = True
+                veto_reason = f"乖離率過大（{bias_20:.1f}%），禁止追價"
+
         # 否決權 3：形態頭部確立
+        # 注意：頭部形態對強勢飆股易誤判（拉回常被當做頭），故動能模式下僅提示。
         if pattern_is_bearish:
-            score_cap = min(score_cap, 45)  # 頭部確立時，最高只能觀望
-            veto_applied = True
-            if not veto_reason:
-                veto_reason = f"頭部形態確立（{pattern_info.get('pattern_name', '')}），禁止做多"
+            if _is_mom:
+                risk_notes.append(
+                    f"形態疑似頭部（{pattern_info.get('pattern_name', '')}），"
+                    f"但 RS 領先+趨勢成立，僅供留意"
+                )
+            else:
+                score_cap = min(score_cap, 45)  # 頭部確立時，最高只能觀望
+                veto_applied = True
+                if not veto_reason:
+                    veto_reason = f"頭部形態確立（{pattern_info.get('pattern_name', '')}），禁止做多"
         
         # 應用評分上限
         weighted_score = min(weighted_score, score_cap)
@@ -3247,12 +3267,18 @@ class QuickAnalyzer:
         elif chip_signal in ["籌碼中性", "中性", "籌碼穩定"]:
             score += 20
         
-        # 使用加權分數（如果有形態分析）或傳統分數
-        if result.get('pattern_analysis', {}).get('available'):
+        # A2 改動4(b)：UI 分數與訊號同源。
+        # 改用三層引擎綜合分（direction×0.35 + position×0.65，由 ThreeLayerEngine
+        # 輸出於 decision_matrix['score']），解決「分數來源(形態40%)與最終文字
+        # (三層引擎)是兩套、會不一致」的問題。形態退為資訊註記，不再當 score 主權重。
+        # 加權分(weighted_score)/傳統分(score) 僅在三層引擎無輸出時作為 fallback。
+        if decision_matrix.get('available') and isinstance(decision_matrix.get('score'), (int, float)):
+            final_score = int(decision_matrix['score'])
+        elif result.get('pattern_analysis', {}).get('available'):
             final_score = int(weighted_score)
         else:
             final_score = score
-        
+
         # v4.4.3 新增：限制總分在 0-100 之間 (Clamp score)
         final_score = max(0, min(100, final_score))
         
@@ -3290,8 +3316,10 @@ class QuickAnalyzer:
                     # 防線 2：三層引擎的場景不能是 SKIP / WAIT（方向或位置否決）
                     _engine_ok = dm.get('scenario', '') not in ('SKIP', 'WAIT')
 
-                    # 防線 3：乖離率不能過熱（> 15% 時 Layer 2 硬上限 20 分，不應再鼓勵進場）
-                    _bias_ok = abs(bias_20) <= 15
+                    # 防線 3：乖離率不能過熱（> 15%）。
+                    # A2 改動4：動能模式（RS 領先+趨勢成立）下，正乖離是強度不是過熱，
+                    # 不作為阻擋條件（飆股拉回常被此防線誤殺成「暫緩」）。
+                    _bias_ok = True if _is_mom else (abs(bias_20) <= 15)
 
                     if _target_valid and _engine_ok and _bias_ok:
                         # 三道防線全過 → 允許形態覆蓋，輸出買進建議
@@ -3302,8 +3330,23 @@ class QuickAnalyzer:
                             + (f' 目標價${p_target:.2f}，停損${p_stop:.2f}' if p_target > 0 else '')
                         )
                         confidence = 'High'
+                    elif _is_mom:
+                        # A2 改動4：強勢領漲股不蓋成「暫緩」。
+                        # 保留三層引擎的 overall 裁決，形態問題只當風險註記附上。
+                        _pat_notes = []
+                        if not _target_valid:
+                            _pat_notes.append(
+                                f'形態目標 ${p_target:.2f} 已被現價 ${current_px:.2f} 超越（測幅達成，僅供參考）'
+                            )
+                        if not _engine_ok:
+                            _pat_notes.append(
+                                f'三層引擎場景：{dm.get("scenario_name", dm.get("scenario", ""))}'
+                            )
+                        if _pat_notes:
+                            warning_message = (warning_message + ' ｜ 形態註記：'
+                                               + '；'.join(_pat_notes)).strip(' ｜')
                     else:
-                        # 任一防線失守 → 降為觀察，附上原因
+                        # 非強勢股：任一防線失守 → 降為觀察，附上原因
                         _block_reasons = []
                         if not _target_valid:
                             _block_reasons.append(
@@ -3388,6 +3431,14 @@ class QuickAnalyzer:
                 else:
                     recommendation_result["warning_message"] = f"🛑 {veto_reason}"
             
+            # A2 改動4：強勢股的過熱/形態風險提示（不壓分，純資訊）併入警示
+            if risk_notes:
+                existing_warning = recommendation_result.get("warning_message", "")
+                _rn = '⚠️ 風險提示：' + '；'.join(risk_notes)
+                recommendation_result["warning_message"] = (
+                    f"{existing_warning} | {_rn}" if existing_warning else _rn
+                )
+
             # 如果有矛盾被仲裁，也加入
             if conflict_resolved and conflict_message:
                 existing_warning = recommendation_result.get("warning_message", "")

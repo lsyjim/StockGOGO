@@ -76,6 +76,41 @@ class ThreeLayerEngine:
     DIRECTION_VETO = 40
     POSITION_VETO  = 40
 
+    # ─── A2 共用：動能模式判定 ───────────────────────────────────────────────
+    @staticmethod
+    def _is_momentum(result: dict) -> bool:
+        """
+        動能模式判定（RS 領先 + 多頭排列）。L2/L3/賣訊/覆蓋層共用同一判斷，
+        確保「強勢領漲股」在各層的處理一致：正乖離/RSI 偏高/過熱賣訊一律
+        降級為風險提示，而非把訊號翻成觀望或賣出。
+
+        條件：
+          RS 領先大盤（rs_score≥65 或 vs_market≥3%）
+          且 多頭排列（ma5/ma20/ma60 + 現價 的 3 層上升結構，bull_count≥3）
+        """
+        tech    = result.get('technical', {}) or {}
+        current = result.get('current_price', 0) or 0
+        rs_data = result.get('relative_strength', {}) or {}
+
+        rs_score  = rs_data.get('rs_score', 50) or 50
+        vs_market = rs_data.get('vs_market', 0) or 0
+
+        ma5_m  = tech.get('ma5',  current) or current
+        ma20_m = tech.get('ma20', current) or current
+        ma60_m = tech.get('ma60', current) or current
+        if isinstance(ma5_m,  str): ma5_m  = current
+        if isinstance(ma20_m, str): ma20_m = current
+        if isinstance(ma60_m, str): ma60_m = current
+
+        bull_count = sum([
+            current > ma20_m,
+            ma20_m  > ma60_m,
+            current > ma60_m,
+            ma5_m   > ma20_m,
+        ])
+        rs_lead = (rs_score >= 65) or (vs_market >= 3)
+        return bool(rs_lead and bull_count >= 3)
+
     # ─── 主入口 ──────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -341,35 +376,21 @@ class ThreeLayerEngine:
         bias_z = bias_20 / (2.0 * sigma_pct)        # 正規化 Z 分數
 
         # ── A2 動能模式判定（解除「正乖離=過熱」對強勢股的系統性壓制）──
-        # 設計意圖：均值回歸表把「正乖離」一律當過熱扣分，但對「趨勢成立 +
-        # RS 領先」的領漲股而言，正乖離是「強度」不是「過熱」。
-        # 進入動能模式條件（與 Q 決策一致）：
-        #   RS 領先大盤（rs_score≥65 或 vs_market≥3%）AND 多頭排列（bull_count≥3）
-        # 動能模式下改用動能評分表（見下方），正乖離不再壓低 base 分。
+        # 判定邏輯抽到 ThreeLayerEngine._is_momentum()，L2/L3/賣訊/覆蓋層共用，
+        # 確保強勢領漲股在各層處理一致。
         rs_data   = result.get('relative_strength', {}) or {}
         rs_score  = rs_data.get('rs_score', 50) or 50
-        vs_market = rs_data.get('vs_market', 0) or 0
-
-        # A2：多頭排列只用「實際存在」的均線（technical 僅含 ma5/ma20/ma60，
-        # 無 ma120/ma240；若沿用 4 層排列，缺的均線會 fallback 成 current，
-        # 使 bull_count 永遠 ≤2，動能模式無法觸發）。
-        # 改用 ma5/ma20/ma60 + 現價 的 3 層上升結構，並另外接受 ma120/ma240
-        # 若未來有提供時的加分。
-        ma5_m   = tech.get('ma5',   current) or current
-        ma20_m  = tech.get('ma20',  current) or current
-        ma60_m  = tech.get('ma60',  current) or current
-        if isinstance(ma5_m,  str): ma5_m  = current
-        if isinstance(ma20_m, str): ma20_m = current
-        if isinstance(ma60_m, str): ma60_m = current
+        is_momentum = ThreeLayerEngine._is_momentum(result)
+        # bull_count 僅供回傳顯示（與 _is_momentum 內計算一致）
+        ma5_d  = tech.get('ma5',  current) or current
+        ma20_d = tech.get('ma20', current) or current
+        ma60_d = tech.get('ma60', current) or current
+        if isinstance(ma5_d,  str): ma5_d  = current
+        if isinstance(ma20_d, str): ma20_d = current
+        if isinstance(ma60_d, str): ma60_d = current
         bull_count = sum([
-            current > ma20_m,   # 現價在月線之上
-            ma20_m  > ma60_m,   # 月線在季線之上（中期多頭）
-            current > ma60_m,   # 現價在季線之上（站穩中期）
-            ma5_m   > ma20_m,   # 短均在月線之上（短期動能）
+            current > ma20_d, ma20_d > ma60_d, current > ma60_d, ma5_d > ma20_d,
         ])
-
-        _rs_lead    = (rs_score >= 65) or (vs_market >= 3)
-        is_momentum = _rs_lead and (bull_count >= 3)
 
         # ── 籌碼去化：計算天花板放寬幅度 ────────────────────────
         chip_relax = 0
@@ -766,11 +787,19 @@ class ThreeLayerEngine:
             _bias_z_ov = _bias_ov / (2.0 * _sigma_ov)
 
             if _rsi_ov > 85 and _bias_z_ov > 1.5:
-                grade = 'B'
-                triggers.append(
-                    f'⚠️ 超買安全閥：RSI={_rsi_ov:.0f} 且 乖離{_bias_ov:+.1f}%（{_bias_z_ov:.1f}σ）'
-                    f' → A→B 強制降級，追高風險高'
-                )
+                # A2 改動2：強勢領漲股（RS 領先+多頭排列）不因超買強制降級，
+                # 只給風險提示；非強勢股維持原本 A→B 降級。
+                if ThreeLayerEngine._is_momentum(result):
+                    triggers.append(
+                        f'⚠️ 過熱提示（強勢股不降級）：RSI={_rsi_ov:.0f} 且 '
+                        f'乖離{_bias_ov:+.1f}%（{_bias_z_ov:.1f}σ），續抱但留意追高風險'
+                    )
+                else:
+                    grade = 'B'
+                    triggers.append(
+                        f'⚠️ 超買安全閥：RSI={_rsi_ov:.0f} 且 乖離{_bias_ov:+.1f}%（{_bias_z_ov:.1f}σ）'
+                        f' → A→B 強制降級，追高風險高'
+                    )
 
         _grade_labels = {
             'A': '主攻（立即進場）',
@@ -885,6 +914,13 @@ class ThreeLayerEngine:
         ma20 = tech.get('ma20', 0) or 0
         sell_signals: list[dict] = []
 
+        # A2 改動3：強勢領漲股（RS 領先+多頭排列）的「過熱/背離」預測型賣訊
+        # 降為 info 純提示，不翻成 SELL/HOLD（飆股拉回常被誤判做頭）。
+        # 防守型（跌破均線/三盤跌破）、反轉型（頭部形態/籌碼惡化）、移動停利
+        # 維持原樣——那是真趨勢轉壞或實質獲利回吐，不屬「過熱預測」。
+        _momentum = ThreeLayerEngine._is_momentum(result)
+        _overheat_severity = 'info' if _momentum else 'warning'
+
         # ── 1. 防守型 ─────────────────────────────────────────────
         # 1a: 三盤跌破
         if wave.get('available'):
@@ -909,10 +945,11 @@ class ThreeLayerEngine:
             left_sell = mr.get('left_sell_signal', {})
             if left_sell.get('triggered'):
                 reasons = '、'.join(left_sell.get('trigger_reasons', ['過熱']))
+                _prefix = '過熱提示（強勢股，僅參考）：' if _momentum else '過熱賣訊：'
                 sell_signals.append({
                     'type':     'PROFIT_TAKE',
-                    'reason':   f'過熱賣訊：{reasons}',
-                    'severity': 'warning',
+                    'reason':   f'{_prefix}{reasons}',
+                    'severity': _overheat_severity,
                 })
 
         # ── 2b. 移動停利（TRAILING STOP）─────────────────────────
@@ -1004,13 +1041,15 @@ class ThreeLayerEngine:
             _bias_z_sell = _bias_sell / (2.0 * _sigma_sell)
 
             if _rsi_sell > 85 and _bias_z_sell > 1.5:
+                _ph_tail = ('，強勢股續抱、僅留意追高風險' if _momentum
+                            else '，建議考慮部分停利')
                 sell_signals.append({
                     'type':     'PROFIT_TAKE',
                     'reason':   (
                         f'持倉過熱警示：RSI={_rsi_sell:.0f}，乖離{_bias_sell:+.1f}%（{_bias_z_sell:.1f}σ）'
-                        f'，建議考慮部分停利'
+                        f'{_ph_tail}'
                     ),
-                    'severity': 'warning',
+                    'severity': _overheat_severity,
                 })
         except Exception:
             pass  # 過熱警示計算失敗時靜默跳過
@@ -1018,10 +1057,28 @@ class ThreeLayerEngine:
         if not sell_signals:
             return {'triggered': False, 'primary': None, 'all': []}
 
+        # A2 改動3：info 級（強勢股過熱提示）不觸發賣訊動作，只當資訊註記。
+        actionable = [s for s in sell_signals if s['severity'] in ('urgent', 'warning')]
+        info_notes = [s for s in sell_signals if s['severity'] == 'info']
+
+        if not actionable:
+            # 只有過熱提示（強勢股）→ 不翻賣訊，續走買訊/分級邏輯
+            return {
+                'triggered': False,
+                'primary':   None,
+                'all':       sell_signals,
+                'info_notes': info_notes,
+            }
+
         # urgent 優先
-        urgent = [s for s in sell_signals if s['severity'] == 'urgent']
-        primary = urgent[0] if urgent else sell_signals[0]
-        return {'triggered': True, 'primary': primary, 'all': sell_signals}
+        urgent = [s for s in actionable if s['severity'] == 'urgent']
+        primary = urgent[0] if urgent else actionable[0]
+        return {
+            'triggered':  True,
+            'primary':    primary,
+            'all':        sell_signals,
+            'info_notes': info_notes,
+        }
 
     # ─── 目標價計算（簡化版）────────────────────────────────────────────────
 
