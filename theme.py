@@ -137,7 +137,7 @@ def apply_theme(root):
     style.configure("TButton", background=BTN_BG, foreground=TEXT,
                     font=f_base, borderwidth=1, relief="flat",
                     bordercolor=BORDER, lightcolor=BTN_BG, darkcolor=BTN_BG,
-                    focuscolor=BTN_BG, padding=(10, 5))
+                    focuscolor=BTN_BG, padding=(8, 4))
     style.map("TButton",
               background=[("pressed", BTN_ACTIVE), ("active", BTN_HOVER)],
               bordercolor=[("active", ACCENT), ("focus", ACCENT)],
@@ -147,7 +147,7 @@ def apply_theme(root):
     style.configure("Accent.TButton", background=BTN_BG, foreground=ACCENT,
                     font=f_bold, borderwidth=1, relief="flat",
                     bordercolor=ACCENT, lightcolor=BTN_BG, darkcolor=BTN_BG,
-                    focuscolor=BTN_BG, padding=(10, 5))
+                    focuscolor=BTN_BG, padding=(8, 4))
     style.map("Accent.TButton",
               background=[("pressed", BTN_ACTIVE), ("active", BTN_HOVER)],
               foreground=[("active", ACCENT)])
@@ -164,14 +164,21 @@ def apply_theme(root):
                   bordercolor=[("focus", ACCENT)],
                   arrowcolor=[("active", TEXT)])
 
-    # ── Checkbutton / Radiobutton ────────────────────────
+    # ── Checkbutton / Radiobutton（選中要清楚可見）────────
+    # clam：indicator 圓圈內填 indicatorbackground、外環 bordercolor，
+    # 選中時顯示 indicatorcolor 的點。明確分流 selected/!selected 確保看得出。
     for w in ("TCheckbutton", "TRadiobutton"):
         style.configure(w, background=BG_PANEL, foreground=TEXT, font=f_base,
-                        focuscolor=BG_PANEL, indicatorcolor=BG_ELEV,
-                        indicatorbackground=BG_ELEV)
-        style.map(w, background=[("active", BG_PANEL)],
-                  foreground=[("active", ACCENT), ("selected", TEXT)],
-                  indicatorcolor=[("selected", ACCENT)])
+                        focuscolor=BG_PANEL, bordercolor=TEXT_2,
+                        indicatorbackground=BG_ELEV, indicatorcolor=BG_ELEV,
+                        padding=2)
+        style.map(w,
+                  background=[("active", BG_PANEL)],
+                  foreground=[("active", ACCENT), ("selected", ACCENT)],
+                  indicatorbackground=[("selected", ACCENT), ("active", BG_ELEV),
+                                       ("!selected", BG_ELEV)],
+                  indicatorcolor=[("selected", ACCENT), ("!selected", BG_ELEV)],
+                  bordercolor=[("selected", ACCENT), ("active", TEXT)])
 
     # ── Notebook（分頁扁平化）────────────────────────────
     style.configure("TNotebook", background=BG_APP, borderwidth=0,

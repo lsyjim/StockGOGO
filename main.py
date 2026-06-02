@@ -5392,7 +5392,7 @@ class StockAnalysisApp(tk.Tk):
         main_container = ttk.Frame(self)
         main_container.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
 
-        left_panel = ttk.Frame(main_container, width=380)
+        left_panel = ttk.Frame(main_container, width=440)
         left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
         left_panel.pack_propagate(False)
 
@@ -5585,10 +5585,10 @@ class StockAnalysisApp(tk.Tk):
         self.watchlist_tree.heading("score", text="評分", anchor="center")
         self.watchlist_tree.heading("signal", text="量化建議", anchor="center")
         
-        self.watchlist_tree.column("#0", width=130, minwidth=100)
-        self.watchlist_tree.column("name", width=70, minwidth=50)
-        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="e")   # 數字右對齊
-        self.watchlist_tree.column("signal", width=90, minwidth=70, anchor="center")
+        self.watchlist_tree.column("#0", width=120, minwidth=90)
+        self.watchlist_tree.column("name", width=66, minwidth=50)
+        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="e")     # 數字右對齊
+        self.watchlist_tree.column("signal", width=170, minwidth=120, anchor="w")  # 加寬，建議看得完整
         
         # 設定顏色：建立時即套用主題（深色終端 + 紅漲綠跌 token）
         if getattr(self, '_theme', None) is not None:
@@ -6473,10 +6473,16 @@ class StockAnalysisApp(tk.Tk):
         """顯示簡易日期選擇器"""
         picker = tk.Toplevel(self)
         picker.title("選擇日期")
-        picker.geometry("280x200")
+        picker.geometry("380x380")
         picker.resizable(False, False)
         picker.transient(self)
         picker.grab_set()
+        # 套用深色主題背景（與主視窗一致）
+        if getattr(self, '_theme', None) is not None:
+            try:
+                picker.configure(bg=self._theme.BG_APP)
+            except Exception:
+                pass
         
         # 取得當前日期
         try:
@@ -7182,7 +7188,7 @@ class StockAnalysisApp(tk.Tk):
                     score_str = f"{quant_score:.0f}" if quant_score else "-"
                     
                     # 清理建議文字（不使用表情符號）
-                    display_signal = signal.replace("建議", "")[:8]
+                    display_signal = signal.replace("建議", "")[:16]
                     
                     self.watchlist_tree.insert(group_id, "end", 
                         text=symbol, 
@@ -7250,7 +7256,7 @@ class StockAnalysisApp(tk.Tk):
                         tag = "wait"
 
                 score_str = f"{quant_score:.0f}" if quant_score else "-"
-                display_signal = signal.replace("建議", "")[:8]
+                display_signal = signal.replace("建議", "")[:16]
 
                 self.watchlist_tree.insert("", "end",
                     text=display_text,
