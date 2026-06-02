@@ -33,11 +33,17 @@ DOWN     = "#4CB782"   # 下跌（台股 綠跌）
 FLAT     = "#8B9099"   # 平盤
 
 ACCENT   = "#EF9F27"   # 選取 / 作用中 / 連結（琥珀）
+GRADE_B  = "#5FA8E0"   # B 級追蹤（中優先，藍）
+
+# 互動狀態
+BTN_BG     = "#1C2128"   # 按鈕底（比面板亮一階 = BG_ELEV）
+BTN_HOVER  = "#252B33"   # 按鈕 hover（再亮一階）
+BTN_ACTIVE = "#171B21"   # 按鈕 pressed（微暗）
 
 # 斑馬紋（極淡）
 ROW_ODD  = BG_PANEL
 ROW_EVEN = "#13171D"
-ROW_SEL  = "#2A2410"   # 選取列：淡琥珀底（ACCENT 的暗化）
+ROW_SEL  = "#3A3114"   # 選取列：淡琥珀底（ACCENT 的暗化）
 
 # ============================================================================
 # (b) 字體：從候選清單挑第一個系統可用字體
@@ -104,68 +110,108 @@ def apply_theme(root):
     f_small = ui_font(SIZE_SMALL)
     f_bold  = ui_font(SIZE_BASE, bold=True)
 
-    # ── 容器 ──────────────────────────────────────────────
+    # 下拉清單（Combobox 的彈出 Listbox 是原生 widget，須用 option_add 染色）
+    try:
+        root.option_add("*TCombobox*Listbox.background", BG_PANEL)
+        root.option_add("*TCombobox*Listbox.foreground", TEXT)
+        root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
+        root.option_add("*TCombobox*Listbox.selectForeground", BG_APP)
+        root.option_add("*TCombobox*Listbox.font", f_base)
+    except Exception:
+        pass
+
+    # ── 容器（移除 clam 立體邊框，改背景分層 + hairline）──
     style.configure("TFrame", background=BG_PANEL, borderwidth=0, relief="flat")
     style.configure("TLabelframe", background=BG_PANEL, borderwidth=1,
-                    relief="flat", bordercolor=BORDER)
+                    relief="flat", bordercolor=BORDER,
+                    lightcolor=BG_PANEL, darkcolor=BG_PANEL)
     style.configure("TLabelframe.Label", background=BG_PANEL,
                     foreground=TEXT_3, font=f_small)
     style.configure("TPanedwindow", background=BG_APP)
+    style.configure("Sash", sashthickness=6, background=BG_APP)
 
     # ── Label ─────────────────────────────────────────────
     style.configure("TLabel", background=BG_PANEL, foreground=TEXT, font=f_base)
 
-    # ── Button（扁平 + 琥珀 hover）────────────────────────
-    style.configure("TButton", background=BG_ELEV, foreground=TEXT,
-                    font=f_base, borderwidth=0, relief="flat",
-                    focuscolor=BG_ELEV, padding=(10, 5))
+    # ── Button（明確可見：亮一階底 + 細邊框 + hover/pressed）──
+    style.configure("TButton", background=BTN_BG, foreground=TEXT,
+                    font=f_base, borderwidth=1, relief="flat",
+                    bordercolor=BORDER, lightcolor=BTN_BG, darkcolor=BTN_BG,
+                    focuscolor=BTN_BG, padding=(10, 5))
     style.map("TButton",
-              background=[("pressed", ACCENT), ("active", BORDER)],
-              foreground=[("pressed", BG_APP), ("active", TEXT)])
+              background=[("pressed", BTN_ACTIVE), ("active", BTN_HOVER)],
+              bordercolor=[("active", ACCENT), ("focus", ACCENT)],
+              foreground=[("disabled", TEXT_3)])
 
-    # ── Entry / Combobox ─────────────────────────────────
-    style.configure("TEntry", fieldbackground=BG_ELEV, foreground=TEXT,
-                    insertcolor=ACCENT, borderwidth=0, relief="flat", padding=4)
-    style.configure("TCombobox", fieldbackground=BG_ELEV, background=BG_ELEV,
-                    foreground=TEXT, arrowcolor=TEXT_2, borderwidth=0,
-                    relief="flat", padding=4)
-    style.map("TCombobox", fieldbackground=[("readonly", BG_ELEV)],
-              foreground=[("readonly", TEXT)])
+    # 主要動作按鈕（琥珀邊框 + 琥珀字）
+    style.configure("Accent.TButton", background=BTN_BG, foreground=ACCENT,
+                    font=f_bold, borderwidth=1, relief="flat",
+                    bordercolor=ACCENT, lightcolor=BTN_BG, darkcolor=BTN_BG,
+                    focuscolor=BTN_BG, padding=(10, 5))
+    style.map("Accent.TButton",
+              background=[("pressed", BTN_ACTIVE), ("active", BTN_HOVER)],
+              foreground=[("active", ACCENT)])
+
+    # ── Entry / Combobox / Spinbox（深色，無白底）─────────
+    for w in ("TEntry", "TCombobox", "TSpinbox"):
+        style.configure(w, fieldbackground=BG_ELEV, background=BG_ELEV,
+                        foreground=TEXT, insertcolor=TEXT, arrowcolor=TEXT_2,
+                        borderwidth=1, relief="flat", bordercolor=BORDER,
+                        lightcolor=BG_ELEV, darkcolor=BG_ELEV, padding=4)
+        style.map(w,
+                  fieldbackground=[("readonly", BG_ELEV), ("disabled", BG_PANEL)],
+                  foreground=[("readonly", TEXT), ("disabled", TEXT_3)],
+                  bordercolor=[("focus", ACCENT)],
+                  arrowcolor=[("active", TEXT)])
 
     # ── Checkbutton / Radiobutton ────────────────────────
     for w in ("TCheckbutton", "TRadiobutton"):
         style.configure(w, background=BG_PANEL, foreground=TEXT, font=f_base,
-                        focuscolor=BG_PANEL, indicatorcolor=BG_ELEV)
+                        focuscolor=BG_PANEL, indicatorcolor=BG_ELEV,
+                        indicatorbackground=BG_ELEV)
         style.map(w, background=[("active", BG_PANEL)],
-                  foreground=[("active", ACCENT)])
+                  foreground=[("active", ACCENT), ("selected", TEXT)],
+                  indicatorcolor=[("selected", ACCENT)])
 
     # ── Notebook（分頁扁平化）────────────────────────────
-    style.configure("TNotebook", background=BG_APP, borderwidth=0, tabmargins=(2, 4, 2, 0))
+    style.configure("TNotebook", background=BG_APP, borderwidth=0,
+                    bordercolor=BG_APP, tabmargins=(2, 4, 2, 0))
     style.configure("TNotebook.Tab", background=BG_APP, foreground=TEXT_2,
-                    font=f_base, padding=(14, 6), borderwidth=0)
+                    font=f_base, padding=(14, 6), borderwidth=0,
+                    bordercolor=BG_APP, lightcolor=BG_APP, darkcolor=BG_APP)
     style.map("TNotebook.Tab",
               background=[("selected", BG_PANEL)],
-              foreground=[("selected", ACCENT), ("active", TEXT)])
+              foreground=[("selected", ACCENT), ("active", TEXT)],
+              bordercolor=[("selected", BG_APP)])
 
     # ── Scrollbar ────────────────────────────────────────
-    style.configure("Vertical.TScrollbar", background=BG_ELEV, troughcolor=BG_APP,
-                    borderwidth=0, arrowcolor=TEXT_3)
-    style.configure("Horizontal.TScrollbar", background=BG_ELEV, troughcolor=BG_APP,
-                    borderwidth=0, arrowcolor=TEXT_3)
+    for w in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
+        style.configure(w, background=BG_ELEV, troughcolor=BG_APP, borderwidth=0,
+                        bordercolor=BG_APP, arrowcolor=TEXT_3,
+                        lightcolor=BG_ELEV, darkcolor=BG_ELEV)
 
     # ── Separator ────────────────────────────────────────
     style.configure("TSeparator", background=DIVIDER)
 
-    # ── Treeview 基礎（細節在 style_treeview）─────────────
+    # ── Treeview 基礎（移除亮邊框；細節在 style_treeview）──
     style.configure("Treeview", background=BG_PANEL, fieldbackground=BG_PANEL,
                     foreground=TEXT, borderwidth=0, relief="flat",
+                    bordercolor=BG_APP, lightcolor=BG_APP, darkcolor=BG_APP,
                     rowheight=27, font=num_font(SIZE_BASE))
     style.configure("Treeview.Heading", background=BG_ELEV, foreground=TEXT_3,
-                    font=ui_font(SIZE_SMALL, bold=True), borderwidth=0, relief="flat")
+                    font=ui_font(SIZE_SMALL, bold=True), borderwidth=0, relief="flat",
+                    bordercolor=BG_ELEV, lightcolor=BG_ELEV, darkcolor=BG_ELEV)
     style.map("Treeview.Heading", background=[("active", BG_ELEV)])
+    # selected 狀態壓過評等色，確保選取列文字清楚
     style.map("Treeview",
               background=[("selected", ROW_SEL)],
               foreground=[("selected", ACCENT)])
+
+    # 移除 Treeview 外圍 focus 高亮邊框（clam 預設的亮邊）
+    try:
+        style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+    except Exception:
+        pass
 
     return style
 
@@ -193,6 +239,12 @@ def style_treeview(tree, zebra=True):
     tree.tag_configure("hold", foreground=ACCENT) # 持有 = 琥珀
     tree.tag_configure("sell", foreground=DOWN)   # 賣 = 綠
     tree.tag_configure("wait", foreground=TEXT_2) # 觀望 = 灰
+
+    # 三層引擎評等優先序（與紅漲綠跌區隔，用另一組語意色）
+    tree.tag_configure("grade_A", foreground=ACCENT,  font=num_font(SIZE_BASE, bold=True))  # A 主攻 = 琥珀（最高）
+    tree.tag_configure("grade_B", foreground=GRADE_B)                                       # B 追蹤 = 藍（中）
+    tree.tag_configure("grade_C", foreground=TEXT_2)                                        # C 觀察 = 灰（低）
+    tree.tag_configure("grade_sell", foreground=DOWN)                                       # 賣出/避開 = 綠（台股跌色）
 
     # 族群分組標題列
     tree.tag_configure("group", background=BG_ELEV, foreground=TEXT_3,
@@ -256,6 +308,34 @@ def trend_tag(x):
     return "up" if v > 0 else ("down" if v < 0 else "flat")
 
 
+def grade_tag(signal_text):
+    """
+    依量化建議文字回傳評等優先序 tag：
+      A 級主攻 / 強烈建議買進 → 'grade_A'（琥珀，最高）
+      B 級追蹤 / 建議買進     → 'grade_B'（藍）
+      C 級觀察               → 'grade_C'（灰）
+      賣出 / 避開 / 暫緩     → 'grade_sell'（綠，台股跌色）
+    無法判定回 None（呼叫端可退回 buy/hold/sell/wait）。
+    純文字判斷，不影響任何計算。
+    """
+    if not signal_text:
+        return None
+    s = str(signal_text)
+    # 賣出 / 避開（優先判斷，避免「暫緩買進」被當買進）
+    if any(k in s for k in ("賣出", "避開", "減碼", "出場", "暫緩", "不建議")):
+        return "grade_sell"
+    # A 級（含形態強烈買進）
+    if ("A級" in s) or ("A 級" in s) or ("主攻" in s) or ("強烈建議買進" in s) or ("強力買進" in s):
+        return "grade_A"
+    # B 級
+    if ("B級" in s) or ("B 級" in s) or ("追蹤" in s) or ("建議買進" in s):
+        return "grade_B"
+    # C 級 / 觀察 / 等待
+    if ("C級" in s) or ("C 級" in s) or ("觀察" in s) or ("等待" in s) or ("觀望" in s):
+        return "grade_C"
+    return None
+
+
 # ============================================================================
 # (f) apply_matplotlib_dark()：只改繪圖樣式，不碰指標/訊號計算
 # ============================================================================
@@ -284,11 +364,19 @@ def apply_matplotlib_dark():
     })
 
 
+# 均線色（收斂成 token 配色）：短均=琥珀、中均=藍、長均=灰
+MAV_COLORS = [ACCENT, GRADE_B, TEXT_3]
+# 買賣訊號標記色（與紅漲綠跌 K 棒區隔，用中性色）
+SIGNAL_BUY_COLOR  = ACCENT    # 買訊 ^ = 琥珀
+SIGNAL_SELL_COLOR = GRADE_B   # 賣訊 v = 藍
+BOLL_COLOR        = TEXT_2     # 布林通道 = 灰
+
+
 def mpf_market_style():
     """
     回傳給 mplfinance 用的 (marketcolors, style dict) ——
-    紅漲綠跌、暗色面板。只供繪圖，不影響任何計算。
-    呼叫端：mc, base_kw = theme.mpf_market_style()
+    紅漲綠跌、暗色面板、均線收斂為 token 配色。只供繪圖，不影響任何計算。
+    呼叫端：mc, style = theme.mpf_market_style()
     """
     import mplfinance as mpf
     mc = mpf.make_marketcolors(up=UP, down=DOWN, edge="inherit",
@@ -302,6 +390,7 @@ def mpf_market_style():
         edgecolor=BORDER,
         gridcolor=DIVIDER,
         gridstyle="-",
+        mavcolors=MAV_COLORS,
         rc={"axes.grid.axis": "y", "grid.alpha": 0.08,
             "font.sans-serif": ["PingFang TC", "Microsoft JhengHei",
                                 "Heiti TC", "Arial Unicode MS"]},

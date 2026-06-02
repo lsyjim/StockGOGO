@@ -5648,7 +5648,8 @@ class StockAnalysisApp(tk.Tk):
         self.symbol_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         self.symbol_entry.bind('<Return>', lambda e: self.plot_chart())
         
-        ttk.Button(input_frame, text="Query", command=self.plot_chart, width=6).pack(side=tk.LEFT, padx=(5, 0))
+        ttk.Button(input_frame, text="Query", command=self.plot_chart, width=6,
+                   style="Accent.TButton").pack(side=tk.LEFT, padx=(5, 0))
         
         # 市場選擇
         market_frame = ttk.Frame(parent)
@@ -5699,7 +5700,8 @@ class StockAnalysisApp(tk.Tk):
         # 按鈕列
         btn_frame = ttk.Frame(strategy_frame)
         btn_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(btn_frame, text="Backtest", command=self.run_backtest, width=8).pack(side=tk.LEFT, padx=2)
+        ttk.Button(btn_frame, text="Backtest", command=self.run_backtest, width=8,
+                   style="Accent.TButton").pack(side=tk.LEFT, padx=2)
         ttk.Button(btn_frame, text="Report", command=self.show_analysis_report, width=8).pack(side=tk.LEFT, padx=2)
         
         # 歷史分析日期（不使用表情符號）
@@ -6072,36 +6074,42 @@ class StockAnalysisApp(tk.Tk):
             
             # 繪製蠟燭圖
             add_plots = []
-            
+
+            # 訊號標記/布林通道顏色（走 theme token，與紅漲綠跌 K 棒區隔）
+            _th = getattr(self, '_theme', None)
+            _boll_c = _th.BOLL_COLOR if _th else 'purple'
+            _buy_c  = _th.SIGNAL_BUY_COLOR if _th else 'lime'
+            _sell_c = _th.SIGNAL_SELL_COLOR if _th else 'red'
+
             if self.show_bb_var.get():
                 sma, upper, lower = calculate_bollinger_bands(self.df['Close'])
-                add_plots.append(mpf.make_addplot(upper, color='purple', linestyle='--'))
-                add_plots.append(mpf.make_addplot(lower, color='purple', linestyle='--'))
-            
+                add_plots.append(mpf.make_addplot(upper, color=_boll_c, linestyle='--'))
+                add_plots.append(mpf.make_addplot(lower, color=_boll_c, linestyle='--'))
+
             # ============================================================
             # v4.4.3 新增：買賣點視覺化 (Signal Visualization)
             # ============================================================
             try:
                 buy_signals, sell_signals = self._detect_signals_for_chart(self.df)
-                
-                # 如果有買進訊號，在該 K 棒下方繪製綠色向上三角形
+
+                # 買進訊號：K 棒下方向上三角（琥珀，中性、不與紅綠 K 棒衝突）
                 if buy_signals is not None and buy_signals.notna().any():
                     add_plots.append(mpf.make_addplot(
-                        buy_signals, 
-                        type='scatter', 
-                        markersize=100, 
-                        marker='^',  # 向上三角形
-                        color='lime'  # 綠色
+                        buy_signals,
+                        type='scatter',
+                        markersize=100,
+                        marker='^',
+                        color=_buy_c
                     ))
-                
-                # 如果有賣出訊號，在該 K 棒上方繪製紅色向下三角形
+
+                # 賣出訊號：K 棒上方向下三角（藍）
                 if sell_signals is not None and sell_signals.notna().any():
                     add_plots.append(mpf.make_addplot(
-                        sell_signals, 
-                        type='scatter', 
-                        markersize=100, 
-                        marker='v',  # 向下三角形
-                        color='red'  # 紅色
+                        sell_signals,
+                        type='scatter',
+                        markersize=100,
+                        marker='v',
+                        color=_sell_c
                     ))
             except Exception as e:
                 print(f"買賣點視覺化錯誤: {e}")
@@ -7149,9 +7157,13 @@ class StockAnalysisApp(tk.Tk):
                     elif recommendation:
                         signal = recommendation
                     
-                    # 決定顏色標籤
+                    # 決定顏色標籤：優先用三層引擎評等優先序（A琥珀>B藍>C灰），
+                    # 無法判定時退回 buy/sell/hold/wait（純呈現，不影響計算）
                     tags = []
-                    if any(x in signal for x in ["買", "多", "進場", "看好"]):
+                    _gtag = self._theme.grade_tag(signal) if getattr(self, '_theme', None) else None
+                    if _gtag:
+                        tags.append(_gtag)
+                    elif any(x in signal for x in ["買", "多", "進場", "看好"]):
                         tags.append("buy")
                     elif any(x in signal for x in ["賣", "空", "減碼", "撤退", "停損"]):
                         tags.append("sell")
@@ -7159,7 +7171,7 @@ class StockAnalysisApp(tk.Tk):
                         tags.append("hold")
                     else:
                         tags.append("wait")
-                    
+
                     # 過熱/超跌背景
                     if bias_20 and bias_20 > 10:
                         tags.append("hot")
@@ -7225,21 +7237,23 @@ class StockAnalysisApp(tk.Tk):
                 elif recommendation:
                     signal = recommendation
                 
-                # 決定顏色
-                if any(x in signal for x in ["買", "多"]):
-                    tag = "buy"
-                elif any(x in signal for x in ["賣", "減碼"]):
-                    tag = "sell"
-                elif "持有" in signal:
-                    tag = "hold"
-                else:
-                    tag = "wait"
-                
+                # 決定顏色：優先評等優先序，否則退回 buy/sell/hold/wait
+                tag = (self._theme.grade_tag(signal) if getattr(self, '_theme', None) else None)
+                if not tag:
+                    if any(x in signal for x in ["買", "多"]):
+                        tag = "buy"
+                    elif any(x in signal for x in ["賣", "減碼"]):
+                        tag = "sell"
+                    elif "持有" in signal:
+                        tag = "hold"
+                    else:
+                        tag = "wait"
+
                 score_str = f"{quant_score:.0f}" if quant_score else "-"
                 display_signal = signal.replace("建議", "")[:8]
-                
-                self.watchlist_tree.insert("", "end", 
-                    text=display_text, 
+
+                self.watchlist_tree.insert("", "end",
+                    text=display_text,
                     values=(name, score_str, display_signal),
                     tags=(tag,)
                 )
