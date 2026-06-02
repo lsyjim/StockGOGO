@@ -6474,8 +6474,6 @@ class StockAnalysisApp(tk.Tk):
         """顯示簡易日期選擇器"""
         picker = tk.Toplevel(self)
         picker.title("選擇日期")
-        picker.geometry("420x460")
-        picker.minsize(380, 420)
         picker.resizable(True, True)
         picker.transient(self)
         picker.grab_set()
@@ -6548,14 +6546,21 @@ class StockAnalysisApp(tk.Tk):
             except ValueError as e:
                 messagebox.showwarning("警告", f"日期無效：{e}")
 
-        # 確認/取消按鈕：釘在視窗底部（side=BOTTOM），即使視窗縮小也一定看得到
+        # 確認/取消按鈕（正常由上往下排，最後讓視窗自動貼合內容高度，絕不被切）
         _accent = "Accent.TButton" if getattr(self, '_theme', None) else "TButton"
+        ttk.Separator(main_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(12, 8))
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(14, 4))
-        ttk.Separator(main_frame, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+        btn_frame.pack(fill=tk.X, pady=(0, 4))
         ttk.Button(btn_frame, text="確認", command=confirm, width=10,
                    style=_accent).pack(side=tk.LEFT, padx=20)
         ttk.Button(btn_frame, text="取消", command=picker.destroy, width=10).pack(side=tk.RIGHT, padx=20)
+
+        # 視窗自動貼合內容高度（量實際需求 + 邊距），不再寫死尺寸而被切
+        picker.update_idletasks()
+        _w = max(420, picker.winfo_reqwidth() + 20)
+        _h = picker.winfo_reqheight() + 20
+        picker.geometry(f"{_w}x{_h}")
+        picker.minsize(_w, _h)
     
     def show_historical_analysis(self):
         """執行歷史日期分析"""
