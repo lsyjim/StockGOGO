@@ -5585,10 +5585,11 @@ class StockAnalysisApp(tk.Tk):
         self.watchlist_tree.heading("score", text="評分", anchor="center")
         self.watchlist_tree.heading("signal", text="量化建議", anchor="center")
         
-        self.watchlist_tree.column("#0", width=120, minwidth=90)
-        self.watchlist_tree.column("name", width=66, minwidth=50)
-        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="e")     # 數字右對齊
-        self.watchlist_tree.column("signal", width=170, minwidth=120, anchor="w")  # 加寬，建議看得完整
+        # stretch=False：欄位不自動撐滿視窗，總寬可溢出 → 橫向卷軸才拉得動
+        self.watchlist_tree.column("#0", width=120, minwidth=90, stretch=False)
+        self.watchlist_tree.column("name", width=66, minwidth=50, stretch=False)
+        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="e", stretch=False)     # 數字右對齊
+        self.watchlist_tree.column("signal", width=240, minwidth=140, anchor="w", stretch=False)  # 加寬，建議看得完整
         
         # 設定顏色：建立時即套用主題（深色終端 + 紅漲綠跌 token）
         if getattr(self, '_theme', None) is not None:
@@ -6473,8 +6474,9 @@ class StockAnalysisApp(tk.Tk):
         """顯示簡易日期選擇器"""
         picker = tk.Toplevel(self)
         picker.title("選擇日期")
-        picker.geometry("380x380")
-        picker.resizable(False, False)
+        picker.geometry("420x460")
+        picker.minsize(380, 420)
+        picker.resizable(True, True)
         picker.transient(self)
         picker.grab_set()
         # 套用深色主題背景（與主視窗一致）
@@ -6535,10 +6537,6 @@ class StockAnalysisApp(tk.Tk):
         ttk.Button(quick_frame, text="3月前", command=lambda: set_days_ago(90), width=6).pack(side=tk.LEFT, padx=2)
         ttk.Button(quick_frame, text="6月前", command=lambda: set_days_ago(180), width=6).pack(side=tk.LEFT, padx=2)
         
-        # 確認/取消按鈕
-        btn_frame = ttk.Frame(main_frame)
-        btn_frame.pack(fill=tk.X, pady=10)
-        
         def confirm():
             try:
                 selected = datetime.datetime(year_var.get(), month_var.get(), day_var.get())
@@ -6549,8 +6547,14 @@ class StockAnalysisApp(tk.Tk):
                 picker.destroy()
             except ValueError as e:
                 messagebox.showwarning("警告", f"日期無效：{e}")
-        
-        ttk.Button(btn_frame, text="確認", command=confirm, width=10).pack(side=tk.LEFT, padx=20)
+
+        # 確認/取消按鈕：釘在視窗底部（side=BOTTOM），即使視窗縮小也一定看得到
+        _accent = "Accent.TButton" if getattr(self, '_theme', None) else "TButton"
+        btn_frame = ttk.Frame(main_frame)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(14, 4))
+        ttk.Separator(main_frame, orient=tk.HORIZONTAL).pack(side=tk.BOTTOM, fill=tk.X, pady=(8, 0))
+        ttk.Button(btn_frame, text="確認", command=confirm, width=10,
+                   style=_accent).pack(side=tk.LEFT, padx=20)
         ttk.Button(btn_frame, text="取消", command=picker.destroy, width=10).pack(side=tk.RIGHT, padx=20)
     
     def show_historical_analysis(self):
