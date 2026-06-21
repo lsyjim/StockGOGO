@@ -1378,17 +1378,27 @@ class QuickAnalyzer:
             return None
 
     @staticmethod
-    def analyze_stock(symbol, market="台股", analysis_date=None):
+    def analyze_stock(symbol, market="台股", analysis_date=None, scan_mode=False):
         """
         快速分析股票 - v4.3 增強版（整合即時與歷史分析）
 
         v4.4.7 更新：加入 YFinance 速率限制處理
-        
+
+        scan_mode=True（watchlist / 題材掃描的熱路徑）：
+          只抓 1 年歷史，跳過 yfinance .info 基本面、5y PE Band、多年風險/beta、
+          4 個策略回測（analyze_strategies_v4）——這些都不進三層引擎評級。
+          保留評級需要的：technical / RS / volume / mean_reversion(bias) /
+          support_resistance / market_regime / 法人 / DecisionMatrix /
+          _generate_recommendation_v43 → A/B/C 真實評級與完整模式一致。
+          缺的欄位用中性預設值，引擎不會因缺欄位報錯。
+        scan_mode=False（完整版，含基本面/PE/風險/策略）給單檔 Query / Report 用。
+
         Args:
             symbol: 股票代碼
             market: 市場（台股/美股）
             analysis_date: 分析日期 (datetime 物件)，None 表示今天
-        
+            scan_mode: 掃描旁路，跳過不進評級的昂貴計算
+
         Returns:
             dict: 分析結果
         """
@@ -1479,8 +1489,10 @@ class QuickAnalyzer:
             else:
                 # 即時模式：取得最新數據
                 # 優先使用 DataSourceManager（富邦 API → yfinance）
+                # scan_mode：只抓 1 年（富邦只給 1 年，抓多年只會逼 fallback yfinance 拖慢）
+                _periods = ["1y"] if scan_mode else ["6mo", "3mo", "1y"]
                 hist = None
-                for attempt, period in enumerate(["6mo", "3mo", "1y"]):
+                for attempt, period in enumerate(_periods):
                     try:
                         hist = DataSourceManager.get_history(symbol, market, period=period)
                         if hist is not None and not hist.empty:
@@ -1490,21 +1502,24 @@ class QuickAnalyzer:
                     except Exception as e:
                         print(f"{symbol}: 嘗試 {period} 失敗 - {e}")
                         continue
-                
+
                 if hist is None or hist.empty:
                     print(f"{symbol}: 無法獲取數據（請檢查網絡連接或稍後再試）")
                     return None
-                
+
                 hist = hist.dropna()
                 if len(hist) < 60:
                     print(f"{symbol}: 數據不足（少於60天，僅有 {len(hist)} 天）")
                     return None
-                
+
                 actual_date = None
-                try:
-                    hist_long = DataSourceManager.get_history(symbol, market, period=f"{QuantConfig.RISK_DATA_YEARS}y")
-                except:
-                    hist_long = hist  # 如果長期數據獲取失敗，使用短期數據
+                if scan_mode:
+                    hist_long = hist  # 掃描模式：不抓多年資料（風險指標不進三層評級）
+                else:
+                    try:
+                        hist_long = DataSourceManager.get_history(symbol, market, period=f"{QuantConfig.RISK_DATA_YEARS}y")
+                    except:
+                        hist_long = hist  # 如果長期數據獲取失敗，使用短期數據
             
             # 確保 hist_long 有效
             if hist_long is None or hist_long.empty:
@@ -1535,13 +1550,19 @@ class QuickAnalyzer:
             
             # 技術指標
             technical = QuickAnalyzer._technical_analysis(hist)
-            
-            # 基本面分析（根據模式走不同分支）
-            # 使用延遲初始化的 yfinance ticker
-            fundamental = QuickAnalyzer._fundamental_analysis_v4(get_yf_ticker(), ticker_symbol, hist, is_historical)
-            
-            # 風險指標
-            risk_metrics = QuickAnalyzer._calculate_risk_metrics_v4(hist_long, ticker_symbol, market)
+
+            # 基本面分析（scan_mode 跳過 yfinance .info / 5y PE，用中性預設；評級不依賴基本面）
+            if scan_mode:
+                fundamental = QuickAnalyzer._get_default_fundamental()
+            else:
+                # 使用延遲初始化的 yfinance ticker
+                fundamental = QuickAnalyzer._fundamental_analysis_v4(get_yf_ticker(), ticker_symbol, hist, is_historical)
+
+            # 風險指標（scan_mode 跳過多年風險/beta(.info)，用中性預設；評級不依賴風險指標）
+            if scan_mode:
+                risk_metrics = QuickAnalyzer._get_default_risk_metrics()
+            else:
+                risk_metrics = QuickAnalyzer._calculate_risk_metrics_v4(hist_long, ticker_symbol, market)
             
             # 支撐壓力
             support_resistance = QuickAnalyzer._calculate_support_resistance(hist, technical)
@@ -1702,14 +1723,17 @@ class QuickAnalyzer:
             decision_matrix = DecisionMatrix.analyze(result)
             result["decision_matrix"] = decision_matrix
             
-            # 生成建議
+            # 生成建議（便宜，產出 A/B/C 評級字串供 watchlist/報告顯示；scan_mode 也保留）
             result["recommendation"] = QuickAnalyzer._generate_recommendation_v43(result, decision_matrix)
-            
-            # 策略分析
-            result["strategies"], result["best_strategy"] = QuickAnalyzer.analyze_strategies_v4(
-                hist, technical, fundamental, market_regime
-            )
-            
+
+            # 策略分析（4 個策略回測，不進三層評級；scan_mode 跳過，留給 Backtest 按鈕需要時才跑）
+            if scan_mode:
+                result["strategies"], result["best_strategy"] = [], None
+            else:
+                result["strategies"], result["best_strategy"] = QuickAnalyzer.analyze_strategies_v4(
+                    hist, technical, fundamental, market_regime
+                )
+
             result["data_time"] = hist.index[-1].strftime('%Y-%m-%d %H:%M:%S')
             
             # 歷史模式：計算未來驗證數據
@@ -6692,7 +6716,7 @@ class StockAnalysisApp(tk.Tk):
                             time.sleep(1.5)
                         
                         print(f"[自選股刷新] 分析 {symbol} ({name or 'N/A'}) - {idx}/{total}")
-                        result = QuickAnalyzer.analyze_stock(symbol, market)
+                        result = QuickAnalyzer.analyze_stock(symbol, market, scan_mode=True)
                         
                         if result:
                             # v4.5.18：計算量化評分
@@ -6842,7 +6866,7 @@ class StockAnalysisApp(tk.Tk):
                     market = stock[2]
                     
                     try:
-                        result = QuickAnalyzer.analyze_stock(symbol, market)
+                        result = QuickAnalyzer.analyze_stock(symbol, market, scan_mode=True)
                         if result:
                             # v4.5.8：使用 DecisionMatrix 統一計算（與報告一致）
                             quant_score = 0
@@ -6984,7 +7008,7 @@ class StockAnalysisApp(tk.Tk):
                 from analyzers import DecisionMatrix
                 
                 print(f"[單股分析] 開始分析 {symbol} ({name or 'N/A'})")
-                result = QuickAnalyzer.analyze_stock(symbol, market)
+                result = QuickAnalyzer.analyze_stock(symbol, market, scan_mode=True)
                 
                 if result:
                     # v4.5.8：使用 DecisionMatrix 統一計算（與報告一致）
