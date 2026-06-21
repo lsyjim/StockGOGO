@@ -6688,89 +6688,67 @@ class StockAnalysisApp(tk.Tk):
                 except Exception as _pe:
                     print(f'[B2] 批次預抓略過: {_pe}')
 
-                for idx, stock_data in enumerate(stocks, 1):
-                    # v4.5.17：安全取出欄位（支援新資料格式）
-                    symbol = stock_data[0]
-                    name = stock_data[1]
-                    market = stock_data[2]
-                    
-                    if not hasattr(self, '_refreshing') or not self._refreshing:
-                        # 用戶可能關閉視窗
-                        print(f"[自選股刷新] 刷新已取消")
-                        break
-                    
-                    # v4.4.7：檢查熔斷，如果觸發就停止
-                    if YFinanceRateLimiter.is_circuit_breaker_active():
-                        remaining = YFinanceRateLimiter.get_circuit_breaker_remaining()
-                        self._refresh_errors.append(f"⛔ YFinance 熔斷觸發，剩餘股票跳過（需等待 {remaining} 秒）")
-                        print(f"[自選股刷新] ⛔ 熔斷觸發，停止刷新")
-                        break
-                    
-                    # 更新進度
-                    progress_text = f"刷新中：{idx}/{total} ({symbol})"
-                    self._safe_ui_update(lambda t=progress_text: self._update_progress(t))
-                    
+                # ── 平行掃描（B2 #3）：scan_mode + 批次預抓快取命中 → 可安全併發 ──
+                # worker 只做分析/計算，不碰 DB/UI（執行緒安全）；DB 寫入與 UI 更新
+                # 集中在主迴圈序列化（tkinter 元件非執行緒安全，UI 走 _safe_ui_update）。
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                def _analyze_one(stock_data):
+                    symbol = stock_data[0]; name = stock_data[1]; market = stock_data[2]
                     try:
-                        # v4.4.7：加大節流延遲（1.5秒），避免觸發速率限制
-                        if idx > 1:
-                            time.sleep(1.5)
-                        
-                        print(f"[自選股刷新] 分析 {symbol} ({name or 'N/A'}) - {idx}/{total}")
                         result = QuickAnalyzer.analyze_stock(symbol, market, scan_mode=True)
-                        
-                        if result:
-                            # v4.5.18：計算量化評分
-                            quant_score = 0
-                            trend_status = "待分析"
-                            bias_20 = 0
-                            
-                            try:
-                                from analyzers import DecisionMatrix
-                                short_term_data = DecisionMatrix.calculate_short_term_score(result)
-                                long_term_data = DecisionMatrix.calculate_long_term_score(result)
-                                
-                                # 計算量化評分（短線60%+長線40%）
-                                short_score = short_term_data.get('score', 50)
-                                long_score = long_term_data.get('score', 50)
-                                quant_score = short_score * 0.6 + long_score * 0.4
-                                
-                                # 取得趨勢狀態
-                                trend_status = result.get('trend', {}).get('primary_trend', '盤整') if isinstance(result.get('trend'), dict) else '待分析'
-                                
-                                # 取得乖離率
-                                bias_20 = result.get('bias', {}).get('bias_20', 0) if isinstance(result.get('bias'), dict) else 0
-                            except Exception as dm_err:
-                                print(f"[自選股刷新] {symbol} 評分計算錯誤: {dm_err}")
-                            
-                            rec = result['recommendation']
-                            if isinstance(rec, dict):
-                                overall = rec.get('overall', '待分析')
-                                scenario = rec.get('scenario_name', '')
-                                short_term = rec.get('short_term', {})
-                                short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
-                                timing = rec.get('action_timing', '')
-                                recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
-                            else:
-                                recommendation = str(rec)
-                            
-                            # v4.5.18：同時更新 recommendation 和 quant_data
-                            self.db.update_recommendation(symbol, recommendation)
-                            self.db.update_quant_data(
-                                symbol,
-                                quant_score=quant_score,
-                                trend_status=trend_status,
-                                bias_20=bias_20
-                            )
-                            success_count += 1
-                            print(f"[自選股刷新] {symbol} 分析完成: {overall} (Score: {quant_score:.0f})")
+                        if not result:
+                            return {'symbol': symbol, 'ok': False, 'error': '無分析結果'}
+                        quant_score = 0; trend_status = "待分析"; bias_20 = 0
+                        try:
+                            from analyzers import DecisionMatrix
+                            short_term_data = DecisionMatrix.calculate_short_term_score(result)
+                            long_term_data = DecisionMatrix.calculate_long_term_score(result)
+                            short_score = short_term_data.get('score', 50)
+                            long_score = long_term_data.get('score', 50)
+                            quant_score = short_score * 0.6 + long_score * 0.4
+                            trend_status = result.get('trend', {}).get('primary_trend', '盤整') if isinstance(result.get('trend'), dict) else '待分析'
+                            bias_20 = result.get('bias', {}).get('bias_20', 0) if isinstance(result.get('bias'), dict) else 0
+                        except Exception as dm_err:
+                            print(f"[自選股刷新] {symbol} 評分計算錯誤: {dm_err}")
+                        rec = result['recommendation']
+                        if isinstance(rec, dict):
+                            overall = rec.get('overall', '待分析')
+                            scenario = rec.get('scenario_name', '')
+                            short_term = rec.get('short_term', {})
+                            short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
+                            timing = rec.get('action_timing', '')
+                            recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
                         else:
-                            self._refresh_errors.append(f"{symbol}: 無分析結果")
-                            print(f"[自選股刷新] {symbol} 無分析結果")
-                            
+                            overall = str(rec); recommendation = str(rec)
+                        return {'symbol': symbol, 'ok': True, 'overall': overall,
+                                'recommendation': recommendation, 'quant_score': quant_score,
+                                'trend_status': trend_status, 'bias_20': bias_20}
                     except Exception as e:
-                        error_msg = f"{symbol}: {str(e)}"
-                        self._refresh_errors.append(error_msg)
-                        print(f"[自選股刷新] {symbol} 分析錯誤: {e}")
+                        return {'symbol': symbol, 'ok': False, 'error': str(e)}
+
+                done = 0
+                with ThreadPoolExecutor(max_workers=8) as _ex:
+                    _futs = {_ex.submit(_analyze_one, sd): sd for sd in stocks}
+                    for fut in as_completed(_futs):
+                        if not hasattr(self, '_refreshing') or not self._refreshing:
+                            print("[自選股刷新] 刷新已取消")
+                            break
+                        r = fut.result()
+                        done += 1
+                        self._safe_ui_update(lambda d=done, s=r['symbol']:
+                                             self._update_progress(f"刷新中：{d}/{total} ({s})"))
+                        if r['ok']:
+                            # DB 寫入在主迴圈序列化（每次 update 各自開連線，sqlite 檔案鎖安全）
+                            self.db.update_recommendation(r['symbol'], r['recommendation'])
+                            self.db.update_quant_data(
+                                r['symbol'], quant_score=r['quant_score'],
+                                trend_status=r['trend_status'], bias_20=r['bias_20'])
+                            success_count += 1
+                            print(f"[自選股刷新] {r['symbol']} 完成: {r['overall']} (Score: {r['quant_score']:.0f})")
+                        else:
+                            self._refresh_errors.append(f"{r['symbol']}: {r['error']}")
+                            print(f"[自選股刷新] {r['symbol']} 失敗: {r['error']}")
             finally:
                 # v4.5.13: 離開背景線程，重新啟用垃圾回收
                 ThreadSafeGC.exit_background_thread()
@@ -6859,87 +6837,70 @@ class StockAnalysisApp(tk.Tk):
                 except Exception as _pe:
                     print(f'[B2] 批次預抓略過: {_pe}')
 
-                for stock in stocks:
-                    # v4.5.17：支援新的資料格式（12個欄位）
-                    symbol = stock[0]
-                    name = stock[1]
-                    market = stock[2]
-                    
+                # ── 平行掃描（B2 #3）：worker 只算、不碰 DB；DB 寫入在主迴圈序列化 ──
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                SCENARIO_SHORT_NAMES = {
+                    'A': '雙強共振', 'B': '拉回佈局', 'C': '投機反彈',
+                    'D': '高檔震盪', 'E': '多空不明', 'F': '弱勢盤整',
+                    'G': '頭部確立', 'H': '空頭確認', 'I': '動能交易'
+                }
+
+                def _auto_one(stock):
+                    symbol = stock[0]; name = stock[1]; market = stock[2]
                     try:
                         result = QuickAnalyzer.analyze_stock(symbol, market, scan_mode=True)
-                        if result:
-                            # v4.5.8：使用 DecisionMatrix 統一計算（與報告一致）
-                            quant_score = 0
-                            trend_status = "待分析"
-                            bias_20 = 0
-                            
-                            try:
-                                short_term_data = DecisionMatrix.calculate_short_term_score(result)
-                                long_term_data = DecisionMatrix.calculate_long_term_score(result)
-                                investment_advice = DecisionMatrix.get_investment_advice(
-                                    short_term_data.get('score', 50),
-                                    long_term_data.get('score', 50)
-                                )
-                                
-                                # v4.5.18：計算量化評分（短線+長線加權平均）
-                                short_score = short_term_data.get('score', 50)
-                                long_score = long_term_data.get('score', 50)
-                                quant_score = short_score * 0.6 + long_score * 0.4
-                                
-                                # 取得趨勢狀態
-                                trend_status = result.get('trend', {}).get('primary_trend', '盤整') if isinstance(result.get('trend'), dict) else '待分析'
-                                
-                                # 取得乖離率
-                                bias_20 = result.get('bias', {}).get('bias_20', 0) if isinstance(result.get('bias'), dict) else 0
-                                
-                                # v4.5.11 修正：場景顯示簡短名稱（與報告一致）
-                                scenario_code = investment_advice.get('scenario_code', 'E')
-                                SCENARIO_SHORT_NAMES = {
-                                    'A': '雙強共振', 'B': '拉回佈局', 'C': '投機反彈',
-                                    'D': '高檔震盪', 'E': '多空不明', 'F': '弱勢盤整',
-                                    'G': '頭部確立', 'H': '空頭確認', 'I': '動能交易'
-                                }
-                                scenario_name = SCENARIO_SHORT_NAMES.get(scenario_code, scenario_code)
-                                action_zh = investment_advice.get('action_zh', '觀望')
-                                
-                                # 取得短線操作建議和進場時機
-                                rec = result.get('recommendation', {})
-                                if isinstance(rec, dict):
-                                    short_term = rec.get('short_term', {})
-                                    short_action = short_term.get('action', action_zh) if isinstance(short_term, dict) else action_zh
-                                    timing = rec.get('action_timing', '觀望中')
-                                    overall = rec.get('overall', action_zh)
-                                else:
-                                    short_action = action_zh
-                                    timing = '觀望中'
-                                    overall = action_zh
-                                
-                                # 格式：總結|場景|短線|時機
-                                recommendation = f"{overall}|{scenario_name}|{short_action}|{timing}"
-                            except Exception as dm_error:
-                                print(f"DecisionMatrix 計算錯誤 {symbol}: {dm_error}")
-                                # 回退到舊方法
-                                rec = result['recommendation']
-                                if isinstance(rec, dict):
-                                    overall = rec.get('overall', '待分析')
-                                    scenario = rec.get('scenario_name', '')
-                                    short_term = rec.get('short_term', {})
-                                    short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
-                                    timing = rec.get('action_timing', '')
-                                    recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
-                                else:
-                                    recommendation = str(rec)
-                            
-                            # v4.5.18：同時更新 recommendation 和 quant_data
-                            self.db.update_recommendation(symbol, recommendation)
-                            self.db.update_quant_data(
-                                symbol, 
-                                quant_score=quant_score,
-                                trend_status=trend_status,
-                                bias_20=bias_20
-                            )
+                        if not result:
+                            return None
+                        quant_score = 0; trend_status = "待分析"; bias_20 = 0
+                        try:
+                            short_term_data = DecisionMatrix.calculate_short_term_score(result)
+                            long_term_data = DecisionMatrix.calculate_long_term_score(result)
+                            investment_advice = DecisionMatrix.get_investment_advice(
+                                short_term_data.get('score', 50), long_term_data.get('score', 50))
+                            short_score = short_term_data.get('score', 50)
+                            long_score = long_term_data.get('score', 50)
+                            quant_score = short_score * 0.6 + long_score * 0.4
+                            trend_status = result.get('trend', {}).get('primary_trend', '盤整') if isinstance(result.get('trend'), dict) else '待分析'
+                            bias_20 = result.get('bias', {}).get('bias_20', 0) if isinstance(result.get('bias'), dict) else 0
+                            scenario_code = investment_advice.get('scenario_code', 'E')
+                            scenario_name = SCENARIO_SHORT_NAMES.get(scenario_code, scenario_code)
+                            action_zh = investment_advice.get('action_zh', '觀望')
+                            rec = result.get('recommendation', {})
+                            if isinstance(rec, dict):
+                                short_term = rec.get('short_term', {})
+                                short_action = short_term.get('action', action_zh) if isinstance(short_term, dict) else action_zh
+                                timing = rec.get('action_timing', '觀望中')
+                                overall = rec.get('overall', action_zh)
+                            else:
+                                short_action = action_zh; timing = '觀望中'; overall = action_zh
+                            recommendation = f"{overall}|{scenario_name}|{short_action}|{timing}"
+                        except Exception as dm_error:
+                            print(f"DecisionMatrix 計算錯誤 {symbol}: {dm_error}")
+                            rec = result['recommendation']
+                            if isinstance(rec, dict):
+                                overall = rec.get('overall', '待分析')
+                                scenario = rec.get('scenario_name', '')
+                                short_term = rec.get('short_term', {})
+                                short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
+                                timing = rec.get('action_timing', '')
+                                recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
+                            else:
+                                recommendation = str(rec)
+                        return {'symbol': symbol, 'recommendation': recommendation,
+                                'quant_score': quant_score, 'trend_status': trend_status, 'bias_20': bias_20}
                     except Exception as e:
                         print(f"自動分析 {symbol} 錯誤: {e}")
+                        return None
+
+                with ThreadPoolExecutor(max_workers=8) as _ex:
+                    for fut in as_completed([_ex.submit(_auto_one, st) for st in stocks]):
+                        r = fut.result()
+                        if r:
+                            self.db.update_recommendation(r['symbol'], r['recommendation'])
+                            self.db.update_quant_data(
+                                r['symbol'], quant_score=r['quant_score'],
+                                trend_status=r['trend_status'], bias_20=r['bias_20'])
                 
                 # v4.4.2 修正：使用安全的 UI 更新
                 def safe_update():
