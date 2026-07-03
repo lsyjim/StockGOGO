@@ -1042,8 +1042,18 @@ class DataSourceManager:
         if not want:
             return 0
 
-        suffix = ".TW" if market == "台股" else ""
-        tickers = [f"{s}{suffix}" for s in want]
+        # 每檔依市場別給正確後綴：上市 .TW、上櫃 .TWO（否則 OTC 批次抓不到、
+        # 落回逐檔），美股原樣。
+        def _suffix(sym):
+            if market != "台股":
+                return ''
+            try:
+                import twstock as _tw
+                info = _tw.codes.get(str(sym))
+                return '.TWO' if (info and getattr(info, 'market', '') == '上櫃') else '.TW'
+            except Exception:
+                return '.TW'
+        tickers = [f"{s}{_suffix(s)}" for s in want]
         try:
             data = yf.download(tickers, period=period, group_by='ticker',
                                threads=True, progress=False, auto_adjust=False)
@@ -1240,38 +1250,43 @@ class DataSourceManager:
                 print(f"[DataSourceManager] yfinance 熔斷中，剩餘 {remaining} 秒")
                 return None
             
-            # 構建 ticker symbol
-            if market == "台股":
-                ticker_symbol = f"{symbol}.TW"
-            else:
-                ticker_symbol = symbol
-            
-            ticker = YFinanceRateLimiter.get_ticker_safe(ticker_symbol)
-            
-            if period:
-                result = YFinanceRateLimiter.get_history(ticker, period=period)
-            else:
+            # 預先算日期字串（start/end 模式共用）
+            start_str = end_str = None
+            if not period:
                 if isinstance(start_date, datetime.datetime):
                     start_str = start_date.strftime('%Y-%m-%d')
                 else:
                     start_str = str(start_date)
-                
                 if isinstance(end_date, datetime.datetime):
                     end_str = end_date.strftime('%Y-%m-%d')
                 else:
                     end_str = str(end_date) if end_date else datetime.datetime.now().strftime('%Y-%m-%d')
-                
-                result = YFinanceRateLimiter.get_history(ticker, start=start_str, end=end_str)
-            
-            # 如果 .TW 沒數據，嘗試 .TWO（上櫃）
-            if (result is None or result.empty) and market == "台股":
-                ticker_symbol = f"{symbol}.TWO"
-                ticker = YFinanceRateLimiter.get_ticker_safe(ticker_symbol)
+
+            def _fetch(tsym):
+                tk = YFinanceRateLimiter.get_ticker_safe(tsym)
                 if period:
-                    result = YFinanceRateLimiter.get_history(ticker, period=period)
-                else:
-                    result = YFinanceRateLimiter.get_history(ticker, start=start_str, end=end_str)
-            
+                    return YFinanceRateLimiter.get_history(tk, period=period)
+                return YFinanceRateLimiter.get_history(tk, start=start_str, end=end_str)
+
+            # 構建 ticker：上櫃股先試 .TWO（proactive，省去 .TW 404 噪音與重試延遲）。
+            # 順序由 twstock 市場別決定；查不到市場別者沿用 .TW→.TWO 舊 fallback。
+            if market == "台股":
+                try:
+                    import twstock as _tw
+                    _info = _tw.codes.get(str(symbol))
+                    _is_otc = bool(_info and getattr(_info, 'market', '') == '上櫃')
+                except Exception:
+                    _is_otc = False
+                suffixes = ['.TWO', '.TW'] if _is_otc else ['.TW', '.TWO']
+            else:
+                suffixes = ['']
+
+            result = None
+            for suf in suffixes:
+                result = _fetch(f"{symbol}{suf}")
+                if result is not None and not result.empty:
+                    break
+
             return result
             
         except Exception as e:

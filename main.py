@@ -1318,6 +1318,31 @@ class QuickAnalyzer:
             cls._db = WatchlistDatabase()
         return cls._db
 
+    # 上櫃（OTC）判定快取：twstock market=='上櫃' → yfinance 需 .TWO 後綴
+    _otc_cache = {}
+
+    @classmethod
+    def _is_otc(cls, symbol):
+        """判斷台股代號是否為上櫃（OTC）。未知（ETF/新股）回 False。"""
+        s = str(symbol)
+        if s in cls._otc_cache:
+            return cls._otc_cache[s]
+        is_otc = False
+        try:
+            info = twstock.codes.get(s)
+            is_otc = bool(info and getattr(info, 'market', '') == '上櫃')
+        except Exception:
+            is_otc = False
+        cls._otc_cache[s] = is_otc
+        return is_otc
+
+    @classmethod
+    def _yf_symbol(cls, symbol, market="台股"):
+        """組出 yfinance ticker：台股上市 .TW、上櫃 .TWO、其他市場原樣。"""
+        if market != "台股":
+            return symbol
+        return f"{symbol}.TWO" if cls._is_otc(symbol) else f"{symbol}.TW"
+
     @staticmethod
     def aligned_prev_close(df):
         """
@@ -1423,12 +1448,11 @@ class QuickAnalyzer:
                     stock_name = symbol
             
             # 用於後續基本面分析的 yfinance ticker（可選）
+            # build_prompt: 上櫃股需 .TWO 後綴，否則 yfinance .info 查無資料
+            # （基本面 available=None、PE/PB="N/A"、beta 退回近似值）。
             ticker_symbol = None
             stock = None
-            if market == "台股":
-                ticker_symbol = f"{symbol}.TW"
-            else:
-                ticker_symbol = symbol
+            ticker_symbol = QuickAnalyzer._yf_symbol(symbol, market)
             
             # 只有在需要時才創建 yfinance ticker（延遲初始化）
             def get_yf_ticker():
