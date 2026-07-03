@@ -3563,27 +3563,17 @@ class MeanReversionAnalyzer:
     
     @staticmethod
     def _calculate_rsi(df, period=14):
-        """計算當前 RSI"""
+        """計算當前 RSI（Wilder，共用 wilder_rsi）"""
         try:
-            delta = df['Close'].diff()
-            gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            return rsi.iloc[-1]
+            return wilder_rsi(df['Close'], period).iloc[-1]
         except:
             return 50
-    
+
     @staticmethod
     def _calculate_rsi_series(df, period=14):
-        """計算 RSI 序列"""
+        """計算 RSI 序列（Wilder，共用 wilder_rsi）"""
         try:
-            delta = df['Close'].diff()
-            gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            return rsi
+            return wilder_rsi(df['Close'], period)
         except:
             return pd.Series([50] * len(df), index=df.index)
     
@@ -3758,40 +3748,12 @@ class MarketRegimeAnalyzer:
     
     @staticmethod
     def calculate_adx(df, period=14):
-        """計算 ADX 指標（Average Directional Index）"""
+        """計算 ADX 指標（標準 Wilder，共用 wilder_adx）。
+
+        回傳 (adx, plus_di, minus_di) tuple，與呼叫端既有取用方式對齊。
+        """
         try:
-            high = df['High']
-            low = df['Low']
-            close = df['Close']
-            
-            # 計算 +DM 和 -DM
-            plus_dm = high.diff()
-            minus_dm = low.diff().abs() * -1
-            
-            plus_dm[plus_dm < 0] = 0
-            minus_dm[minus_dm > 0] = 0
-            minus_dm = minus_dm.abs()
-            
-            # 當 +DM < -DM 時，+DM = 0
-            plus_dm[(plus_dm < minus_dm)] = 0
-            minus_dm[(minus_dm < plus_dm)] = 0
-            
-            # 計算 True Range
-            tr1 = high - low
-            tr2 = abs(high - close.shift(1))
-            tr3 = abs(low - close.shift(1))
-            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-            
-            # 計算平滑移動平均
-            atr = tr.rolling(window=period).mean()
-            plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-            minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
-            
-            # 計算 DX 和 ADX
-            dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-            adx = dx.rolling(window=period).mean()
-            
-            return adx, plus_di, minus_di
+            return wilder_adx(df['High'], df['Low'], df['Close'], period)
         except Exception as e:
             print(f"ADX 計算錯誤: {e}")
             return pd.Series([np.nan] * len(df)), pd.Series([np.nan] * len(df)), pd.Series([np.nan] * len(df))
@@ -4133,15 +4095,51 @@ def calculate_macd(data, short=12, long=26, signal=9):
     hist = macd_line - signal_line
     return macd_line, signal_line, hist
 
-def calculate_rsi(data, period=14):
-    delta = data.diff()
+def wilder_rsi(close, period: int = 14):
+    """RSI（Wilder 平滑）— 對齊台灣券商軟體與 TradingView 預設。
+
+    與舊版 Cutler's RSI（rolling SMA）相比，趨勢段可差 5–10 點；
+    config 的 RSI 門檻（>85 過熱、≤40 加分）本就按 Wilder 語意設定。
+    全專案 RSI 統一走此函式，避免未來各處各自漂移。
+    """
+    delta = close.diff()
     gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    rsi = 100 - 100 / (1 + rs)
+    return rsi.fillna(50)   # 起始區間 / 全平盤（avg_loss=0→rs=NaN）以中性值填補
+
+
+def wilder_adx(high, low, close, period: int = 14):
+    """ADX / +DI / −DI（標準 Wilder 定義 + Wilder 平滑）。
+
+    修正舊版兩個問題：
+      1. −DM 用 low.diff().abs()*-1 → 低點「上移」也被算成空頭力道（跳空上漲日誤判）。
+         標準：down_move = 前低 − 今低，只有 down>up 且 down>0 才計入 −DM。
+      2. 平滑用 SMA → 改為 Wilder（ewm alpha=1/period），對齊 config 的 25/30 門檻校準。
+    """
+    up = high.diff()
+    down = -low.diff()
+    plus_dm  = pd.Series(np.where((up > down) & (up > 0), up, 0.0), index=high.index)
+    minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=high.index)
+    tr = pd.concat([
+        high - low,
+        (high - close.shift(1)).abs(),
+        (low - close.shift(1)).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    plus_di  = 100 * plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr
+    minus_di = 100 * minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr
+    dx  = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx = dx.ewm(alpha=1/period, adjust=False).mean()
+    return adx, plus_di, minus_di
+
+
+def calculate_rsi(data, period=14):
+    """RSI（Wilder）。保留舊介面，內部委派給 wilder_rsi 共用實作。"""
+    return wilder_rsi(data, period)
 
 def calculate_kd(data, n=9, k_period=3, d_period=3):
     low_min = data['Low'].rolling(n).min()

@@ -1682,24 +1682,37 @@ class QuickAnalyzer:
                     # 計算 5/20/60 日相對表現
                     stock_ret_5d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-5] - 1) * 100 if len(hist) > 5 else 0
                     stock_ret_20d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-20] - 1) * 100 if len(hist) > 20 else 0
-                    
+
                     market_ret_5d = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-5] - 1) * 100 if len(market_hist) > 5 else 0
                     market_ret_20d = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-20] - 1) * 100 if len(market_hist) > 20 else 0
-                    
-                    rs_5d = stock_ret_5d - market_ret_5d
+
+                    rs_5d = stock_ret_5d - market_ret_5d      # 保留為顯示欄位（短線參考），不進分數
                     rs_20d = stock_ret_20d - market_ret_20d
-                    
-                    # 加權 RS 分數 (5日60% + 20日40%)
-                    rs_score = rs_5d * 0.6 + rs_20d * 0.4
-                    
-                    # 標準化到 0-100
-                    normalized_rs = max(0, min(100, 50 + rs_score * 5))
-                    
+
+                    # 60 日相對報酬（降噪主力）。資料不足 61 筆時 fallback 只用 20d 並註明。
+                    _has_60d = len(hist) > 60 and len(market_hist) > 60
+                    if _has_60d:
+                        stock_ret_60d  = (hist['Close'].iloc[-1] / hist['Close'].iloc[-60] - 1) * 100
+                        market_ret_60d = (market_hist['Close'].iloc[-1] / market_hist['Close'].iloc[-60] - 1) * 100
+                        rs_60d = stock_ret_60d - market_ret_60d
+                        # 20 日 40% + 60 日 60%：拉長觀察窗，避免大盤單日波動翻轉 RS
+                        rs_score = rs_20d * 0.4 + rs_60d * 0.6
+                        rs_note = ''
+                    else:
+                        rs_60d = None
+                        rs_score = rs_20d          # 資料不足：只用 20d
+                        rs_note = '資料不足60日，RS僅採20日'
+
+                    # 標準化到 0–100：±25% 超額報酬映射到 0–100
+                    normalized_rs = max(0, min(100, 50 + rs_score * 2))
+
                     result["relative_strength"] = {
                         'rs_score': round(normalized_rs, 1),
                         'vs_market': round(rs_score, 2),
-                        'rs_5d': round(rs_5d, 2),
-                        'rs_20d': round(rs_20d, 2)
+                        'rs_5d': round(rs_5d, 2),      # 顯示用
+                        'rs_20d': round(rs_20d, 2),
+                        'rs_60d': round(rs_60d, 2) if rs_60d is not None else None,
+                        'rs_note': rs_note,
                     }
                 else:
                     result["relative_strength"] = {'rs_score': 50, 'vs_market': 0}
@@ -2789,7 +2802,7 @@ class QuickAnalyzer:
         - MACD 背離偵測 (macd_divergence)
         - MA20 斜率 (ma20_slope)
         """
-        from analyzers import calculate_kd, calculate_macd
+        from analyzers import calculate_kd, calculate_macd, wilder_rsi
 
         ma5 = hist['Close'].rolling(window=5).mean()
         ma20 = hist['Close'].rolling(window=20).mean()
@@ -2823,13 +2836,9 @@ class QuickAnalyzer:
         else:
             bb_squeeze = None
 
-        # RSI 計算
-        delta = hist['Close'].diff()
-        gain = delta.clip(lower=0).rolling(window=14).mean()
-        loss = (-delta).clip(lower=0).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        
+        # RSI 計算（Wilder 平滑，共用 analyzers.wilder_rsi）
+        rsi = wilder_rsi(hist['Close'], 14)
+
         current_price = hist['Close'].iloc[-1]
         current_rsi = rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50
         
@@ -6231,15 +6240,10 @@ class StockAnalysisApp(tk.Tk):
             ma20 = df['Close'].rolling(20).mean()
             ma55 = df['Close'].rolling(55).mean()
             
-            # RSI（向量化計算）
-            delta = df['Close'].diff()
-            gain = delta.clip(lower=0)
-            loss = (-delta).clip(lower=0)
-            avg_gain = gain.rolling(14).mean()
-            avg_loss = loss.rolling(14).mean()
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
-            
+            # RSI（Wilder，共用 analyzers.wilder_rsi）
+            from analyzers import wilder_rsi
+            rsi = wilder_rsi(df['Close'], 14)
+
             # 乖離率
             bias_20 = ((df['Close'] - ma20) / ma20 * 100).fillna(0)
             

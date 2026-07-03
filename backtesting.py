@@ -114,13 +114,10 @@ class BacktestEngine:
     def backtest_momentum_strategy(df, period=14, slippage_pct=0.3):
         """動能策略回測（RSI）- v4.4.4 整合成本模型"""
         df = df.copy()
-        
-        delta = df['Close'].diff()
-        gain = delta.clip(lower=0).rolling(window=period).mean()
-        loss = (-delta).clip(lower=0).rolling(window=period).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        
+
+        from analyzers import wilder_rsi
+        df['RSI'] = wilder_rsi(df['Close'], period)   # Wilder，共用實作
+
         df['Signal'] = 0
         df.loc[df['RSI'] < 30, 'Signal'] = 1
         df.loc[df['RSI'] > 70, 'Signal'] = -1

@@ -7,7 +7,7 @@ import datetime
 from dateutil.parser import parse
 
 # 引用您的模組
-from analyzers import WaveAnalyzer, MeanReversionAnalyzer, VolumePriceAnalyzer
+from analyzers import WaveAnalyzer, MeanReversionAnalyzer, VolumePriceAnalyzer, wilder_rsi
 from config import QuantConfig
 
 # 強制啟用量價分析
@@ -61,12 +61,8 @@ class Backtester:
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['MA55'] = df['Close'].rolling(window=55).mean()
         
-        delta = df['Close'].diff()
-        gain = delta.clip(lower=0).rolling(window=14).mean()
-        loss = (-delta).clip(lower=0).rolling(window=14).mean()
-        rs = gain / loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        
+        df['RSI'] = wilder_rsi(df['Close'], 14)   # Wilder，共用實作
+
         df['Bias_20'] = ((df['Close'] - df['MA20']) / df['MA20']) * 100
         df['Vol_MA20'] = df['Volume'].rolling(window=20).mean()
         
