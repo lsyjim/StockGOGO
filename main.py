@@ -1571,7 +1571,7 @@ class QuickAnalyzer:
             if is_historical:
                 chip_flow = QuickAnalyzer._analyze_chip_flow_historical(symbol, market, analysis_date)
             else:
-                chip_flow = QuickAnalyzer._analyze_chip_flow_cached(symbol, market)
+                chip_flow = QuickAnalyzer._analyze_chip_flow_cached(symbol, market, scan_mode=scan_mode)
             
             # 成交量分析
             volume_analysis = QuickAnalyzer._analyze_volume_spike(hist)
@@ -2350,173 +2350,40 @@ class QuickAnalyzer:
             return {"spike_detected": False, "message": f"分析錯誤: {e}"}
     
     @staticmethod
-    def _analyze_chip_flow_cached(symbol, market="台股"):
-        """v4.4.1 改進：籌碼面分析（優先使用悟空 API）"""
+    def _analyze_chip_flow_cached(symbol, market="台股", scan_mode=False):
+        """
+        籌碼面分析統一出口（build_prompt_03）。
+
+        改由 ChipDataManager.get_chip_flow() 提供：FinMind 主源 + SQLite 落地 +
+        本地依交易日曆計算連買天數 + 缺日偵測。DB 無資料時 get_chip_flow 內部
+        會先觸發 backfill 再讀。掃描模式下 daily_update 已在掃描前批次跑過，
+        此處只讀 DB / 命中既有資料，維持零額外 API 呼叫的熱路徑原則。
+
+        舊版 _analyze_chip_flow_wukong / _crawl_invest 已 deprecate（見下），
+        僅保留供 debug 交叉比對，不在主流程呼叫。
+        """
         if market != "台股":
             return {
                 "available": False,
                 "message": "籌碼面分析僅適用於台股"
             }
-        
         try:
-            # v4.4.1：優先嘗試悟空 API
-            wukong_result = QuickAnalyzer._analyze_chip_flow_wukong(symbol)
-            if wukong_result and wukong_result.get('available'):
-                return wukong_result
-            
-            # 悟空 API 失敗，嘗試原有的 TWSE 方法
-            db = QuickAnalyzer.get_db()
-            today = datetime.datetime.now()
-            
-            # 嘗試從緩存讀取
-            records = []
-            for i in range(10):  # 嘗試過去10天
-                check_date = today - datetime.timedelta(days=i)
-                date_str = check_date.strftime('%Y%m%d')
-                
-                # 先檢查緩存
-                cached = db.get_cached_chip_data(symbol, date_str)
-                if cached:
-                    records.append({
-                        'date': date_str,
-                        'foreign_investor': cached['foreign_investor'],
-                        'investment_trust': cached['investment_trust']
-                    })
-                else:
-                    # 緩存沒有，嘗試抓取
-                    rec = QuickAnalyzer._crawl_invest(check_date, symbol)
-                    if rec:
-                        # 存入緩存
-                        db.save_chip_cache(
-                            symbol, date_str,
-                            rec['foreign_investor'],
-                            rec['investment_trust']
-                        )
-                        records.append(rec)
-                
-                if len(records) >= 3:
-                    break
-                
-                # 避免請求過快
-                if not cached:
-                    time.sleep(0.3)
-            
-            if len(records) < 2:
-                # 最後嘗試悟空 API 的備用方案
-                return QuickAnalyzer._analyze_chip_flow_wukong(symbol) or {
-                    "available": False,
-                    "message": "無法取得籌碼資料"
-                }
-            
-            # 分析籌碼數據
-            df = pd.DataFrame(records)
-            df['date_dt'] = pd.to_datetime(df['date'], format="%Y%m%d")
-            df.sort_values('date_dt', inplace=True)
-            
-            last_two = df.tail(2)
-            fi_vals = last_two['foreign_investor'].values
-            it_vals = last_two['investment_trust'].values
-            
-            # 外資判斷（v4.4.2 修正：計算連續天數）
-            foreign_consecutive_days = 0
-            if all(fi > 0 for fi in fi_vals):
-                foreign_continuous = "連續買超"
-                foreign_signal = "偏多"
-                foreign_consecutive_days = 2  # 至少2天
-            elif all(fi < 0 for fi in fi_vals):
-                foreign_continuous = "連續賣超"
-                foreign_signal = "偏空"
-                foreign_consecutive_days = -2  # 負值表示賣超
-            elif fi_vals[-1] > 0:
-                foreign_continuous = "買超"
-                foreign_signal = "中性偏多"
-                foreign_consecutive_days = 1
-            elif fi_vals[-1] < 0:
-                foreign_continuous = "賣超"
-                foreign_signal = "中性偏空"
-                foreign_consecutive_days = -1
-            else:
-                foreign_continuous = "觀望"
-                foreign_signal = "中性"
-                foreign_consecutive_days = 0
-            
-            # 投信判斷（v4.4.2 修正：計算連續天數）
-            trust_consecutive_days = 0
-            if all(it > 0 for it in it_vals):
-                trust_continuous = "連續買超"
-                trust_signal = "偏多"
-                trust_consecutive_days = 2
-            elif all(it < 0 for it in it_vals):
-                trust_continuous = "連續賣超"
-                trust_signal = "偏空"
-                trust_consecutive_days = -2
-            elif it_vals[-1] > 0:
-                trust_continuous = "買超"
-                trust_signal = "中性偏多"
-                trust_consecutive_days = 1
-            elif it_vals[-1] < 0:
-                trust_continuous = "賣超"
-                trust_signal = "中性偏空"
-                trust_consecutive_days = -1
-            else:
-                trust_continuous = "觀望"
-                trust_signal = "中性"
-                trust_consecutive_days = 0
-            
-            # 綜合訊號
-            if foreign_signal == "偏多" and trust_signal == "偏多":
-                overall_signal = "籌碼集中"
-                signal_color = "positive"
-            elif foreign_signal == "偏多" or trust_signal == "偏多":
-                overall_signal = "籌碼偏多"
-                signal_color = "positive"
-            elif foreign_signal == "偏空" and trust_signal == "偏空":
-                overall_signal = "籌碼分散"
-                signal_color = "warning"
-            elif foreign_signal == "偏空" or trust_signal == "偏空":
-                overall_signal = "籌碼偏空"
-                signal_color = "warning"
-            else:
-                overall_signal = "籌碼中性"
-                signal_color = "neutral"
-            
-            # v4.4.2 新增：數值欄位
-            foreign_net = fi_vals[-1]
-            trust_net = it_vals[-1]
-            foreign_amount = foreign_net / 100000000
-            trust_amount = trust_net / 100000000
-            
-            return {
-                "available": True,
-                "data_source": "TWSE",
-                "foreign": f"{foreign_continuous} ({foreign_amount:.2f}億)",
-                "trust": f"{trust_continuous} ({trust_amount:.2f}億)",
-                "dealer": "暫無數據",
-                "foreign_continuous": foreign_continuous,
-                "trust_continuous": trust_continuous,
-                # v4.4.2 新增：數值驅動欄位
-                "foreign_net": foreign_net,
-                "trust_net": trust_net,
-                "dealer_net": 0,
-                "foreign_consecutive_days": foreign_consecutive_days,
-                "trust_consecutive_days": trust_consecutive_days,
-                "signal": overall_signal,
-                "signal_color": signal_color,
-                "message": f"最新資料日期：{last_two['date'].iloc[-1]}（已緩存）"
-            }
-            
+            from chip_data_manager import get_chip_manager
+            mgr = get_chip_manager(QuickAnalyzer.get_db().db_name)
+            # 掃描熱路徑 allow_fetch=False → 只讀 DB、零 API（daily_update 已批次補過）
+            return mgr.get_chip_flow(symbol, allow_fetch=not scan_mode)
         except Exception as e:
-            print(f"籌碼分析錯誤: {e}")
-            # 最後嘗試悟空 API
-            return QuickAnalyzer._analyze_chip_flow_wukong(symbol) or {
-                "available": False,
-                "message": f"籌碼分析失敗: {str(e)}"
-            }
-    
+            print(f"[籌碼] {symbol} ChipDataManager 失敗: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"available": False, "message": f"籌碼分析失敗: {str(e)}"}
+
     @staticmethod
     def _analyze_chip_flow_wukong(symbol):
         """
-        v4.4.2 修正：使用悟空 API 取得個股三大法人籌碼資料
+        [DEPRECATED build_prompt_03] 悟空 API 籌碼（連續筆數非連續交易日、無缺日偵測）。
+        已被 ChipDataManager 取代，不在主流程呼叫；僅保留供 debug 交叉比對。
+
         API: https://api.wukong.com.tw/stock/{stockId}/iibs
         
         實際回傳格式：
@@ -2718,9 +2585,12 @@ class QuickAnalyzer:
     
     @staticmethod
     def _crawl_invest(date, stock_code):
-        """抓取外資投信買賣超資料"""
+        """[DEPRECATED build_prompt_03] 舊 TWSE T86 抓法（舊端點 /fund/T86、
+        selectType='ALL' 含權證、單位股、只看最後 2 天）。已被 ChipDataManager
+        的官方備援（rwd/zh/fund/T86 + ALLBUT0999，欄位以 fields 名稱定位）取代。
+        僅保留供 debug 交叉比對，不在主流程呼叫。"""
         date_str = date.strftime('%Y%m%d')
-        
+
         url = "https://www.twse.com.tw/fund/T86"
         params = {
             'response': 'json',
@@ -5404,10 +5274,104 @@ class StockAnalysisApp(tk.Tk):
         
         # 清理過期緩存
         self.db.clean_old_cache(days=7)
-        
+
         # v4.3 新增：開啟程式時顯示市場排行
         self.after(500, self._show_market_ranking)
-    
+
+        # build_prompt_03：籌碼資料層啟動初始化 + 每日排程（背景執行，不卡 UI）
+        self.after(1500, self._chip_startup_init)
+        self._schedule_daily_chip_update()
+
+    def _chip_startup_init(self):
+        """
+        程式啟動時的籌碼資料初始化（背景執行緒）：
+        - 首次執行：sync_calendar + 對 watchlist backfill(90)
+        - 之後：若 chip_daily 最新日落後 trading_calendar 最新日 > 1 交易日 → 自動補洞
+        """
+        import threading
+
+        def _work():
+            try:
+                from chip_data_manager import get_chip_manager
+                mgr = get_chip_manager(self.db.db_name)
+                # 交易日曆（首次或過期）
+                if not mgr.get_latest_trading_day():
+                    mgr.sync_calendar()
+                else:
+                    mgr.sync_calendar()   # 每次啟動輕量補最新交易日
+
+                stocks = self.db.get_all_stocks()
+                syms = [s[0] for s in stocks if (s[2] if len(s) > 2 else '台股') == '台股']
+                if not syms:
+                    return
+
+                # 首次執行偵測：chip_daily 完全沒資料 → 對 watchlist backfill(90)
+                import sqlite3
+                conn = sqlite3.connect(self.db.db_name)
+                has_any = conn.execute("SELECT 1 FROM chip_daily LIMIT 1").fetchone()
+                conn.close()
+                if not has_any:
+                    print(f"[籌碼] 首次執行：backfill {len(syms)} 檔（各 90 交易日）")
+                    for sym in syms:
+                        mgr.backfill(sym, trading_days=90)
+                        import time as _t; _t.sleep(0.2)
+                    print("[籌碼] 首次 backfill 完成")
+                    return
+
+                # 常態：檢查落後程度
+                latest_cal = mgr.get_latest_trading_day()
+                conn = sqlite3.connect(self.db.db_name)
+                row = conn.execute("SELECT MAX(date) FROM chip_daily WHERE foreign_net IS NOT NULL").fetchone()
+                conn.close()
+                latest_chip = row[0] if row else None
+                if latest_cal and latest_chip:
+                    # 若最新籌碼日落後最新交易日，代表有洞 → 補
+                    if latest_chip < latest_cal:
+                        print(f"[籌碼] 資料落後（chip={latest_chip} < cal={latest_cal}），自動補洞")
+                        mgr.daily_update(syms, holes=5)
+            except Exception as e:
+                print(f"[籌碼] 啟動初始化略過: {e}")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _schedule_daily_chip_update(self):
+        """
+        每交易日 16:30 後執行 daily_update（法人資料盤後陸續更新）。
+        以 self.after 週期檢查，每日僅觸發一次；當日資料尚未出現時該日留 NULL，
+        明日自動補洞。
+        """
+        import datetime as _dt
+
+        def _tick():
+            try:
+                now = _dt.datetime.now()
+                today = now.strftime('%Y-%m-%d')
+                already = getattr(self, '_chip_updated_date', None)
+                if now.hour >= 16 and (now.hour > 16 or now.minute >= 30) and already != today:
+                    self._chip_updated_date = today
+                    import threading
+                    def _do():
+                        try:
+                            from chip_data_manager import get_chip_manager
+                            mgr = get_chip_manager(self.db.db_name)
+                            mgr.sync_calendar()
+                            stocks = self.db.get_all_stocks()
+                            syms = [s[0] for s in stocks if (s[2] if len(s) > 2 else '台股') == '台股']
+                            if syms:
+                                n = mgr.daily_update(syms, holes=5)
+                                print(f"[籌碼] 16:30 排程 daily_update 補齊 {n} 筆")
+                        except Exception as e:
+                            print(f"[籌碼] 排程 daily_update 略過: {e}")
+                    threading.Thread(target=_do, daemon=True).start()
+            except Exception:
+                pass
+            # 每 10 分鐘檢查一次
+            self.after(10 * 60 * 1000, _tick)
+
+        # 啟動後 10 分鐘首次檢查
+        self.after(10 * 60 * 1000, _tick)
+
+
     def _show_market_ranking(self):
         """顯示市場排行彈窗"""
         def on_stock_select(symbol):
@@ -6727,6 +6691,20 @@ class StockAnalysisApp(tk.Tk):
                         DataSourceManager.prefetch_realtime(_tw, '台股')
                 except Exception as _pe:
                     print(f'[B2] 批次預抓略過: {_pe}')
+
+                # build_prompt_03：掃描前批次補籌碼洞（daily_update），
+                # 之後平行掃描過程只讀 DB、零籌碼 API 呼叫（維持 scan_mode 速度原則）。
+                try:
+                    _tw_syms = [s[0] for s in stocks if (s[2] if len(s) > 2 else '台股') == '台股']
+                    if _tw_syms:
+                        from chip_data_manager import get_chip_manager
+                        _cm = get_chip_manager(self.db.db_name)
+                        if not _cm.get_latest_trading_day():
+                            _cm.sync_calendar()
+                        _filled = _cm.daily_update(_tw_syms, holes=5)
+                        print(f'[籌碼] 掃描前 daily_update 補齊 {_filled} 筆')
+                except Exception as _ce:
+                    print(f'[籌碼] 掃描前 daily_update 略過: {_ce}')
 
                 # ── 平行掃描（B2 #3）：scan_mode + 批次預抓快取命中 → 可安全併發 ──
                 # worker 只做分析/計算，不碰 DB/UI（執行緒安全）；DB 寫入與 UI 更新

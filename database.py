@@ -112,6 +112,28 @@ class WatchlistDatabase:
             )
         ''')
         
+        # build_prompt_03：籌碼日資料表（FinMind 主源，本地連買計算用）
+        # 語意鐵律：foreign_net 等為 NULL = 未取得（缺日）；0 = 法人當日無動作（合法值）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS chip_daily (
+                symbol      TEXT NOT NULL,
+                date        TEXT NOT NULL,
+                foreign_net INTEGER,
+                trust_net   INTEGER,
+                dealer_net  INTEGER,
+                source      TEXT,
+                fetched_at  TEXT,
+                PRIMARY KEY (symbol, date)
+            )
+        ''')
+        # build_prompt_03：台股交易日曆（連買天數依此往回走，具缺日偵測）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS trading_calendar (
+                date   TEXT PRIMARY KEY,
+                source TEXT
+            )
+        ''')
+
         # v4.0 新增：大盤數據緩存表（用於 Beta 計算和市場環境判斷）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS market_cache (

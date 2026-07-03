@@ -15,6 +15,11 @@ __pycache__/
 *.pem
 *.key
 
+# Secrets / tokens (FinMind 等 API token 只從環境變數讀，絕不入庫)
+.env
+*.env
+secrets.json
+
 # SDK wheel (too large, install via pip)
 *.whl
 

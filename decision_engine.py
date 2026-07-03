@@ -461,9 +461,14 @@ class ThreeLayerEngine:
         ])
 
         # ── 籌碼去化：計算天花板放寬幅度 ────────────────────────
+        # build_prompt_03 fail-safe：籌碼資料不可信（缺日）→ 略過籌碼機制，寧可不加分。
         chip_relax = 0
         chip_note  = ''
-        if chip.get('available'):
+        _chip_reliable = chip.get('data_reliable') is not False   # None/True 皆視為可用
+        if chip.get('available') and not _chip_reliable:
+            _miss = len(chip.get('missing_dates', []) or [])
+            details.append(f'籌碼資料不完整（缺 {_miss} 日），略過籌碼機制')
+        if chip.get('available') and _chip_reliable:
             buy_days = chip.get('consecutive_buy_days', 0) or 0
             if buy_days >= 5:
                 chip_relax = 25
@@ -712,7 +717,11 @@ class ThreeLayerEngine:
         _chip_trigger      = ''
         _chip_strong       = False
         _chip_strong_plus  = False   # v3.1：B→A 升級需此旗標
-        if chip.get('available'):
+        # build_prompt_03 fail-safe：籌碼不可信（缺日）→ 全部籌碼觸發跳過。
+        if chip.get('available') and chip.get('data_reliable') is False:
+            _miss = len(chip.get('missing_dates', []) or [])
+            triggers.append(f'籌碼資料不完整（缺 {_miss} 日），略過籌碼機制')
+        if chip.get('available') and chip.get('data_reliable') is not False:
             buy_days = chip.get('consecutive_buy_days', 0) or 0
             if buy_days >= 7:
                 _chip_trigger     = f'法人連買{buy_days}天（強++）'
@@ -910,6 +919,12 @@ class ThreeLayerEngine:
         if not chip.get('available'):
             return {'filter': 'neutral', 'note': '無籌碼資料', 'ranking_boost': 0}
 
+        # build_prompt_03 fail-safe：籌碼不可信（缺日）→ 不排序、不降級，只給提示。
+        if chip.get('data_reliable') is False:
+            _miss = len(chip.get('missing_dates', []) or [])
+            return {'filter': 'neutral', 'ranking_boost': 0,
+                    'note': f'籌碼資料不完整（缺 {_miss} 日），略過籌碼機制'}
+
         consecutive_buy  = chip.get('consecutive_buy_days',  0) or 0
         consecutive_sell = chip.get('consecutive_sell_days', 0) or 0
         foreign_net      = chip.get('foreign_net', 0) or 0
@@ -1084,13 +1099,19 @@ class ThreeLayerEngine:
         # 新規則：
         #   連賣 ≥ 5 天 且 日均賣超量 ≥ 500 張 → 量能確認的惡化，severity='warning'
         #   連賣 ≥ 7 天（無論量能）             → 持續惡化，severity='warning'
-        if chip.get('available'):
+        # build_prompt_03：
+        #   - 判斷來源由 foreign_net（單日）改為 avg_sell_net_5d（近5交易日日均，張），
+        #     門檻 500 張語意不變但終於是「日均賣超量」而非單日淨額。
+        #   - 籌碼不可信（缺日）→ 整段跳過（fail-safe）。
+        if chip.get('available') and chip.get('data_reliable') is not False:
             csell    = chip.get('consecutive_sell_days', 0) or 0
-            sell_net = abs(chip.get('foreign_net', 0) or 0)   # 外資淨賣（張）
+            # avg_sell_net_5d 為 signed（負=賣超）；取賣方向的絕對日均量
+            _avg5    = chip.get('avg_sell_net_5d', 0) or 0
+            sell_net = abs(_avg5) if _avg5 < 0 else 0        # 近5日日均賣超（張）
             if csell >= 5 and sell_net >= 500:
                 sell_signals.append({
                     'type':     'REVERSAL',
-                    'reason':   f'法人連賣 {csell} 天且日均賣超 {sell_net:,} 張，籌碼快速惡化',
+                    'reason':   f'法人連賣 {csell} 天且近5日日均賣超 {sell_net:,.0f} 張，籌碼快速惡化',
                     'severity': 'warning',
                 })
             elif csell >= 7:
