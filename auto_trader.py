@@ -755,9 +755,9 @@ class AutoTrader:
             # 取得技術指標
             tech = result.get('technical', {})
             rsi = tech.get('rsi', 50)
-            ma5 = tech.get('ma5', 0)
-            ma20 = tech.get('ma20', 0)
-            ma55 = tech.get('ma55', 0)
+            ma5 = tech.get('ma5') or 0
+            ma20 = tech.get('ma20') or 0
+            ma55 = tech.get('ma55') or 0
             
             # 取得價格和成交量資訊
             current_price = result.get('current_price', 0)
@@ -947,7 +947,7 @@ class AutoTrader:
         
         # 取得 MA5（用於移動停利）
         tech = result.get('technical', {})
-        ma5 = tech.get('ma5', 0)
+        ma5 = tech.get('ma5') or 0
         
         # 取得各種建議
         short_term_action = dm.get('short_term_action', '')  # 短線建議

@@ -2790,11 +2790,39 @@ class QuickAnalyzer:
         - MA20 斜率 (ma20_slope)
         """
         from analyzers import calculate_kd, calculate_macd
-        
+
         ma5 = hist['Close'].rolling(window=5).mean()
         ma20 = hist['Close'].rolling(window=20).mean()
         ma60 = hist['Close'].rolling(window=60).mean()
-        
+
+        # === 長期均線（資料不足 → None，禁止 "N/A" 字串）===
+        # 富邦資料源有 1 年上限（約 240–250 個交易日），ma240 可能算不出來，
+        # 引擎端（decision_engine）在 None 時等比降級，不視為錯誤
+        close = hist['Close']
+        ma120 = float(close.rolling(120).mean().iloc[-1]) if len(hist) >= 120 else None
+        ma240 = float(close.rolling(240).mean().iloc[-1]) if len(hist) >= 240 else None
+
+        # === MA20 序列（引擎斜率計算用）：近 6 筆 MA20，由舊到新 ===
+        # decision_engine.score_direction 取 [-1] 與 [-5] 計 5 日斜率，需長度 ≥ 5
+        ma20_series = [float(x) for x in ma20.tail(6)] if len(hist) >= 25 else None
+
+        # === ATR14（Wilder 平滑）===
+        tr = pd.concat([
+            hist['High'] - hist['Low'],
+            (hist['High'] - hist['Close'].shift(1)).abs(),
+            (hist['Low'] - hist['Close'].shift(1)).abs()
+        ], axis=1).max(axis=1)
+        atr14 = float(tr.ewm(alpha=1/14, adjust=False).mean().iloc[-1]) if len(hist) >= 15 else None
+
+        # === 個股布林壓縮：BB(20,2) 帶寬處於近 120 日最低 20 百分位 ===
+        bb_std = close.rolling(20).std()
+        bandwidth = (4 * bb_std) / ma20            # (upper-lower)/mid = 4σ/mid
+        if len(hist) >= 60:
+            bw_recent = bandwidth.dropna().tail(120)
+            bb_squeeze = bool(bandwidth.iloc[-1] <= bw_recent.quantile(0.20)) if len(bw_recent) > 0 else None
+        else:
+            bb_squeeze = None
+
         # RSI 計算
         delta = hist['Close'].diff()
         gain = delta.clip(lower=0).rolling(window=14).mean()
@@ -2882,9 +2910,17 @@ class QuickAnalyzer:
             "signal": signal,
             "rsi": round(current_rsi, 2),
             "adx": round(current_adx, 2),
-            "ma5": round(ma5.iloc[-1], 2) if not pd.isna(ma5.iloc[-1]) else "N/A",
-            "ma20": round(ma20.iloc[-1], 2) if not pd.isna(ma20.iloc[-1]) else "N/A",
-            "ma60": round(ma60.iloc[-1], 2) if not pd.isna(ma60.iloc[-1]) else "N/A",
+            # 均線：資料不足 → None（禁止 "N/A" 字串，避免下游 float 與 str 比較拋錯）
+            "ma5": round(ma5.iloc[-1], 2) if not pd.isna(ma5.iloc[-1]) else None,
+            "ma20": round(ma20.iloc[-1], 2) if not pd.isna(ma20.iloc[-1]) else None,
+            "ma60": round(ma60.iloc[-1], 2) if not pd.isna(ma60.iloc[-1]) else None,
+            # === 決策引擎接線新增欄位（資料不足 → None）===
+            "ma120": round(ma120, 2) if ma120 is not None else None,
+            "ma240": round(ma240, 2) if ma240 is not None else None,
+            "ma20_series": ma20_series,                      # list[float]（舊→新，長度 6）或 None
+            "atr": round(atr14, 2) if atr14 is not None else None,     # 同值兩鍵，相容引擎現有讀取
+            "atr14": round(atr14, 2) if atr14 is not None else None,
+            "bb_squeeze": bb_squeeze,                        # bool 或 None（個股布林壓縮）
             # === v4.5.19 新增欄位 ===
             "k": round(k_value, 2),
             "d": round(d_value, 2),
@@ -2901,8 +2937,8 @@ class QuickAnalyzer:
         try:
             current_price = hist['Close'].iloc[-1]
             
-            ma20 = technical['ma20']
-            if isinstance(ma20, str):
+            ma20 = technical.get('ma20')
+            if not isinstance(ma20, (int, float)):
                 ma20 = current_price * 0.95
             
             recent_low = hist['Low'].tail(20).min()
@@ -4946,10 +4982,10 @@ class RecommendationDialog:
         tk.Label(row2, text=f"{adx:.1f} ({adx_status})", font=("Arial", 11), 
                 fg=adx_color, bg=DarkTheme.BG_TABLE_EVEN).pack(side=tk.LEFT)
         
-        # 均線
-        ma5 = tech.get('ma5', 0)
-        ma20 = tech.get('ma20', 0)
-        ma60 = tech.get('ma60', 0)
+        # 均線（None 防護：資料不足時為 None，用 `or 0` 避免比較/格式化拋錯）
+        ma5 = tech.get('ma5') or 0
+        ma20 = tech.get('ma20') or 0
+        ma60 = tech.get('ma60') or 0
         price = self.result.get('current_price', 0)
         
         if ma5 > 0 and ma20 > 0:

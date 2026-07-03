@@ -144,9 +144,9 @@ class DecisionMatrix:
         
         # 取得均線
         tech = result.get('technical', {})
-        ma20 = tech.get('ma20', 0)
-        ma60 = tech.get('ma60', 0)
-        
+        ma20 = tech.get('ma20') or 0
+        ma60 = tech.get('ma60') or 0
+
         # 初始化目標價
         target_price = 0
         stop_loss = 0
@@ -1201,10 +1201,11 @@ class DecisionMatrix:
         # ========================================
         # 1. 年線趨勢評分
         # ========================================
-        ma240 = tech.get('ma240', 0)
-        ma120 = tech.get('ma120', 0)
-        ma60 = tech.get('ma60', 0)
-        ma20 = tech.get('ma20', 0)
+        # None 防護：ma120/ma240 資料不足時為 None，用 `or 0` 避免 None>0 比較拋錯
+        ma240 = tech.get('ma240') or 0
+        ma120 = tech.get('ma120') or 0
+        ma60 = tech.get('ma60') or 0
+        ma20 = tech.get('ma20') or 0
         
         if current_price > 0:
             # 站上/跌破年線
@@ -2198,9 +2199,9 @@ class DecisionMatrix:
         
         # 取得技術指標
         tech = result.get('technical', {})
-        ma5 = tech.get('ma5', 0)
-        ma20 = tech.get('ma20', 0)
-        ma60 = tech.get('ma60', 0)
+        ma5 = tech.get('ma5') or 0
+        ma20 = tech.get('ma20') or 0
+        ma60 = tech.get('ma60') or 0
         rsi = tech.get('rsi', 0)
         
         # 取得乖離率
@@ -2517,13 +2518,13 @@ class DecisionMatrix:
         macd_signal = tech.get('macd_signal', 0)
         adx = tech.get('adx', 0)
         
-        # 取得均線資訊
-        ma5 = tech.get('ma5', 0)
-        ma10 = tech.get('ma10', 0)
-        ma20 = tech.get('ma20', 0)
-        ma60 = tech.get('ma60', 0)
-        ma120 = tech.get('ma120', 0)
-        ma240 = tech.get('ma240', 0)
+        # 取得均線資訊（None 防護：ma120/ma240 資料不足時為 None）
+        ma5 = tech.get('ma5') or 0
+        ma10 = tech.get('ma10') or 0
+        ma20 = tech.get('ma20') or 0
+        ma60 = tech.get('ma60') or 0
+        ma120 = tech.get('ma120') or 0
+        ma240 = tech.get('ma240') or 0
         
         # 取得乖離率
         mr = result.get('mean_reversion', {})
@@ -2930,6 +2931,10 @@ class WaveAnalyzer:
             
             # 4. 多頭環境判斷
             is_bullish_env = price_above_ma and ma55_slope > 0
+
+            # 4b. 空頭環境判斷（與 is_bullish_env 完全鏡像對稱）
+            # bullish：收盤 > 波段均線 且 均線上揚；bearish：收盤 < 波段均線 且 均線下彎
+            is_bearish_env = (not price_above_ma) and ma55_slope < 0
             
             # 5. 三盤突破偵測（進場訊號）
             breakout_signal = WaveAnalyzer._detect_three_bar_breakout(df)
@@ -2957,6 +2962,7 @@ class WaveAnalyzer:
                 
                 # 環境分析
                 'is_bullish_env': is_bullish_env,
+                'is_bearish_env': is_bearish_env,
                 'price_above_ma55': price_above_ma,
                 'ma55_trend': '上揚' if ma55_slope > 0 else '下彎' if ma55_slope < 0 else '走平',
                 'ma55_value': round(current_ma55, 2),

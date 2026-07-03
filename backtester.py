@@ -85,7 +85,7 @@ class Backtester:
         try:
             tech = analysis_result.get('technical', {})
             rsi = tech.get('rsi', 50)
-            ma5, ma20, ma55 = tech.get('ma5', 0), tech.get('ma20', 0), tech.get('ma55', 0)
+            ma5, ma20, ma55 = tech.get('ma5') or 0, tech.get('ma20') or 0, tech.get('ma55') or 0
             current_price = analysis_result.get('current_price', 0)
             bias_20 = analysis_result.get('bias_20', 0)
             vp_signals = analysis_result.get('volume_price', {}).get('signals', [])

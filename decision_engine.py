@@ -76,6 +76,22 @@ class ThreeLayerEngine:
     DIRECTION_VETO = 40
     POSITION_VETO  = 40
 
+    # ─── 數值 sanitizer ──────────────────────────────────────────────────────
+    @staticmethod
+    def _num(x):
+        """str/'N/A'/None/NaN → None；數值 → float。
+
+        用於清洗 technical dict 取出的值：analyzers 端已改為資料不足填 None，
+        但仍可能有舊路徑殘留字串或 NaN，統一在引擎入口過濾，杜絕 float/str 比較拋錯。
+        """
+        if x is None or isinstance(x, str):
+            return None
+        try:
+            v = float(x)
+            return None if v != v else v   # NaN 檢查（NaN != NaN）
+        except (TypeError, ValueError):
+            return None
+
     # ─── A2 共用：動能模式判定 ───────────────────────────────────────────────
     @staticmethod
     def _is_momentum(result: dict) -> bool:
@@ -207,49 +223,63 @@ class ThreeLayerEngine:
         - RS 是台股選強汰弱的核心因子，在多頭市場尤其關鍵
         - ADX 只能「加強」或「削弱」，不能逆轉方向
         """
+        _num     = ThreeLayerEngine._num
         tech    = result.get('technical', {})
-        current = result.get('current_price', 0)
+        current = _num(result.get('current_price', 0))
         rs_data = result.get('relative_strength', {})
 
-        ma20  = tech.get('ma20',  current) or current
-        ma60  = tech.get('ma60',  current) or current
-        ma120 = tech.get('ma120', current) or current
-        ma240 = tech.get('ma240', current) or current
-        adx   = tech.get('adx', 20) or 20
+        # 均線一律過 _num()：資料不足 → None（不再以 current 當 fallback，杜絕反轉 bug）
+        ma20  = _num(tech.get('ma20'))
+        ma60  = _num(tech.get('ma60'))
+        ma120 = _num(tech.get('ma120'))
+        ma240 = _num(tech.get('ma240'))
+        adx   = _num(tech.get('adx'))
+        if adx is None:
+            adx = 20
 
         # MA20 歷史序列（用於斜率計算）
-        ma20_series = tech.get('ma20_series', [])  # 近 5 日 MA20，由 analyzers 填入
+        ma20_series = tech.get('ma20_series')  # 近 6 日 MA20（舊→新），由 analyzers 填入；None=資料不足
 
         details = []
 
-        # ── 主判斷：均線排列（0–4 層多頭）────────────────────────
-        bull_layers = [
-            current > ma20,
-            ma20    > ma60,
-            ma60    > ma120,
-            ma120   > ma240,
-        ]
-        bull_count = sum(bull_layers)
-        bear_count = 4 - bull_count
+        # ── 主判斷：均線排列「可用層等比計分」──────────────────────
+        # 只比對「兩端都有值」的相鄰層，避免用 current 當 fallback 造成的邏輯反轉。
+        # 對應原本 4 層級距：1.0→85、≥0.75→68、≥0.5→50、≥0.25→30、else→15
+        pairs = [(current, ma20), (ma20, ma60), (ma60, ma120), (ma120, ma240)]
+        valid = [(a, b) for a, b in pairs if a is not None and b is not None]
+        n_valid = len(valid)
 
-        # v3.1 L1：改用整數步進，消除 16.25 浮點截斷誤差（原 15/31/47/63/80 間距不等）
-        # 新設計：10 / 30 / 50 / 68 / 85，明確的多空分界在 50（2/4 中性）
-        _BASE_SCORE_MAP = {0: 10, 1: 30, 2: 50, 3: 68, 4: 85}
-        base_score = _BASE_SCORE_MAP[bull_count]
-
-        _align_labels = {4: '均線完全多頭排列（4/4）', 3: '均線偏多排列（3/4）',
-                         2: '均線中性混合（2/4）',   1: '均線偏空排列（1/4）',
-                         0: '均線完全空頭排列（0/4）'}
-        details.append(_align_labels[bull_count])
+        if n_valid >= 2:
+            n_bull      = sum(a > b for a, b in valid)
+            bull_ratio  = n_bull / n_valid
+            if bull_ratio >= 1.0:
+                base_score = 85
+            elif bull_ratio >= 0.75:
+                base_score = 68
+            elif bull_ratio >= 0.5:
+                base_score = 50
+            elif bull_ratio >= 0.25:
+                base_score = 30
+            else:
+                base_score = 15
+            bull_count = n_bull            # 相容回傳（實際多頭層數）
+            bear_count = n_valid - n_bull
+            details.append(f'均線 {n_bull}/{n_valid} 層多頭（等比計分 base={base_score}）')
+        else:
+            # 上市天數過短：可用層 < 2，方向分採中性，不誤判
+            base_score = 50
+            bull_count = 0
+            bear_count = 0
+            details.append('均線資料不足（上市天數過短），方向分採中性')
 
         # ── 修正 1：MA20 斜率（±8）────────────────────────────────
         # 斜率 = (最新 MA20 - 5日前 MA20) / 5日前 MA20 × 100
         slope_mod = 0
         if isinstance(ma20_series, (list, tuple)) and len(ma20_series) >= 5:
             try:
-                ma20_now  = float(ma20_series[-1])
-                ma20_prev = float(ma20_series[-5])
-                if ma20_prev > 0:
+                ma20_now  = _num(ma20_series[-1])
+                ma20_prev = _num(ma20_series[-5])
+                if ma20_now is not None and ma20_prev is not None and ma20_prev > 0:
                     slope_pct = (ma20_now - ma20_prev) / ma20_prev * 100
                     if slope_pct >= 0.5:
                         slope_mod = 8
@@ -265,8 +295,8 @@ class ThreeLayerEngine:
                         details.append(f'MA20斜率向下（{slope_pct:.2f}%）')
             except (TypeError, ValueError, IndexError):
                 pass
-        else:
-            # 無歷史序列時，用 MA60 與 MA20 的相對位置推算斜率方向
+        elif ma20 is not None and ma60 is not None:
+            # 無歷史序列時，用 MA60 與 MA20 的相對位置推算斜率方向（±3 fallback）
             if ma20 > ma60 * 1.005:
                 slope_mod = 3
             elif ma20 < ma60 * 0.995:
@@ -311,8 +341,8 @@ class ThreeLayerEngine:
         vp = result.get('volume_price', {}) or {}
         if vp.get('available'):
             vol_ratio = vp.get('vol_ratio', 1.0) or 1.0
-            ma5_v     = tech.get('ma5', current) or current
-            if isinstance(ma5_v, str):
+            ma5_v     = _num(tech.get('ma5'))
+            if ma5_v is None:
                 ma5_v = current
             short_up   = (current > ma5_v) if (current and ma5_v) else False
             short_down = (current < ma5_v) if (current and ma5_v) else False
@@ -374,20 +404,25 @@ class ThreeLayerEngine:
         防止接刀邏輯（新增）：
         - 深度超跌（bias_z < -1.0）且方向分 < 50 → score 強制 ≤ 35（否決）
         """
+        _num    = ThreeLayerEngine._num
         tech    = result.get('technical', {})
         mr      = result.get('mean_reversion', {})
         sr      = result.get('support_resistance', {})
-        current = result.get('current_price', 0)
+        current = _num(result.get('current_price', 0)) or 0
         chip    = _get_chip(result)
 
-        rsi = tech.get('rsi', 50) or 50
+        rsi = _num(tech.get('rsi'))
+        if rsi is None:
+            rsi = 50
+
+        details = []
 
         # ── 乖離率 ────────────────────────────────────────────────
         if mr.get('available'):
             bias_20 = mr.get('bias_analysis', {}).get('bias_20', 0) or 0
         else:
-            ma20    = tech.get('ma20', current) or current
-            bias_20 = ((current - ma20) / ma20 * 100) if ma20 > 0 else 0
+            ma20    = _num(tech.get('ma20'))
+            bias_20 = ((current - ma20) / ma20 * 100) if (ma20 is not None and ma20 > 0) else 0
 
         # ── v3.1：ATR σ 正規化乖離（解決高 Beta 股系統性偏差）─────
         # 原理：乖離率相同的兩檔股票，對高波動股是正常範圍，對低波動股則是過熱。
@@ -396,13 +431,20 @@ class ThreeLayerEngine:
         # Z > +0.8 ≈ 超過 1.6σ   → 偏熱
         # Z  -0.5~+0.3            → 理想區間
         # Z < -1.0 ≈ 超過 -2σ    → 深度超跌
-        atr_raw  = tech.get('atr', 0) or tech.get('atr14', 0) or 0
-        if atr_raw > 0 and current > 0:
+        # sigma 取得順序：atr14 → atr，兩者皆 None 才 fallback 4%（且註明，讓 fallback 可見）
+        atr_raw  = _num(tech.get('atr14'))
+        if atr_raw is None:
+            atr_raw = _num(tech.get('atr'))
+        if atr_raw is not None and atr_raw > 0 and current > 0:
             sigma_pct = (atr_raw / current) * 100   # ATR 佔現價的百分比（日波動率代理）
+            _sigma_fallback = False
         else:
             sigma_pct = 4.0   # fallback：台灣中型股經驗值 σ ≈ 4%
+            _sigma_fallback = True
         sigma_pct = max(sigma_pct, 1.5)             # 防止除以極小值
         bias_z = bias_20 / (2.0 * sigma_pct)        # 正規化 Z 分數
+        if _sigma_fallback:
+            details.append('σ 採預設 4%（無 ATR 資料）')
 
         # ── A2 動能模式判定（解除「正乖離=過熱」對強勢股的系統性壓制）──
         # 判定邏輯抽到 ThreeLayerEngine._is_momentum()，L2/L3/賣訊/覆蓋層共用，
@@ -411,12 +453,9 @@ class ThreeLayerEngine:
         rs_score  = rs_data.get('rs_score', 50) or 50
         is_momentum = ThreeLayerEngine._is_momentum(result)
         # bull_count 僅供回傳顯示（與 _is_momentum 內計算一致）
-        ma5_d  = tech.get('ma5',  current) or current
-        ma20_d = tech.get('ma20', current) or current
-        ma60_d = tech.get('ma60', current) or current
-        if isinstance(ma5_d,  str): ma5_d  = current
-        if isinstance(ma20_d, str): ma20_d = current
-        if isinstance(ma60_d, str): ma60_d = current
+        ma5_d  = _num(tech.get('ma5'))  or current
+        ma20_d = _num(tech.get('ma20')) or current
+        ma60_d = _num(tech.get('ma60')) or current
         bull_count = sum([
             current > ma20_d, ma20_d > ma60_d, current > ma60_d, ma5_d > ma20_d,
         ])
@@ -432,8 +471,6 @@ class ThreeLayerEngine:
             elif buy_days >= 3:
                 chip_relax = 15
                 chip_note  = f'法人連買{buy_days}天，天花板+15'
-
-        details = []
 
         # ── 主判斷：正規化乖離 bias_z ──────────────────────────────
         # A2：依「動能模式」分流。
