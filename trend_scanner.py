@@ -782,6 +782,57 @@ def scan_hot_themes(limit: int = 5) -> Any:
     return scanner.get_top_themes(limit=limit)
 
 
+def compute_cross_sectional_rs_rank(results):
+    """
+    build_prompt_04 任務2：橫斷面相對強度百分位（掃描層彙整）。
+
+    對本次掃描全樣本的 60 日報酬（result['technical']['ret_60d'] 或 result['ret_60d']）
+    計算 rank(pct=True)*100 → rs_rank_60d（0–100），寫回每檔 result。
+    與 fix_02 的 normalized_rs（對大盤）並存：一個是對指數、一個是對同儕排名。
+
+    回傳 {symbol: rs_rank_60d}。ret_60d 缺者 rs_rank_60d=None。
+    """
+    def _ret(d):
+        t = d.get('technical') if isinstance(d.get('technical'), dict) else None
+        v = (t or d).get('ret_60d')
+        try:
+            v = float(v)
+            return None if v != v else v
+        except (TypeError, ValueError):
+            return None
+
+    scored = [(d, _ret(d)) for d in results]
+    valid = [(d, v) for d, v in scored if v is not None]
+
+    out = {}
+    if not valid:
+        for d in results:
+            d['rs_rank_60d'] = None
+        return out
+
+    n = len(valid)
+    if n == 1:
+        # 單一樣本無從排名，給中性 50
+        valid[0][0]['rs_rank_60d'] = 50.0
+        out[valid[0][0].get('symbol')] = 50.0
+    else:
+        # 百分位排名（average 法，與 pandas rank(pct=True) 等價）：0–100
+        vals = sorted(v for _, v in valid)
+        import bisect
+        for d, v in valid:
+            lo = bisect.bisect_left(vals, v)
+            hi = bisect.bisect_right(vals, v)
+            avg_rank = (lo + hi + 1) / 2.0     # 1-based 平均名次
+            rk = round(avg_rank / n * 100, 1)
+            d['rs_rank_60d'] = rk
+            out[d.get('symbol')] = rk
+
+    for d, v in scored:
+        if v is None:
+            d['rs_rank_60d'] = None
+    return out
+
+
 def get_sector_report(limit: int = 10) -> str:
     """
     生成板塊報告的便捷函數

@@ -73,6 +73,7 @@ class WatchlistDatabase:
             ('chip_signal', "TEXT DEFAULT ''"),
             ('bias_20', "REAL DEFAULT 0"),
             ('last_analyzed', "TEXT DEFAULT ''"),
+            ('rs_rank_60d', "REAL DEFAULT 0"),   # build_prompt_04：橫斷面RS百分位
         ]
 
         for col_name, col_def in new_columns:
@@ -131,6 +132,15 @@ class WatchlistDatabase:
             CREATE TABLE IF NOT EXISTS trading_calendar (
                 date   TEXT PRIMARY KEY,
                 source TEXT
+            )
+        ''')
+        # build_prompt_04：月營收（FinMind，讀 DB 算 YoY / 創12月高；NULL=未取得）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS revenue_monthly (
+                symbol        TEXT NOT NULL,
+                revenue_month TEXT NOT NULL,
+                revenue       INTEGER,
+                PRIMARY KEY (symbol, revenue_month)
             )
         ''')
 
@@ -235,18 +245,22 @@ class WatchlistDatabase:
         conn.commit()
         conn.close()
     
-    def update_quant_data(self, symbol, quant_score=None, trend_status=None, 
-                          chip_signal=None, bias_20=None, recommendation=None):
-        """更新量化數據（v4.5.17 新增）"""
+    def update_quant_data(self, symbol, quant_score=None, trend_status=None,
+                          chip_signal=None, bias_20=None, recommendation=None,
+                          rs_rank_60d=None):
+        """更新量化數據（v4.5.17 新增；build_prompt_04 加 rs_rank_60d）"""
         conn = sqlite3.connect(self.db_name)
         cursor = conn.cursor()
-        
+
         updates = []
         values = []
-        
+
         if quant_score is not None:
             updates.append('quant_score = ?')
             values.append(quant_score)
+        if rs_rank_60d is not None:
+            updates.append('rs_rank_60d = ?')
+            values.append(rs_rank_60d)
         if trend_status is not None:
             updates.append('trend_status = ?')
             values.append(trend_status)

@@ -1725,7 +1725,51 @@ class QuickAnalyzer:
                 'primary_trend': technical.get('trend', '盤整'),
                 'ma20_slope': technical.get('ma20_slope', 0)
             }
-            
+
+            # ═══════════════════════════════════════════════════════════
+            # build_prompt_04：月營收動能 + 雙時間框架標籤（不進 A/B/C grade）
+            # ═══════════════════════════════════════════════════════════
+            # 20日均量（張）：hist Volume 為股 → /1000 轉張
+            try:
+                avg_vol_20d_lots = int(hist['Volume'].tail(20).mean() / 1000) if len(hist) >= 20 else 0
+            except Exception:
+                avg_vol_20d_lots = 0
+            result["avg_vol_20d_lots"] = avg_vol_20d_lots
+
+            # 月營收動能（讀 DB；scan_mode 不打 API，單檔分析缺資料才 backfill）
+            revenue_momentum = {'available': False}
+            if market == "台股" and not is_historical:
+                try:
+                    from revenue_data_manager import get_revenue_manager
+                    _rm = get_revenue_manager(QuickAnalyzer.get_db().db_name)
+                    revenue_momentum = _rm.get_revenue_momentum(symbol)
+                    if not revenue_momentum.get('available') and not scan_mode:
+                        _rm.backfill(symbol, months=24)
+                        revenue_momentum = _rm.get_revenue_momentum(symbol)
+                except Exception as _re:
+                    print(f"[營收] {symbol} 讀取略過: {_re}")
+
+            # 實證組合標籤：投信連買≥3 + YoY≥20% + 創12月高 + 20日均量≥300張
+            _chip = result.get('chip_flow', {}) or {}
+            _trust_days = _chip.get('trust_consecutive_days', 0) or 0
+            _yoy = revenue_momentum.get('revenue_yoy')
+            _combo = bool(
+                _trust_days >= 3
+                and _yoy is not None and _yoy >= 0.20
+                and revenue_momentum.get('is_12m_high')
+                and avg_vol_20d_lots >= 300
+            )
+            revenue_momentum['combo_signal'] = _combo
+            revenue_momentum['combo_label'] = '🔥投信+營收動能' if _combo else ''
+            revenue_momentum['ranking_boost'] = 15 if _combo else 0
+            result["revenue_momentum"] = revenue_momentum
+
+            # 雙時間框架標籤（Task 5）：短波段 / 趨勢波段（僅報表/排序/篩選，不改 grade）
+            result["timeframe_profile"] = QuickAnalyzer._compute_timeframe_profile(
+                technical, result.get('relative_strength', {}), result.get('volume_price', {}),
+                current_price
+            )
+
             # 歷史模式額外欄位
             if is_historical:
                 result["is_historical"] = True
@@ -2783,12 +2827,67 @@ class QuickAnalyzer:
         else:
             trend = "盤整格局"
             signal = "中性"
-        
+
+        # ═══════════════════════════════════════════════════════════════
+        # build_prompt_04：波段因子（PTH / Donchian / volume z-score / 斜率 / 報酬）
+        # ═══════════════════════════════════════════════════════════════
+        cur = float(current_price)
+
+        # --- 任務1：PTH 52週高接近度（George & Hwang 2004）---
+        _lb = min(240, len(hist))
+        high_52w = float(hist['High'].rolling(_lb).max().iloc[-1])
+        low_52w  = float(hist['Low'].rolling(_lb).min().iloc[-1])
+        pth_52w = round(cur / high_52w, 4) if high_52w > 0 else None
+        dist_from_low_52w = round(cur / low_52w - 1, 4) if low_52w > 0 else None
+        pth_short_history = len(hist) < 120   # 歷史不足120日 → PTH 參考性較低
+
+        # --- 任務3：Donchian 20/55 通道（前N日最高，不含今日）---
+        donchian_high_20 = float(hist['High'].iloc[-21:-1].max()) if len(hist) >= 21 else None
+        donchian_high_55 = float(hist['High'].iloc[-56:-1].max()) if len(hist) >= 56 else None
+
+        # 成交量 Z-Score（60日窗；今日量相對均量的標準差倍數）
+        _vol = hist['Volume']
+        _vwin = QuantConfig.VOLUME_ZSCORE_WINDOW
+        if len(hist) >= _vwin:
+            _vmean = _vol.rolling(_vwin).mean().iloc[-1]
+            _vstd  = _vol.rolling(_vwin).std().iloc[-1]
+            volume_zscore = round(float((_vol.iloc[-1] - _vmean) / _vstd), 2) if _vstd and _vstd > 0 else 0.0
+        else:
+            volume_zscore = 0.0
+        _vol_spike = volume_zscore >= QuantConfig.VOLUME_ZSCORE_SPIKE
+
+        breakout_20 = bool(donchian_high_20 is not None and cur > donchian_high_20 and _vol_spike)
+        breakout_55 = bool(donchian_high_55 is not None and cur > donchian_high_55 and _vol_spike)
+
+        # --- 任務5 素材：MA120 近20日斜率、60日報酬 ---
+        try:
+            _ma120_full = close.rolling(120).mean()
+            if len(hist) >= 140 and not pd.isna(_ma120_full.iloc[-21]):
+                ma120_slope_20d = round(float((_ma120_full.iloc[-1] - _ma120_full.iloc[-21]) / _ma120_full.iloc[-21]), 4)
+            else:
+                ma120_slope_20d = None
+        except Exception:
+            ma120_slope_20d = None
+        ret_60d = round(float(cur / close.iloc[-61] - 1) * 100, 2) if len(hist) >= 61 else None
+
         return {
             "trend": trend,
             "signal": signal,
             "rsi": round(current_rsi, 2),
             "adx": round(current_adx, 2),
+            # === build_prompt_04：波段因子 ===
+            "pth_52w": pth_52w,                       # 0~1，越近1越接近52週新高
+            "high_52w": round(high_52w, 2) if high_52w else None,
+            "low_52w": round(low_52w, 2) if low_52w else None,
+            "dist_from_low_52w": dist_from_low_52w,   # 距52週低點漲幅
+            "pth_short_history": pth_short_history,
+            "donchian_high_20": round(donchian_high_20, 2) if donchian_high_20 else None,
+            "donchian_high_55": round(donchian_high_55, 2) if donchian_high_55 else None,
+            "volume_zscore": volume_zscore,
+            "breakout_20": breakout_20,               # Donchian20 帶量突破
+            "breakout_55": breakout_55,               # Donchian55 帶量突破（中期）
+            "ma120_slope_20d": ma120_slope_20d,
+            "ret_60d": ret_60d,                       # 60日報酬%（橫斷面RS用）
             # 均線：資料不足 → None（禁止 "N/A" 字串，避免下游 float 與 str 比較拋錯）
             "ma5": round(ma5.iloc[-1], 2) if not pd.isna(ma5.iloc[-1]) else None,
             "ma20": round(ma20.iloc[-1], 2) if not pd.isna(ma20.iloc[-1]) else None,
@@ -2810,6 +2909,76 @@ class QuickAnalyzer:
             "ma20_slope": round(ma20_slope, 4)
         }
     
+    @staticmethod
+    def _compute_timeframe_profile(tech, rs_data, vp, current, rs_rank_60d=None):
+        """
+        build_prompt_04 任務5：雙時間框架標籤（僅報表/排序/篩選，不改 A/B/C grade）。
+
+        short_swing_ready（5–20日）：突破型觸發 + 相對強度 + 量能
+        position_trend_ready（1–6月）：Minervini 趨勢模板簡化版（用現有均線層）
+
+        rs_rank_60d（橫斷面同儕排名）優先；單檔分析尚無排名時，以 normalized_rs
+        （對大盤）作 proxy。ma240=None 時 position_trend 以三層判斷（沿用 fix_01 等比降級）。
+        """
+        def _n(x):
+            if x is None or isinstance(x, str):
+                return None
+            try:
+                v = float(x)
+                return None if v != v else v
+            except (TypeError, ValueError):
+                return None
+
+        cur   = _n(current)
+        ma60  = _n(tech.get('ma60'))
+        ma120 = _n(tech.get('ma120'))
+        ma240 = _n(tech.get('ma240'))
+        slope = _n(tech.get('ma120_slope_20d'))
+        pth   = _n(tech.get('pth_52w'))
+        dfl   = _n(tech.get('dist_from_low_52w'))
+
+        # 相對強度門檻：優先橫斷面排名，否則用對大盤 normalized_rs proxy
+        if rs_rank_60d is not None:
+            rs_ok = rs_rank_60d >= 60
+            rs_basis = f'rs_rank={rs_rank_60d:.0f}'
+        else:
+            _nrs = _n((rs_data or {}).get('rs_score')) or 50
+            rs_ok = _nrs >= 60
+            rs_basis = f'normalized_rs={_nrs:.0f}(proxy)'
+
+        # 突破觸發
+        _vp05 = False
+        if vp and vp.get('available'):
+            _vp05 = any(s.get('code') == 'VP05' for s in vp.get('signals', []))
+        _bo20 = bool(tech.get('breakout_20'))
+        _bo55 = bool(tech.get('breakout_55'))
+        _squeeze_break = bool(tech.get('bb_squeeze')) and \
+            (_n(tech.get('volume_zscore')) or 0) >= QuantConfig.VOLUME_ZSCORE_SPIKE
+        short_trigger = _bo20 or _bo55 or _vp05 or _squeeze_break
+        short_swing_ready = bool(short_trigger and rs_ok)
+
+        # 趨勢波段：均線多頭結構 + 長均線上揚 + 距高近 + 距低夠遠
+        if cur is not None and ma60 is not None and ma120 is not None:
+            if ma240 is not None:
+                ma_stack = cur > ma60 > ma120 > ma240
+            else:
+                ma_stack = cur > ma60 > ma120        # ma240 缺 → 三層判斷
+        else:
+            ma_stack = False
+        position_trend_ready = bool(
+            ma_stack
+            and slope is not None and slope > 0
+            and pth is not None and pth >= 0.75
+            and dfl is not None and dfl >= 0.30
+        )
+
+        return {
+            'short_swing_ready': short_swing_ready,
+            'position_trend_ready': position_trend_ready,
+            'short_trigger': short_trigger,
+            'rs_basis': rs_basis,
+        }
+
     @staticmethod
     def _calculate_support_resistance(hist, technical):
         """計算支撐壓力位與停損停利建議"""
@@ -5329,6 +5498,22 @@ class StockAnalysisApp(tk.Tk):
                     if latest_chip < latest_cal:
                         print(f"[籌碼] 資料落後（chip={latest_chip} < cal={latest_cal}），自動補洞")
                         mgr.daily_update(syms, holes=5)
+
+                # build_prompt_04：月營收首次 backfill（revenue_monthly 空時）
+                try:
+                    from revenue_data_manager import get_revenue_manager
+                    rmgr = get_revenue_manager(self.db.db_name)
+                    conn = sqlite3.connect(self.db.db_name)
+                    has_rev = conn.execute("SELECT 1 FROM revenue_monthly LIMIT 1").fetchone()
+                    conn.close()
+                    if not has_rev:
+                        print(f"[營收] 首次執行：backfill {len(syms)} 檔（各 24 月）")
+                        for sym in syms:
+                            rmgr.backfill(sym, months=24)
+                            import time as _t2; _t2.sleep(0.2)
+                        print("[營收] 首次 backfill 完成")
+                except Exception as _rev_e:
+                    print(f"[營收] 啟動 backfill 略過: {_rev_e}")
             except Exception as e:
                 print(f"[籌碼] 啟動初始化略過: {e}")
 
@@ -5360,6 +5545,12 @@ class StockAnalysisApp(tk.Tk):
                             if syms:
                                 n = mgr.daily_update(syms, holes=5)
                                 print(f"[籌碼] 16:30 排程 daily_update 補齊 {n} 筆")
+                            # build_prompt_04：每月 10–12 日跑一次月營收更新
+                            if 10 <= now.day <= 12 and syms:
+                                from revenue_data_manager import get_revenue_manager
+                                rmgr = get_revenue_manager(self.db.db_name)
+                                rn = rmgr.monthly_update(syms)
+                                print(f"[營收] 月更 monthly_update 補齊 {rn} 檔")
                         except Exception as e:
                             print(f"[籌碼] 排程 daily_update 略過: {e}")
                     threading.Thread(target=_do, daemon=True).start()
@@ -6741,11 +6932,14 @@ class StockAnalysisApp(tk.Tk):
                             overall = str(rec); recommendation = str(rec)
                         return {'symbol': symbol, 'ok': True, 'overall': overall,
                                 'recommendation': recommendation, 'quant_score': quant_score,
-                                'trend_status': trend_status, 'bias_20': bias_20}
+                                'trend_status': trend_status, 'bias_20': bias_20,
+                                # build_prompt_04：橫斷面RS用 60日報酬
+                                'ret_60d': (result.get('technical', {}) or {}).get('ret_60d')}
                     except Exception as e:
                         return {'symbol': symbol, 'ok': False, 'error': str(e)}
 
                 done = 0
+                _scan_results = []   # build_prompt_04：收集本批供橫斷面RS排名
                 with ThreadPoolExecutor(max_workers=8) as _ex:
                     _futs = {_ex.submit(_analyze_one, sd): sd for sd in stocks}
                     for fut in as_completed(_futs):
@@ -6763,10 +6957,22 @@ class StockAnalysisApp(tk.Tk):
                                 r['symbol'], quant_score=r['quant_score'],
                                 trend_status=r['trend_status'], bias_20=r['bias_20'])
                             success_count += 1
+                            _scan_results.append(r)
                             print(f"[自選股刷新] {r['symbol']} 完成: {r['overall']} (Score: {r['quant_score']:.0f})")
                         else:
                             self._refresh_errors.append(f"{r['symbol']}: {r['error']}")
                             print(f"[自選股刷新] {r['symbol']} 失敗: {r['error']}")
+
+                # build_prompt_04 任務2：全樣本掃描完成 → 橫斷面RS百分位，寫回 DB
+                try:
+                    from trend_scanner import compute_cross_sectional_rs_rank
+                    rank_map = compute_cross_sectional_rs_rank(_scan_results)
+                    for _sym, _rk in rank_map.items():
+                        if _rk is not None:
+                            self.db.update_quant_data(_sym, rs_rank_60d=_rk)
+                    print(f"[自選股刷新] 橫斷面RS排名完成（{len(rank_map)} 檔）")
+                except Exception as _rse:
+                    print(f"[自選股刷新] 橫斷面RS排名略過: {_rse}")
             finally:
                 # v4.5.13: 離開背景線程，重新啟用垃圾回收
                 ThreadSafeGC.exit_background_thread()

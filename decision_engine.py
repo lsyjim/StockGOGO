@@ -359,7 +359,22 @@ class ThreeLayerEngine:
                 vol_mod = -6
                 details.append(f'帶量下殺，趨勢轉弱（量比{vol_ratio:.1f}）−6')
 
-        score = max(0, min(100, int(base_score + slope_mod + adx_mod + rs_mod + vol_mod)))
+        # ── 修正 5：PTH 52週高接近度（build_prompt_04，George & Hwang 2004）──
+        # 貼近52週高=突破動能區(+)；深水區=動能策略避開(-)。與其他 modifier 疊加後照舊 clip。
+        pth_mod = 0
+        pth = _num(tech.get('pth_52w'))
+        if pth is not None:
+            if pth >= 0.95:
+                pth_mod = 8
+                details.append(f'貼近52週高（距高{(pth-1)*100:+.1f}%）+8')
+            elif pth >= 0.85:
+                pth_mod = 4
+                details.append(f'接近52週高（距高{(pth-1)*100:+.1f}%）+4')
+            elif pth <= 0.60:
+                pth_mod = -6
+                details.append(f'深水區距52週高{(pth-1)*100:+.1f}%，動能避開 −6')
+
+        score = max(0, min(100, int(base_score + slope_mod + adx_mod + rs_mod + vol_mod + pth_mod)))
 
         if score >= 70:
             label = '強多頭'
@@ -381,6 +396,7 @@ class ThreeLayerEngine:
             'slope_mod':  slope_mod,
             'rs_mod':     rs_mod,
             'vol_mod':    vol_mod,
+            'pth_mod':    pth_mod,
         }
 
     # ─── Layer 2: 位置分 ─────────────────────────────────────────────────────
@@ -641,8 +657,16 @@ class ThreeLayerEngine:
         # ── 因子偵測（各自獨立，不互相影響）─────────────────────
 
         # 量價突破類（互斥，只取最強一個）
+        # build_prompt_04：Donchian 20/55 帶量突破與既有三盤突破/VP05 並列。
+        #   D55 視同強 VP 觸發（中期突破確認，稀缺性高）；D20 為一般觸發。
+        #   取較強者敘述：D55 > 三盤帶量/VP05 > D20 > 三盤待確認。
+        _bo_20 = bool(tech.get('breakout_20'))
+        _bo_55 = bool(tech.get('breakout_55'))
+
         _vp_trigger = ''
-        if wave.get('available'):
+        if _bo_55:
+            _vp_trigger = 'D55突破（帶量中期突破）'
+        elif wave.get('available'):
             bo = wave.get('breakout_signal', {})
             if bo.get('detected') and bo.get('volume_confirmed'):
                 _vp_trigger = '三盤突破（帶量）'
@@ -653,7 +677,10 @@ class ThreeLayerEngine:
                 if sig.get('code') == 'VP05':
                     _vp_trigger = '帶量突破 VP05'
                     break
-        _vp_strong = _vp_trigger and '待確認' not in _vp_trigger   # 強突破 vs 弱突破
+        if not _vp_trigger and _bo_20:
+            _vp_trigger = 'D20突破（帶量）'
+        # 強突破 vs 弱突破：D20 與「量能待確認」屬一般觸發（弱），其餘為強。
+        _vp_strong = bool(_vp_trigger) and '待確認' not in _vp_trigger and 'D20突破' not in _vp_trigger
 
         # 形態類（最高信度形態）
         # v3.1 重要修正：_pat_strong（單獨觸發 A 級的例外路徑）
