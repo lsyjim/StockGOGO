@@ -683,23 +683,27 @@ class ThreeLayerEngine:
         _vp_strong = bool(_vp_trigger) and '待確認' not in _vp_trigger and 'D20突破' not in _vp_trigger
 
         # 形態類（最高信度形態）
-        # v3.1 重要修正：_pat_strong（單獨觸發 A 級的例外路徑）
-        #   僅保留「頭肩底」與「W底」兩種需要多點確認的複雜形態。
-        #   「V型反轉」偵測門檻低（5%急跌+1根K棒+50%反彈），高波動股每月皆可觸發，
-        #   不應享有 A 級例外資格，最高只到 B 級，需靠雙因子路徑升 A。
-        _A_ELIGIBLE_PATTERNS = {'頭肩底', 'W底'}   # 可享受例外路徑的形態
+        # build_prompt_05 A 級門檻重設計（依回測數據）：
+        #   單獨觸發 A 的例外形態僅保留「頭肩底」。原本納入的「W底」在回測中單獨路徑
+        #   勝率僅 33%、10日期望 +0.60%（拖累 A 級鑑別度）→ 移出例外清單，最高到 B、
+        #   需雙因子才升 A。
+        #   「V型反轉」偵測門檻低，回測 10日期望 −3.74%、勝率 24%（負期望）→ 不僅不享例外，
+        #   更以 _pat_is_vshape 旗標「禁止」作為雙因子 A 的形態腿（V型 最高只到 B）。
+        _A_ELIGIBLE_PATTERNS = {'頭肩底'}   # 可享受單獨例外路徑的形態
 
         _pat_trigger = ''
         _pat_strong  = False
+        _pat_is_vshape = False   # V型 → 禁止作為雙因子 A 的形態腿
         if pattern.get('detected') and pattern.get('pattern_type') == 'bottom':
             pat_status = pattern.get('status', '')
             pat_name   = pattern.get('pattern_name', '底部')
+            _pat_is_vshape = ('V型' in pat_name or 'V形' in pat_name)
             if 'CONFIRMED' in pat_status and pattern.get('volume_confirmed'):
                 _pat_trigger = f'{pat_name}確立（量能確認）'
-                # V型反轉不納入例外路徑，最高只到 B
+                # 僅頭肩底享單獨 A 例外；W底/V型 不納入
                 _pat_strong  = (pat_name in _A_ELIGIBLE_PATTERNS)
                 if not _pat_strong:
-                    _pat_trigger += '（V型反轉限 B 級，需雙因子升 A）'
+                    _pat_trigger += '（限 B 級，需雙因子升 A）'
             elif 'CONFIRMED' in pat_status:
                 _pat_trigger = f'{pat_name}確立（量能待確認）'
             elif 'FORMING' in pat_status:
@@ -788,9 +792,12 @@ class ThreeLayerEngine:
             triggers.append(_pat_trigger)
             grade = 'A'
 
+        # build_prompt_05：V型 禁止作為雙因子 A 的形態腿（回測負期望）。
+        _pat_leg_ok = bool(_pat_trigger) and not _pat_is_vshape
+
         # 雙因子路徑：量價突破（強）+ 形態或籌碼
         if grade != 'A' and _vp_strong:
-            if _pat_trigger:
+            if _pat_leg_ok:
                 triggers.extend([_vp_trigger, _pat_trigger])
                 grade = 'A'
             elif _chip_trigger:
@@ -801,7 +808,7 @@ class ThreeLayerEngine:
                 grade = 'A'
 
         # 雙因子路徑：強籌碼 + 形態（確立）
-        if grade != 'A' and _chip_strong and _pat_trigger and 'CONFIRMED' in pattern.get('status', ''):
+        if grade != 'A' and _chip_strong and _pat_leg_ok and 'CONFIRMED' in pattern.get('status', ''):
             triggers.extend([_chip_trigger, _pat_trigger])
             grade = 'A'
 
@@ -912,6 +919,18 @@ class ThreeLayerEngine:
                         f'⚠️ 超買安全閥：RSI={_rsi_ov:.0f} 且 乖離{_bias_ov:+.1f}%（{_bias_z_ov:.1f}σ）'
                         f' → A→B 強制降級，追高風險高'
                     )
+
+        # ── build_prompt_05：A 級 52 週高接近度門檻 ──────────────────
+        # 回測：pth<0.90（遠離52週高）的 A 級 10日期望僅 +0.38%、勝率 30%。
+        # 主攻級突破應貼近高點；遠離高點的「突破」多為深水區假突破 → 降 B。
+        # pth 為 None（歷史不足）時不套用，維持原判定。
+        if grade == 'A':
+            _pth_a = ThreeLayerEngine._num(tech.get('pth_52w'))
+            if _pth_a is not None and _pth_a < 0.90:
+                grade = 'B'
+                triggers.append(
+                    f'A→B：距52週高過遠（PTH={_pth_a:.2f}<0.90），非主攻級突破'
+                )
 
         _grade_labels = {
             'A': '主攻（立即進場）',
