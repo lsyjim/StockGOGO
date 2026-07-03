@@ -143,9 +143,24 @@ class RevenueDataManager:
         conn.close()
         return rows
 
-    def get_revenue_momentum(self, symbol) -> dict:
+    @staticmethod
+    def _is_visible(revenue_month_key: str, as_of: datetime.date) -> bool:
+        """
+        回測防前視：某營收月份是否在 as_of 當日已公告可見。
+        保守規則：月份 M 的營收約於 M+1 月 10 日前揭露 → as_of 需 ≥ (M+1 月的 11 日)。
+        """
+        y, mo = revenue_month_key.split("-")
+        y, mo = int(y), int(mo)
+        # 公告月 = M 的次月
+        ann_y, ann_mo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+        visible_from = datetime.date(ann_y, ann_mo, 11)
+        return as_of >= visible_from
+
+    def get_revenue_momentum(self, symbol, as_of: datetime.date = None) -> dict:
         """
         讀 DB 計算月營收動能指標（零 API）。
+
+        as_of 給定時，只採「公告日 ≤ as_of」的月份（防前視；規則見 _is_visible）。
 
         回傳 {
           'available': bool, 'latest_month': 'YYYY-MM'|None, 'revenue': int|None,
@@ -155,6 +170,8 @@ class RevenueDataManager:
         }
         """
         rows = self._load_series(symbol)
+        if as_of is not None:
+            rows = [(m, r) for (m, r) in rows if self._is_visible(m, as_of)]
         if not rows:
             return {"available": False, "latest_month": None, "revenue": None,
                     "revenue_yoy": None, "is_12m_high": False, "yoy_3m_avg": None}

@@ -203,13 +203,19 @@ class ChipDataManager:
         print(f"[Calendar] 同步 {len(days)} 個交易日（{source}）")
         return len(days)
 
-    def get_trading_days_desc(self, limit: int = 120):
-        """由新到舊回傳交易日（list[str]）。"""
+    def get_trading_days_desc(self, limit: int = 120, as_of: str = None):
+        """由新到舊回傳交易日（list[str]）。as_of 給定時只取 <= as_of（回測防前視）。"""
         conn = self._conn()
         cur = conn.cursor()
-        cur.execute(
-            "SELECT date FROM trading_calendar ORDER BY date DESC LIMIT ?", (limit,)
-        )
+        if as_of:
+            cur.execute(
+                "SELECT date FROM trading_calendar WHERE date <= ? ORDER BY date DESC LIMIT ?",
+                (as_of, limit),
+            )
+        else:
+            cur.execute(
+                "SELECT date FROM trading_calendar ORDER BY date DESC LIMIT ?", (limit,)
+            )
         rows = [r[0] for r in cur.fetchall()]
         conn.close()
         return rows
@@ -457,9 +463,10 @@ class ChipDataManager:
         conn.close()
         return out
 
-    def get_consecutive_days(self, symbol, who: str = "foreign") -> dict:
+    def get_consecutive_days(self, symbol, who: str = "foreign", as_of: str = None) -> dict:
         """
         由 trading_calendar 最新交易日往回走計算連買/連賣天數。
+        as_of 給定時，最新交易日 = as_of（含）以前（回測防前視）。
 
         規則：
           - 最新端連續缺列（尚未公布）≤ MAX_PENDING_LEAD → 視為 pending，跳過不判缺日。
@@ -470,7 +477,7 @@ class ChipDataManager:
         回傳 {'days': int（正=連買, 負=連賣）, 'reliable': bool,
               'missing_dates': [...], 'last_date': str|None}
         """
-        cal = self.get_trading_days_desc(limit=120)
+        cal = self.get_trading_days_desc(limit=120, as_of=as_of)
         if not cal:
             return {"days": 0, "reliable": False, "missing_dates": [], "last_date": None}
 
@@ -527,16 +534,16 @@ class ChipDataManager:
         return {"days": _signed(direction, streak), "reliable": True,
                 "missing_dates": missing, "last_date": last_date}
 
-    def _avg_net_5d(self, symbol, who="foreign"):
+    def _avg_net_5d(self, symbol, who="foreign", as_of: str = None):
         """近 5 交易日該法人日均淨額（張，signed）。缺日以現有資料平均。"""
-        cal = self.get_trading_days_desc(limit=5)
+        cal = self.get_trading_days_desc(limit=5, as_of=as_of)
         rows = self._load_chip_rows(symbol, cal)
         vals = [rows[d][who] for d in cal if d in rows and rows[d][who] is not None]
         return round(sum(vals) / len(vals), 1) if vals else 0.0
 
-    def _latest_row(self, symbol):
+    def _latest_row(self, symbol, as_of: str = None):
         """最新一個有資料的交易日 row。回傳 (date, {'foreign','trust','dealer'}) 或 (None, None)。"""
-        cal = self.get_trading_days_desc(limit=120)
+        cal = self.get_trading_days_desc(limit=120, as_of=as_of)
         rows = self._load_chip_rows(symbol, cal)
         for d in cal:
             if d in rows and rows[d]["foreign"] is not None:
@@ -546,36 +553,37 @@ class ChipDataManager:
     # ────────────────────────────────────────────────────────────────────
     # 統一出口
     # ────────────────────────────────────────────────────────────────────
-    def get_chip_flow(self, symbol, allow_fetch: bool = True) -> dict:
+    def get_chip_flow(self, symbol, allow_fetch: bool = True, as_of: str = None) -> dict:
         """
         取代 QuickAnalyzer._analyze_chip_flow_cached 的統一出口。
 
         allow_fetch：
           True（單檔分析）— DB 無資料時先 backfill 再讀。
           False（掃描熱路徑）— 只讀 DB、零 API 呼叫（daily_update 已在掃描前批次補過）。
+        as_of：回測用，只看該日（含）以前的籌碼（防前視）；此模式一律不觸發 backfill。
         """
         symbol = str(symbol)
 
         # 確保有日曆（讀 DB；空才同步）
-        if allow_fetch and not self.get_latest_trading_day():
+        if allow_fetch and not as_of and not self.get_latest_trading_day():
             self.sync_calendar()
 
-        # DB 無任何資料 → 視 allow_fetch 決定是否 backfill
-        latest_date, latest_row = self._latest_row(symbol)
-        if latest_row is None and allow_fetch:
+        # DB 無任何資料 → 視 allow_fetch 決定是否 backfill（as_of 回測模式不 backfill）
+        latest_date, latest_row = self._latest_row(symbol, as_of=as_of)
+        if latest_row is None and allow_fetch and not as_of:
             self.backfill(symbol, trading_days=90)
-            latest_date, latest_row = self._latest_row(symbol)
+            latest_date, latest_row = self._latest_row(symbol, as_of=as_of)
 
         if latest_row is None:
             return {"available": False,
-                    "message": "無法取得籌碼資料" + ("（FinMind/官方備援皆無回應）" if allow_fetch else "（DB 無資料，掃描不觸發抓取）")}
+                    "message": "無法取得籌碼資料" + ("（FinMind/官方備援皆無回應）" if allow_fetch else "（DB 無資料）")}
 
         foreign_net = latest_row["foreign"] or 0
         trust_net   = latest_row["trust"] or 0
         dealer_net  = latest_row["dealer"] or 0
 
-        f_streak = self.get_consecutive_days(symbol, "foreign")
-        t_streak = self.get_consecutive_days(symbol, "trust")
+        f_streak = self.get_consecutive_days(symbol, "foreign", as_of=as_of)
+        t_streak = self.get_consecutive_days(symbol, "trust", as_of=as_of)
 
         foreign_days = f_streak["days"]
         trust_days   = t_streak["days"]
@@ -587,7 +595,7 @@ class ChipDataManager:
         consecutive_sell_days = max(-foreign_days if foreign_days < 0 else 0,
                                     -trust_days   if trust_days   < 0 else 0)
 
-        avg_sell_net_5d = self._avg_net_5d(symbol, "foreign")
+        avg_sell_net_5d = self._avg_net_5d(symbol, "foreign", as_of=as_of)
 
         # 顯示字串（沿用現有格式）
         foreign_text, foreign_signal = _fmt_streak(foreign_days, foreign_net)
