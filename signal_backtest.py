@@ -121,8 +121,11 @@ def build_asof_result(symbol, hist_asof, idx_asof, chip_mgr, rev_mgr, as_of_str,
 
 # ── 單檔 walk-forward ──────────────────────────────────────────────────────
 def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
-               days, holds, cost_rate, QuickAnalyzer):
-    """回傳該檔所有 (as_of) 訊號的 trade 記錄 list。"""
+               days, holds, cost_rate, QuickAnalyzer, start=None, end=None):
+    """回傳該檔所有 (as_of) 訊號的 trade 記錄 list。
+
+    days=0 → 取全部可用 as_of（多期驗證用）；start/end（date）→ 限定 as_of 區間。
+    """
     trades = []
     if full_hist is None or len(full_hist) < 80:
         return trades
@@ -132,17 +135,21 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
     n = len(fh)
     max_hold = max(holds)
 
-    # as_of 範圍：需 entry(next)+max_hold 有資料 → i 到 n-2-max_hold；取最後 days 個
+    # as_of 範圍：需 entry(next)+max_hold 有資料 → i 到 n-2-max_hold
     last_i = n - 2 - max_hold
     if last_i < 60:
         return trades
-    first_i = max(60, last_i - days + 1)
+    first_i = 60 if days <= 0 else max(60, last_i - days + 1)
 
     idx_sorted = idx_hist.sort_index() if idx_hist is not None else None
 
     for i in range(first_i, last_i + 1):
         as_of_ts = dates[i]
         as_of_date = as_of_ts.date()
+        if start and as_of_date < start:
+            continue
+        if end and as_of_date > end:
+            continue
         as_of_str = as_of_date.isoformat()
         hist_asof = fh.iloc[:i + 1]
         idx_asof = idx_sorted[idx_sorted.index.date <= as_of_date] if idx_sorted is not None else None
@@ -166,12 +173,15 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
         tim = tl.get('timing') or {}
         triggers = tim.get('triggers', []) if isinstance(tim, dict) else []
         chip = result.get('chip_flow', {}) or {}
+        mreg = result.get('market_regime', {}) or {}
 
         entry_open = float(fh['Open'].iloc[i + 1])
         row = {
             'as_of': as_of_str,
             'symbol': symbol,
             'grade': scenario,
+            'regime': mreg.get('trend_direction', '未知') if mreg.get('available') else '未知',
+            'market_adx': mreg.get('adx') if mreg.get('available') else None,
             'action_code': decision.get('action_code', ''),
             'dir_score': dirn.get('score'),
             'pos_score': pos.get('score'),
@@ -225,8 +235,9 @@ def write_reports(trades, holds, out_dir, args, index_bh):
     os.makedirs(out_dir, exist_ok=True)
     # trades.csv
     csv_path = os.path.join(out_dir, 'trades.csv')
-    fields = ['as_of', 'symbol', 'grade', 'action_code', 'dir_score', 'pos_score',
-              'timing_grade', 'pth_52w', 'rs_score', 'chip_buy_days', 'chip_reliable',
+    fields = ['as_of', 'symbol', 'grade', 'regime', 'market_adx', 'action_code',
+              'dir_score', 'pos_score', 'timing_grade', 'pth_52w', 'rs_score',
+              'chip_buy_days', 'chip_reliable',
               'entry'] + [f'exit_{N}' for N in holds] + [f'ret_{N}_net' for N in holds] + ['triggers']
     with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
@@ -324,6 +335,36 @@ def write_reports(trades, holds, out_dir, args, index_bh):
             flag = ' 🔴拖後腿' if wr < 50 else ''
             md.append(f"| {tag} | {len(nets)} | {wr:.1f}%{flag} | {statistics.mean(nets):.3f}% |")
 
+    # ── 多期驗證：分市場 regime 的 A/B/C（解鎖 B/C 決策的關鍵）──
+    md.append("\n## 分市場環境（regime）驗證\n")
+    md.append("> 用 as_of 當日的大盤 regime（多頭/盤整/空頭）切分，檢驗分級在不同環境是否穩定。\n")
+    Nr = 10 if 10 in holds else holds[0]
+    from collections import Counter as _Ctr
+    reg_dist = _Ctr(t.get('regime', '未知') for t in trades)
+    md.append(f"樣本分佈（{Nr}日）：" + "、".join(f"{r} {c}筆" for r, c in reg_dist.most_common()) + "\n")
+    md.append(f"| Regime | A n | A 期望 | B n | B 期望 | C n | C 期望 | A>B? | 純三盤 期望 | C多頭 期望 |")
+    md.append("|---|---|---|---|---|---|---|---|---|---|")
+    for reg in ['多頭', '盤整', '空頭']:
+        sub = [t for t in trades if t.get('regime') == reg]
+        if not sub:
+            continue
+        def _exp(g):
+            nets = [t[f'ret_{Nr}_net'] for t in sub if t['grade'] == g and f'ret_{Nr}_net' in t]
+            return (len(nets), round(statistics.mean(nets), 2)) if nets else (0, None)
+        an, ae = _exp('A'); bn, be = _exp('B'); cn, ce = _exp('C')
+        ab = '✅' if (ae is not None and be is not None and ae > be) else ('🔴' if (ae is not None and be is not None) else '–')
+        # 純三盤突破 vs C多頭（B/C 決策的核心對照）
+        three = [t[f'ret_{Nr}_net'] for t in sub
+                 if '三盤突破' in (t.get('triggers') or '') and 'D55' not in (t.get('triggers') or '')
+                 and '法人連買' not in (t.get('triggers') or '') and f'ret_{Nr}_net' in t]
+        cpull = [t[f'ret_{Nr}_net'] for t in sub
+                 if '多頭環境' in (t.get('triggers') or '') and f'ret_{Nr}_net' in t]
+        te = f"{statistics.mean(three):.2f}%({len(three)})" if three else '–'
+        pe = f"{statistics.mean(cpull):.2f}%({len(cpull)})" if cpull else '–'
+        md.append(f"| {reg} | {an} | {ae} | {bn} | {be} | {cn} | {ce} | {ab} | {te} | {pe} |")
+    md.append("\n**判讀**：若「純三盤突破」在空頭/盤整期同樣顯著弱於 C多頭 → 支持將單獨三盤突破降 C（B/C 決策）；"
+              "若逆風期三盤突破表現正常 → 維持現狀，多頭期非單調視為 regime 特性。")
+
     # 不可信籌碼統計
     unreliable = sum(1 for t in trades if t.get('chip_reliable') is False)
     md.append("\n## 資料品質\n")
@@ -348,7 +389,9 @@ def write_reports(trades, holds, out_dir, args, index_bh):
 def main():
     ap = argparse.ArgumentParser(description="A/B/C 訊號級 walk-forward 回測")
     ap.add_argument('--symbols', default='', help='逗號分隔或檔案路徑；預設用 watchlist')
-    ap.add_argument('--days', type=int, default=180, help='回測交易日數')
+    ap.add_argument('--days', type=int, default=180, help='回測交易日數；0=全部可用歷史（多期驗證）')
+    ap.add_argument('--start', default='', help='as_of 起日 YYYY-MM-DD（限定區間）')
+    ap.add_argument('--end', default='', help='as_of 迄日 YYYY-MM-DD（限定區間）')
     ap.add_argument('--hold', default='5,10,20', help='持有期，逗號分隔')
     ap.add_argument('--discount', type=float, default=1.0, help='手續費折扣（如 0.28）')
     ap.add_argument('--workers', type=int, default=8)
@@ -356,6 +399,8 @@ def main():
     args = ap.parse_args()
 
     holds = [int(x) for x in args.hold.split(',') if x.strip()]
+    _start = datetime.date.fromisoformat(args.start) if args.start else None
+    _end = datetime.date.fromisoformat(args.end) if args.end else None
     QuickAnalyzer, DataSourceManager = _lazy_main()
 
     # 標的
@@ -379,7 +424,10 @@ def main():
     from revenue_data_manager import get_revenue_manager
     chip_mgr = get_chip_manager()
     rev_mgr = get_revenue_manager()
-    if not chip_mgr.get_latest_trading_day():
+    # 全歷史模式一律強制加寬日曆（既有 DB 可能只存了短窗口）；一般模式空才同步。
+    if args.days <= 0:
+        chip_mgr.sync_calendar(lookback_days=1200)
+    elif not chip_mgr.get_latest_trading_day():
         chip_mgr.sync_calendar(lookback_days=max(500, args.days * 2))
 
     # 大盤指數（一次抓，全體共用）
@@ -389,7 +437,10 @@ def main():
         idx_hist = None
 
     # 每檔：抓全期 hist（一次）+ 籌碼 backfill（回測窗口需要）
-    print(f"[Backtest] {len(symbols)} 檔 × {args.days} 日，持有 {holds}，輸出 {out_dir}")
+    # days=0（全歷史）→ 籌碼/營收 backfill 覆蓋全 3 年窗口
+    _chip_days = 750 if args.days <= 0 else max(120, args.days + 30)
+    _rev_months = 40 if args.days <= 0 else 30
+    print(f"[Backtest] {len(symbols)} 檔 × {'全歷史' if args.days<=0 else str(args.days)+'日'}，持有 {holds}，輸出 {out_dir}")
     full_hists = {}
     for sym in symbols:
         try:
@@ -400,11 +451,11 @@ def main():
             print(f"[Backtest] {sym} 抓取失敗: {e}")
         # 籌碼回測需要足夠歷史：backfill 一次（含 as_of 前的日子）
         try:
-            chip_mgr.backfill(sym, trading_days=max(120, args.days + 30))
+            chip_mgr.backfill(sym, trading_days=_chip_days)
         except Exception:
             pass
         try:
-            rev_mgr.backfill(sym, months=30)
+            rev_mgr.backfill(sym, months=_rev_months)
         except Exception:
             pass
 
@@ -428,7 +479,8 @@ def main():
     all_trades = []
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futs = {ex.submit(run_symbol, sym, '台股', full_hists.get(sym), idx_hist,
-                          chip_mgr, rev_mgr, args.days, holds, cost_rate, QuickAnalyzer): sym
+                          chip_mgr, rev_mgr, args.days, holds, cost_rate, QuickAnalyzer,
+                          _start, _end): sym
                 for sym in full_hists}
         for fut in as_completed(futs):
             sym = futs[fut]
