@@ -174,30 +174,67 @@ class ThreeLayerEngine:
             # Layer 3: 時機
             timing = ThreeLayerEngine.score_timing(result)
 
+            # ── build_prompt_06：裁決軌跡（append-only，不改任何判定）──────
+            # 記錄 grade 的每一步變化；未觸發的階段記 to=None reason='—'。
+            trail = []
+            _raw_grade = timing['grade']
+            _tg = timing.get('triggers', []) or []
+            trail.append({'stage': '時機分級', 'from': None, 'to': _raw_grade,
+                          'reason': (_tg[0] if _tg else '原始時機分級')})
+            # PTH 閘門 / 超買安全閥（均在 score_timing 內部，從 triggers 偵測是否觸發）
+            _pth_hit = next((t for t in _tg if 'PTH' in t and '52週高' in t), None)
+            _ov_hit  = next((t for t in _tg if '超買安全閥' in t or '極度延伸硬上限' in t), None)
+            if _pth_hit:
+                trail.append({'stage': 'PTH閘門', 'from': 'A', 'to': 'B', 'reason': _pth_hit})
+            elif _ov_hit:
+                trail.append({'stage': '超買安全閥', 'from': 'A', 'to': 'B', 'reason': _ov_hit})
+            else:
+                trail.append({'stage': 'PTH閘門', 'from': None, 'to': None, 'reason': '—'})
+
             # ── 大盤濾網作用於 timing grade ──────────────────────
+            _g_before_mkt = timing['grade']
+            _mkt_reason = None
             if _is_market_bear and timing['grade'] == 'A':
                 # 大盤空頭：A 級降為 B 級，加入大盤警示
                 timing['grade'] = 'B'
                 timing['label'] = '追蹤（大盤空頭降級）'
-                timing['triggers'].append(f'⚠️ 大盤空頭（{market_trend}，ADX={market_adx:.0f}），A→B 降級')
+                _mkt_reason = f'大盤空頭（{market_trend}，ADX={market_adx:.0f}），A→B 降級'
+                timing['triggers'].append('⚠️ ' + _mkt_reason)
             elif _is_market_bear and timing['grade'] == 'B':
                 # 大盤空頭：B 級降為 C 級
                 timing['grade'] = 'C'
                 timing['label'] = '觀察（大盤空頭降級）'
-                timing['triggers'].append(f'⚠️ 大盤空頭，B→C 降級')
+                _mkt_reason = '大盤空頭，B→C 降級'
+                timing['triggers'].append('⚠️ ' + _mkt_reason)
             elif _is_market_range and timing['grade'] == 'A':
                 # 大盤震盪：A 級降為 B 級
                 timing['grade'] = 'B'
                 timing['label'] = '追蹤（大盤震盪降級）'
-                timing['triggers'].append(f'⚠️ 大盤震盪（ADX={market_adx:.0f}），A→B 降級')
+                _mkt_reason = f'大盤震盪（ADX={market_adx:.0f}），A→B 降級'
+                timing['triggers'].append('⚠️ ' + _mkt_reason)
+            if _mkt_reason:
+                trail.append({'stage': '大盤濾網', 'from': _g_before_mkt, 'to': timing['grade'], 'reason': _mkt_reason})
+            else:
+                trail.append({'stage': '大盤濾網', 'from': None, 'to': None, 'reason': '—'})
 
             # 籌碼過濾（可能降級 timing.grade）
+            _g_before_chip = timing['grade']
             chip = ThreeLayerEngine.apply_chip_filter(result, timing)
+            if timing['grade'] != _g_before_chip:
+                trail.append({'stage': '籌碼過濾', 'from': _g_before_chip, 'to': timing['grade'],
+                              'reason': chip.get('note', '籌碼惡化降級')})
+            else:
+                trail.append({'stage': '籌碼過濾', 'from': None, 'to': None, 'reason': '—'})
+
+            # 形態覆蓋佔位（實際覆蓋在 _generate_recommendation_v43，屆時回填此列）
+            trail.append({'stage': '形態覆蓋', 'from': None, 'to': None, 'reason': '—'})
 
             # 賣訊檢查（優先於買訊）
             sell = ThreeLayerEngine.check_sell_signal(result)
 
-            return ThreeLayerEngine._build_buy_output(direction, position, timing, chip, sell, result)
+            out = ThreeLayerEngine._build_buy_output(direction, position, timing, chip, sell, result)
+            out['adjustment_trail'] = trail
+            return out
 
         except Exception as e:
             import traceback

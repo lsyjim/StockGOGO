@@ -67,6 +67,10 @@ class ChipDataManager:
     def _conn(self):
         return sqlite3.connect(self.db_name)
 
+    # build_prompt_06 任務0：買/賣分列欄位（單位張，NULL=未取得）
+    _BUYSELL_COLS = ('foreign_buy', 'foreign_sell', 'trust_buy', 'trust_sell',
+                     'dealer_buy', 'dealer_sell')
+
     def _ensure_schema(self):
         conn = self._conn()
         cur = conn.cursor()
@@ -88,19 +92,32 @@ class ChipDataManager:
                 source TEXT
             )
         ''')
+        # migration：舊表補買/賣分列欄位（INTEGER NULL），舊資料列保持 NULL
+        cur.execute("PRAGMA table_info(chip_daily)")
+        existing = {row[1] for row in cur.fetchall()}
+        for col in self._BUYSELL_COLS:
+            if col not in existing:
+                try:
+                    cur.execute(f"ALTER TABLE chip_daily ADD COLUMN {col} INTEGER")
+                except sqlite3.OperationalError:
+                    pass
         conn.commit()
         conn.close()
 
-    def _upsert_chip(self, symbol, date, foreign_net, trust_net, dealer_net, source):
+    def _upsert_chip(self, symbol, date, foreign_net, trust_net, dealer_net, source,
+                     foreign_buy=None, foreign_sell=None, trust_buy=None, trust_sell=None,
+                     dealer_buy=None, dealer_sell=None):
         """寫入單日籌碼。None 值以 NULL 落地（語意：未取得，非 0）。"""
         conn = self._conn()
         cur = conn.cursor()
         cur.execute('''
             INSERT OR REPLACE INTO chip_daily
-            (symbol, date, foreign_net, trust_net, dealer_net, source, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (symbol, date, foreign_net, trust_net, dealer_net, source, fetched_at,
+             foreign_buy, foreign_sell, trust_buy, trust_sell, dealer_buy, dealer_sell)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (str(symbol), date, foreign_net, trust_net, dealer_net, source,
-              datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+              datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+              foreign_buy, foreign_sell, trust_buy, trust_sell, dealer_buy, dealer_sell))
         conn.commit()
         conn.close()
 
@@ -134,8 +151,9 @@ class ChipDataManager:
 
     def _fetch_finmind_chip(self, symbol, start_date, end_date):
         """
-        抓 FinMind 法人買賣超，彙總為 {date: (foreign_net, trust_net, dealer_net)}（張）。
-        失敗回 None。
+        抓 FinMind 法人買賣超，彙總為 {date: dict}（單位張）。失敗回 None。
+        每日 dict 欄位：f_net/t_net/d_net + f_buy/f_sell/t_buy/t_sell/d_buy/d_sell。
+        彙總規則同淨額：外資=Foreign_Investor+Foreign_Dealer_Self、自營=Dealer_self+Dealer_Hedging。
         """
         data = self._finmind_get(
             "TaiwanStockInstitutionalInvestorsBuySell",
@@ -143,22 +161,32 @@ class ChipDataManager:
         )
         if not data:
             return None
-        # 依日期彙總各法人 (buy - sell)（股）
-        by_date: dict[str, dict[str, float]] = {}
+        # 依日期彙總各法人 buy/sell（股）
+        by_date = {}
         for row in data:
             d = row.get("date")
             name = row.get("name", "")
-            net_shares = (row.get("buy", 0) or 0) - (row.get("sell", 0) or 0)
-            slot = by_date.setdefault(d, {"f": 0.0, "t": 0.0, "d": 0.0})
+            buy = row.get("buy", 0) or 0
+            sell = row.get("sell", 0) or 0
+            slot = by_date.setdefault(d, {"fb": 0.0, "fs": 0.0, "tb": 0.0, "ts": 0.0, "db": 0.0, "ds": 0.0})
             if name in _FM_FOREIGN:
-                slot["f"] += net_shares
+                slot["fb"] += buy; slot["fs"] += sell
             elif name in _FM_TRUST:
-                slot["t"] += net_shares
+                slot["tb"] += buy; slot["ts"] += sell
             elif name in _FM_DEALER:
-                slot["d"] += net_shares
+                slot["db"] += buy; slot["ds"] += sell
         out = {}
         for d, s in by_date.items():
-            out[d] = (_shares_to_lots(s["f"]), _shares_to_lots(s["t"]), _shares_to_lots(s["d"]))
+            fb, fs = _shares_to_lots(s["fb"]), _shares_to_lots(s["fs"])
+            tb, ts = _shares_to_lots(s["tb"]), _shares_to_lots(s["ts"])
+            db, ds = _shares_to_lots(s["db"]), _shares_to_lots(s["ds"])
+            out[d] = {
+                "f_net": _shares_to_lots(s["fb"] - s["fs"]),
+                "t_net": _shares_to_lots(s["tb"] - s["ts"]),
+                "d_net": _shares_to_lots(s["db"] - s["ds"]),
+                "f_buy": fb, "f_sell": fs, "t_buy": tb, "t_sell": ts,
+                "d_buy": db, "d_sell": ds,
+            }
         return out
 
     # ────────────────────────────────────────────────────────────────────
@@ -243,10 +271,12 @@ class ChipDataManager:
             # （如端午節 2026-06-19），交易日曆（TradingDate）為權威來源。
             valid = set(self.get_trading_days_desc(limit=400))
             written = 0
-            for d, (f, t, dl) in chip.items():
+            for d, v in chip.items():
                 if valid and d not in valid:
                     continue
-                self._upsert_chip(symbol, d, f, t, dl, "finmind")
+                self._upsert_chip(symbol, d, v["f_net"], v["t_net"], v["d_net"], "finmind",
+                                  v["f_buy"], v["f_sell"], v["t_buy"], v["t_sell"],
+                                  v["d_buy"], v["d_sell"])
                 written += 1
             return written
 
@@ -282,8 +312,10 @@ class ChipDataManager:
             if chip:
                 for d in need:
                     if d in chip:
-                        f, t, dl = chip[d]
-                        self._upsert_chip(sym, d, f, t, dl, "finmind")
+                        v = chip[d]
+                        self._upsert_chip(sym, d, v["f_net"], v["t_net"], v["d_net"], "finmind",
+                                          v["f_buy"], v["f_sell"], v["t_buy"], v["t_sell"],
+                                          v["d_buy"], v["d_sell"])
                         filled += 1
             time.sleep(0.2)   # 控制在額度內
         return filled
@@ -549,6 +581,50 @@ class ChipDataManager:
             if d in rows and rows[d]["foreign"] is not None:
                 return d, rows[d]
         return None, None
+
+    def get_daily_detail(self, symbol, days: int = 10, as_of: str = None) -> list:
+        """
+        近 N 個交易日的買/賣/淨逐日明細（build_prompt_06 任務0）。
+
+        由 trading_calendar 取最近 N 個交易日（新→舊），逐日回傳：
+          {date, foreign_buy, foreign_sell, foreign_net, trust_buy, trust_sell,
+           trust_net, dealer_net, total_net, is_missing}
+        DB 無該日或 foreign_net 為 NULL → is_missing=True（其餘欄位 None）。
+        """
+        symbol = str(symbol)
+        cal = self.get_trading_days_desc(limit=days, as_of=as_of)
+        if not cal:
+            return []
+        conn = self._conn()
+        cur = conn.cursor()
+        qmarks = ",".join("?" * len(cal))
+        cur.execute(
+            f"SELECT date, foreign_net, trust_net, dealer_net, "
+            f"foreign_buy, foreign_sell, trust_buy, trust_sell, dealer_buy, dealer_sell "
+            f"FROM chip_daily WHERE symbol=? AND date IN ({qmarks})",
+            [symbol, *cal],
+        )
+        rows = {r[0]: r for r in cur.fetchall()}
+        conn.close()
+
+        out = []
+        for d in cal:
+            r = rows.get(d)
+            if r is None or r[1] is None:   # 無列 或 foreign_net NULL
+                out.append({"date": d, "is_missing": True,
+                            "foreign_buy": None, "foreign_sell": None, "foreign_net": None,
+                            "trust_buy": None, "trust_sell": None, "trust_net": None,
+                            "dealer_net": None, "total_net": None})
+                continue
+            (_d, f_net, t_net, d_net, f_buy, f_sell, t_buy, t_sell, _db, _ds) = r
+            total = sum(x for x in (f_net, t_net, d_net) if x is not None)
+            out.append({
+                "date": d, "is_missing": False,
+                "foreign_buy": f_buy, "foreign_sell": f_sell, "foreign_net": f_net,
+                "trust_buy": t_buy, "trust_sell": t_sell, "trust_net": t_net,
+                "dealer_net": d_net, "total_net": total,
+            })
+        return out
 
     # ────────────────────────────────────────────────────────────────────
     # 統一出口

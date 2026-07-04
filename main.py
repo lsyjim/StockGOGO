@@ -3735,7 +3735,23 @@ class QuickAnalyzer:
             range_info = dm.get('range_info', {})
             if range_info and scenario in ['E', 'F']:
                 recommendation_result['range_info'] = range_info
-            
+
+            # build_prompt_06：回填「形態覆蓋」裁決軌跡（read-only 標註，grade 不變）
+            try:
+                _trail = decision_matrix.get('adjustment_trail')
+                _pat = result.get('pattern_analysis', {}) or {}
+                _orig_overall = decision_matrix.get('recommendation', '')
+                if _trail and _pat.get('detected') and 'CONFIRMED' in _pat.get('status', '') \
+                        and overall and overall != _orig_overall:
+                    for _e in _trail:
+                        if _e.get('stage') == '形態覆蓋':
+                            _e['from'] = decision_matrix.get('scenario')
+                            _e['to'] = decision_matrix.get('scenario')
+                            _e['reason'] = f"{_pat.get('pattern_name', '形態')}確立 → 建議覆蓋為「{overall}」"
+                            break
+            except Exception:
+                pass
+
             return recommendation_result
         else:
             # 決策矩陣不可用時，使用傳統邏輯
@@ -4463,36 +4479,30 @@ class RecommendationDialog:
         self.dialog.geometry("1050x900")
         self.dialog.configure(bg=DarkTheme.BG_MAIN)
         
-        # 計算雙軌評分
+        # build_prompt_06：單一真相源。報告只讀 build_verdict，不重算任何分數/等級/目標。
+        from report_formatter import build_verdict
         try:
-            self.short_term = DecisionMatrix.calculate_short_term_score(analysis_result)
-            self.long_term = DecisionMatrix.calculate_long_term_score(analysis_result)
-            self.investment_advice = DecisionMatrix.get_investment_advice(
-                self.short_term.get('score', 50), self.long_term.get('score', 50)
-            )
+            self.verdict = build_verdict(analysis_result)
         except Exception as e:
-            print(f"評分計算錯誤: {e}")
-            self.short_term = {'score': 50, 'components': []}
-            self.long_term = {'score': 50, 'components': []}
-            self.investment_advice = {
-                'scenario_code': 'E', 'title': '【多空不明】', 'action_zh': '觀望',
-                'action': 'Neutral', 'weighted_score': 50, 'risk_level': 'Medium',
-                'emoji': '🤷', 'description': '', 'position_advice': '觀望',
-                'stop_loss_advice': 'N/A', 'short_zone': 'Mid', 'long_zone': 'Mid'
-            }
-        
+            print(f"build_verdict 失敗: {e}")
+            import traceback; traceback.print_exc()
+            self.verdict = {'grade': 'X', 'grade_label': '無法產生', 'overall_text': '',
+                            'score': None, 'scores': {}, 'score_notes': {}, 'term_advice': {},
+                            'adjustments': [], 'plan': {}, 'volume_profile': {}, 'chip_detail': [],
+                            'chip_summary': {}, 'evidence': {}, 'warnings': ['分析資料不足']}
+
         # 主框架 - 使用 Canvas 實現滾動
         self._create_scrollable_frame()
-        
-        # 建立內容區塊
-        self._build_header_section()          # 1. 頂部標題
-        self._build_summary_section()         # 2. 綜合評價（最重要！）
-        self._build_action_section()          # 3. 操作策略指引
-        self._build_score_section()           # 4. 雙軌評分系統
-        self._build_technical_section()       # 5. 技術指標
-        self._build_chip_section()            # 6. 籌碼分析
-        self._build_price_section()           # 7. 關鍵價位
-        self._build_detail_section()          # 8. 詳細分析
+
+        # build_prompt_06 定稿版面：八區塊，順序固定不得增刪調序
+        self._build_block_01_verdict()        # 01 裁決
+        self._build_block_02_term_advice()    # 02 分期建議
+        self._build_block_03_trade_plan()     # 03 交易計畫
+        self._build_block_04_scores_trail()   # 04 三層分數與裁決軌跡
+        self._build_block_05_volume()         # 05 量價分析
+        self._build_block_06_chip_detail()    # 06 籌碼近10日明細
+        self._build_block_07_evidence()       # 07 證據明細
+        self._build_block_08_risk()           # 08 風險與警示＋免責
         
         # 關閉按鈕 - 使用深色背景
         btn_frame = tk.Frame(self.dialog, bg=DarkTheme.BG_MAIN)
@@ -4639,702 +4649,297 @@ class RecommendationDialog:
         
         return content
     
-    def _build_header_section(self):
-        """1. 頂部標題區"""
-        header = tk.Frame(self.content_frame, bg=DarkTheme.BG_HEADER, pady=15)
-        header.pack(fill=tk.X, padx=5, pady=(5, 10))
-        
-        symbol = self.result.get('symbol', '')
-        name = self.result.get('name', '')
-        price = self.result.get('current_price', 0)
-        change = self.result.get('price_change', 0)
-        change_pct = self.result.get('price_change_pct', 0)
-        
-        # 股票名稱
-        tk.Label(header, text=f"📈 {symbol} {name}", 
-                font=("Arial", 24, "bold"), fg="white", bg=DarkTheme.BG_HEADER).pack()
-        
-        # 股價
-        price_color = DarkTheme.UP_COLOR if change > 0 else DarkTheme.DOWN_COLOR if change < 0 else DarkTheme.NEUTRAL_COLOR
-        sign = "▲" if change > 0 else "▼" if change < 0 else "─"
-        tk.Label(header, text=f"現價: ${price:.2f}  {sign} {change:+.2f} ({change_pct:+.2f}%)",
-                font=("Arial", 20, "bold"), fg=price_color, bg=DarkTheme.BG_HEADER).pack(pady=5)
-    
-    def _build_summary_section(self):
-        """2. 綜合評價區塊（最重要！置頂）"""
-        card = self._create_card(self.content_frame, "🎯 綜合評價 INVESTMENT SUMMARY", DarkTheme.ACCENT_GOLD)
+    # ══════════════════════════════════════════════════════════════════
+    # build_prompt_06 定稿版面：設計 token 工具
+    # ══════════════════════════════════════════════════════════════════
+    _MONO = "Menlo"           # 等寬字體（macOS）；缺字時 tkinter 自動替換
+    _WARN_BG = "#403a1e"      # 唯一允許的強調底色（軌跡降級行 / 缺日列）
+    _GRADE_COLORS = {
+        'A': ("#1b5e20", "#69f0ae"), 'B': ("#0d47a1", "#82b1ff"),
+        'C': ("#f57f17", "#ffe082"), 'SELL': ("#b71c1c", "#ff8a80"),
+        'WAIT': ("#37474f", "#b0bec5"), 'SKIP': ("#37474f", "#b0bec5"),
+        'X': ("#37474f", "#b0bec5"),
+    }
 
-        # ── 取得三層引擎裁決（唯一的權威來源）────────────────────
-        rec = self.result.get('recommendation', {})
-        if not isinstance(rec, dict):
-            rec = {}
+    @staticmethod
+    def _fmtnum(x, dec=0, sign=False, dash='—'):
+        """數字格式化：千分位、可帶正負號；None/str/NaN → '—'（禁止 N/A/None 字樣）。"""
+        try:
+            if x is None or isinstance(x, str):
+                return dash
+            v = float(x)
+            if v != v:
+                return dash
+            s = f"{v:+,.{dec}f}" if sign else f"{v:,.{dec}f}"
+            return s
+        except (TypeError, ValueError):
+            return dash
 
-        # three_layer 場景（來自 ThreeLayerEngine）
-        dm_result      = self.result.get('decision_matrix', {}) or {}
-        three_layer    = dm_result.get('three_layer', {}) or {}
-        engine_scenario      = dm_result.get('scenario', 'X')          # A/B/C/SKIP/WAIT/SELL
-        engine_scenario_name = dm_result.get('scenario_name', '未分析')
+    def _net_color(self, v):
+        """台股慣例：淨額正=紅、負=綠。"""
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return DarkTheme.TEXT_SECONDARY
+        if v > 0:
+            return DarkTheme.DOWN_COLOR   # 紅
+        if v < 0:
+            return DarkTheme.UP_COLOR     # 綠
+        return DarkTheme.TEXT_SECONDARY
 
-        # 雙軌評分場景（舊版參考，不再作為主建議來源）
-        old_scenario_code  = self.investment_advice.get('scenario_code', 'E')
-        old_scenario_title = self.investment_advice.get('title', '')
-        old_emoji          = self.investment_advice.get('emoji', '🤷')
+    def _section(self, no, name):
+        """區塊容器：編號＋名稱（muted 11px）+ 0.5px 分隔線，回傳內容 frame。"""
+        wrap = tk.Frame(self.content_frame, bg=DarkTheme.BG_MAIN)
+        wrap.pack(fill=tk.X, padx=14, pady=(10, 0))
+        head = tk.Frame(wrap, bg=DarkTheme.BG_MAIN)
+        head.pack(fill=tk.X)
+        tk.Label(head, text=f"{no}", font=(self._MONO, 11), fg=DarkTheme.TEXT_SECONDARY,
+                 bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT)
+        tk.Label(head, text=f"  {name}", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY,
+                 bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT)
+        sep = tk.Frame(wrap, bg=DarkTheme.BORDER_COLOR, height=1)
+        sep.pack(fill=tk.X, pady=(4, 8))
+        body = tk.Frame(wrap, bg=DarkTheme.BG_MAIN)
+        body.pack(fill=tk.X)
+        return body
 
-        # ── 場景框：三層引擎為主，雙軌評分降為副標題（參考）────────
-        scenario_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE,
-                                 highlightbackground=DarkTheme.BORDER_COLOR, highlightthickness=1)
-        scenario_frame.pack(fill=tk.X, pady=5)
+    def _kv_rows(self, parent, rows):
+        """標籤-值單欄表。rows=[(label, value_text, value_color_or_None), ...]。"""
+        for i, (label, val, color) in enumerate(rows):
+            r = tk.Frame(parent, bg=DarkTheme.BG_MAIN)
+            r.pack(fill=tk.X, pady=1)
+            tk.Label(r, text=label, font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=DarkTheme.BG_MAIN, width=16, anchor="w").pack(side=tk.LEFT)
+            tk.Label(r, text=val, font=(self._MONO, 11), fg=(color or DarkTheme.TEXT_PRIMARY),
+                     bg=DarkTheme.BG_MAIN, anchor="w").pack(side=tk.LEFT)
 
-        # 主場景：三層引擎
-        _engine_colors = {
-            'A': DarkTheme.UP_COLOR,
-            'B': DarkTheme.UP_COLOR,
-            'C': DarkTheme.NEUTRAL_COLOR,
-            'SELL': DarkTheme.DOWN_COLOR,
-            'SKIP': DarkTheme.TEXT_SECONDARY,
-            'WAIT': DarkTheme.NEUTRAL_COLOR,
-        }
-        engine_color = _engine_colors.get(engine_scenario, DarkTheme.NEUTRAL_COLOR)
+    # ── 01 裁決 ─────────────────────────────────────────────────────────
+    def _build_block_01_verdict(self):
+        v = self.verdict
+        body = self._section("01", "裁決")
+        top = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+        top.pack(fill=tk.X)
+        bg, fg = self._GRADE_COLORS.get(v.get('grade'), self._GRADE_COLORS['X'])
+        tk.Label(top, text=f" {v.get('grade','—')} ", font=("Arial", 22, "bold"),
+                 fg=fg, bg=bg, padx=10, pady=2).pack(side=tk.LEFT)
+        tk.Label(top, text=f"  {v.get('name', v.get('symbol',''))}", font=("Arial", 15, "bold"),
+                 fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT, padx=6)
+        tk.Label(top, text=self._fmtnum(v.get('score'), 0), font=(self._MONO, 26, "bold"),
+                 fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_MAIN).pack(side=tk.RIGHT)
+        tk.Label(top, text="綜合分 ", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                 bg=DarkTheme.BG_MAIN).pack(side=tk.RIGHT)
+        # 覆蓋建議一行（同源 overall_text）
+        tk.Label(body, text=v.get('overall_text', ''), font=("Arial", 12),
+                 fg=fg, bg=DarkTheme.BG_MAIN, anchor="w").pack(fill=tk.X, pady=(4, 2))
+        # meta 行
+        cs = v.get('chip_summary', {}) or {}
+        reliable = cs.get('reliable')
+        chip_txt = "完整" if reliable is not False else f"缺 {len(cs.get('missing_dates') or [])} 日"
+        chip_color = DarkTheme.TEXT_SECONDARY if reliable is not False else DarkTheme.NEUTRAL_COLOR
+        meta = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+        meta.pack(fill=tk.X)
+        tk.Label(meta, text=f"資料基準：{v.get('data_date','—') or '—'}", font=("Arial", 10),
+                 fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT)
+        tk.Label(meta, text=f"｜信心：{v.get('confidence','—') or '—'}", font=("Arial", 10),
+                 fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT)
+        tk.Label(meta, text=f"｜籌碼資料：{chip_txt}", font=("Arial", 10),
+                 fg=chip_color, bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT)
 
-        tk.Label(scenario_frame,
-                 text=f"  🔬 三層引擎裁決: {engine_scenario_name}（{engine_scenario}）",
-                 font=("Arial", 16, "bold"), fg=engine_color, bg=DarkTheme.BG_HEADER,
-                 pady=8, padx=10, anchor="w").pack(fill=tk.X)
+    # ── 02 分期建議 ─────────────────────────────────────────────────────
+    def _build_block_02_term_advice(self):
+        body = self._section("02", "分期建議")
+        ta = self.verdict.get('term_advice', {}) or {}
+        rows = [("短線 5–20 日", ta.get('short', {})),
+                ("中線 1–3 月", ta.get('mid', {})),
+                ("長線 3–6 月", ta.get('long', {}))]
+        for label, adv in rows:
+            r = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+            r.pack(fill=tk.X, pady=2)
+            tk.Label(r, text=label, font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=DarkTheme.BG_MAIN, width=12, anchor="w").pack(side=tk.LEFT)
+            tk.Label(r, text=(adv.get('action') or '—'), font=("Arial", 12, "bold"),
+                     fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT)
+            reason = adv.get('reason') or ''
+            if reason:
+                tk.Label(r, text=f" — {reason}", font=("Arial", 10),
+                         fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT)
 
-        # 副場景：雙軌評分（灰色小字，僅參考）
-        tk.Label(scenario_frame,
-                 text=f"     📊 雙軌評分參考：場景 {old_scenario_code} {old_scenario_title}",
-                 font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_HEADER,
-                 padx=10, anchor="w").pack(fill=tk.X, pady=(0, 8))
+    # ── 03 交易計畫 ─────────────────────────────────────────────────────
+    def _build_block_03_trade_plan(self):
+        body = self._section("03", "交易計畫")
+        p = self.verdict.get('plan', {}) or {}
+        ez = p.get('entry_zone')
+        ez_txt = (f"{self._fmtnum(ez[0],2)} – {self._fmtnum(ez[1],2)}" if isinstance(ez, (list, tuple)) else '—')
+        sl = p.get('stop_loss')
+        sl_txt = f"{self._fmtnum(sl,2)}  (ATR×{self._fmtnum(p.get('stop_atr_mult'),1)})"
+        tgt = p.get('target')
+        rr = p.get('rr')
+        tgt_txt = f"{self._fmtnum(tgt,2)}   RR {self._fmtnum(rr,1)}"
+        pos = p.get('position_pct')
+        pos_txt = f"{self._fmtnum(pos,1)}%"
+        cards = [("進場參考區", ez_txt), ("停損", sl_txt), ("目標 ＋ RR", tgt_txt), ("建議部位", pos_txt)]
+        grid = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+        grid.pack(fill=tk.X)
+        for idx, (lab, val) in enumerate(cards):
+            cell = tk.Frame(grid, bg=DarkTheme.BG_CARD, highlightbackground=DarkTheme.BORDER_COLOR,
+                            highlightthickness=1)
+            cell.grid(row=idx // 2, column=idx % 2, sticky="nsew", padx=4, pady=4)
+            tk.Label(cell, text=lab, font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=DarkTheme.BG_CARD).pack(anchor="w", padx=10, pady=(8, 0))
+            tk.Label(cell, text=val, font=(self._MONO, 14, "bold"), fg=DarkTheme.TEXT_PRIMARY,
+                     bg=DarkTheme.BG_CARD).pack(anchor="w", padx=10, pady=(0, 8))
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
 
-        # ── 投資評級：唯一來源 = 三層引擎裁決（engine_scenario）──
-        # v4.5.x 修正：原本用 rec['overall']（舊決策矩陣）會與三層引擎矛盾；
-        # 現在改為直接從 engine_scenario 映射，確保徽章與上方裁決一致。
-        _ENGINE_ACTION_MAP = {
-            'A':    '主攻買進（A級）',
-            'B':    '追蹤買進（B級）',
-            'C':    'C級觀察，列入追蹤',
-            'SELL': '賣出訊號',
-            'WAIT': '等待拉回',
-            'SKIP': '方向不佳，跳過',
-            'X':    '觀望',
-        }
-        action_zh = _ENGINE_ACTION_MAP.get(engine_scenario,
-                        dm_result.get('recommendation', '觀望') or '觀望')
-
-        # 舊矩陣的 overall 只用於矛盾偵測（不再決定徽章文字）
-        overall_from_rec = rec.get('overall', '')
-        _old_is_buy  = any(x in (self.investment_advice.get('action_zh', '')) for x in ['買進', '做多'])
-        _old_is_bear = old_scenario_code in ('H', 'G', 'F')
-        _engine_is_sell = engine_scenario == 'SELL'
-        _rec_is_buy  = any(x in overall_from_rec for x in ['買進', '做多'])
-
-        # 矛盾情境：舊矩陣說買、三層說賣（或反之）→ 警示，三層為準
-        if _engine_is_sell and _rec_is_buy:
-            tk.Label(card,
-                     text=("⚠️ 訊號矛盾已仲裁：形態/舊矩陣觸發買進，但三層引擎偵測到賣出訊號，"
-                           "已以三層引擎裁決為準（顯示：賣出訊號）。"),
-                     font=("Arial", 11, "bold"), fg="#FF8C00",
-                     bg=DarkTheme.BG_CARD, wraplength=950, justify=tk.LEFT
-                     ).pack(anchor="w", padx=10, pady=(5, 0))
-        elif _old_is_bear and _rec_is_buy:
-            tk.Label(card,
-                     text=("⚠️ 雙軌參考顯示空頭（場景 " + old_scenario_code +
-                           "），但形態分析觸發買進，以三層引擎上方裁決為準。"),
-                     font=("Arial", 11, "bold"), fg="#FF8C00",
-                     bg=DarkTheme.BG_CARD, wraplength=950, justify=tk.LEFT
-                     ).pack(anchor="w", padx=10, pady=(5, 0))
-
-        rating_frame = tk.Frame(card, bg=DarkTheme.BG_CARD)
-        rating_frame.pack(fill=tk.X, pady=10)
-
-        # ── 顏色邏輯（同原版）─────────────────────────────────────
-        if any(x in action_zh for x in ["強烈建議買進", "強力買進", "買進", "適合買進", "建議買進", "動能買進"]):
-            action_bg = DarkTheme.STRONG_BUY_BG
-            action_fg = DarkTheme.STRONG_BUY_FG
-            action_en = "Buy"
-        elif any(x in action_zh for x in ["逢低布局", "分批布局", "可考慮買進", "拉回買進"]):
-            action_bg = DarkTheme.STRONG_BUY_BG
-            action_fg = DarkTheme.STRONG_BUY_FG
-            action_en = "Buy on Dip"
-        elif any(x in action_zh for x in ["賣出", "減碼", "停損", "建議賣出", "強力賣出"]):
-            action_bg = DarkTheme.STRONG_SELL_BG
-            action_fg = DarkTheme.STRONG_SELL_FG
-            action_en = "Sell"
-        elif any(x in action_zh for x in ["持有", "續抱", "持股續抱"]):
-            action_bg = DarkTheme.HOLD_BG
-            action_fg = DarkTheme.HOLD_FG
-            action_en = "Hold"
-        else:
-            action_bg = DarkTheme.HOLD_BG
-            action_fg = DarkTheme.HOLD_FG
-            action_en = "Neutral"
-        
-        left_frame = tk.Frame(rating_frame, bg=DarkTheme.BG_CARD)
-        left_frame.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
-        
-        tk.Label(left_frame, text="🎯 投資評級:", font=("Arial", 13), 
-                fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT, padx=5)
-        
-        # 評級標籤（帶背景色）
-        rating_label = tk.Label(left_frame, text=f" {action_zh} ", 
-                               font=("Arial", 13, "bold"), fg=action_fg, bg=action_bg,
-                               padx=8, pady=3)
-        rating_label.pack(side=tk.LEFT)
-        
-        # 風險等級
-        risk_level = self.investment_advice.get('risk_level', 'Medium')
-        risk_color = DarkTheme.UP_COLOR if risk_level == 'Low' else \
-                     DarkTheme.DOWN_COLOR if risk_level in ['High', 'Very High'] else DarkTheme.NEUTRAL_COLOR
-        
-        right_frame = tk.Frame(rating_frame, bg=DarkTheme.BG_CARD)
-        right_frame.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=5)
-        
-        tk.Label(right_frame, text="⚠️ 風險等級:", font=("Arial", 13),
-                fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT, padx=5)
-        tk.Label(right_frame, text=risk_level, font=("Arial", 14, "bold"),
-                fg=risk_color, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT)
-        
-        # 今日建議（顯示 recommendation 的警告訊息或說明）
-        warning_msg = rec.get('warning_message', '') if isinstance(rec, dict) else ''
-        if warning_msg:
-            tk.Label(card, text=f"⚠️ {warning_msg[:120]}", font=("Arial", 11),
-                    fg=DarkTheme.NEUTRAL_COLOR, bg=DarkTheme.BG_CARD, wraplength=950, 
-                    justify=tk.LEFT).pack(anchor="w", pady=5)
-        
-        # 進場時機（v4.5.10 新增：顯示在綜合評價中）
-        action_timing = rec.get('action_timing', '') if isinstance(rec, dict) else ''
-        if action_timing:
-            timing_color = DarkTheme.UP_COLOR if any(x in action_timing for x in ["進場", "買進", "立即"]) else \
-                          DarkTheme.DOWN_COLOR if any(x in action_timing for x in ["離場", "減碼", "賣出"]) else DarkTheme.NEUTRAL_COLOR
-            tk.Label(card, text=f"⏰ 進場時機: {action_timing}", font=("Arial", 12, "bold"),
-                    fg=timing_color, bg=DarkTheme.BG_CARD).pack(anchor="w", pady=5)
-    
-    def _build_action_section(self):
-        """3. 操作策略指引（短中長線）"""
-        card = self._create_card(self.content_frame, "⚡ 操作策略指引 ACTION PLAN", DarkTheme.UP_COLOR)
-        
-        rec = self.result.get('recommendation', {})
-        
-        def create_action_row(parent, label, action, reason, is_first=False):
-            """創建操作建議行"""
-            frame = tk.Frame(parent, bg=DarkTheme.BG_CARD)
-            frame.pack(fill=tk.X, pady=(0 if is_first else 8, 0))
-            
-            # 判斷顏色
-            action_str = str(action) if action else '觀望'
-            if any(x in action_str for x in ["買進", "進場", "看多", "偏多"]):
-                action_color = DarkTheme.UP_COLOR
-            elif any(x in action_str for x in ["賣出", "減碼", "偏空", "看空"]):
-                action_color = DarkTheme.DOWN_COLOR
+    # ── 04 三層分數與裁決軌跡 ───────────────────────────────────────────
+    def _build_block_04_scores_trail(self):
+        body = self._section("04", "三層分數與裁決軌跡")
+        sc = self.verdict.get('scores', {}) or {}
+        notes = self.verdict.get('score_notes', {}) or {}
+        for key, label in [('direction', '方向'), ('position', '位置'), ('timing', '時機')]:
+            val = sc.get(key)
+            r = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+            r.pack(fill=tk.X, pady=2)
+            tk.Label(r, text=label, font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=DarkTheme.BG_MAIN, width=6, anchor="w").pack(side=tk.LEFT)
+            if isinstance(val, (int, float)):
+                bar_bg = tk.Frame(r, bg=DarkTheme.BG_HEADER, width=200, height=12)
+                bar_bg.pack(side=tk.LEFT, padx=4)
+                bar_bg.pack_propagate(False)
+                fillw = max(0, min(200, int(val / 100 * 200)))
+                col = DarkTheme.UP_COLOR if val >= 55 else (DarkTheme.NEUTRAL_COLOR if val >= 45 else DarkTheme.DOWN_COLOR)
+                fill = tk.Frame(bar_bg, bg=col, width=fillw, height=12)
+                fill.pack(side=tk.LEFT)
+                tk.Label(r, text=self._fmtnum(val, 0), font=(self._MONO, 11),
+                         fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_MAIN, width=4).pack(side=tk.LEFT)
             else:
-                action_color = DarkTheme.NEUTRAL_COLOR
-            
-            tk.Label(frame, text=f"● {label}:", font=("Arial", 13, "bold"),
-                    fg=DarkTheme.TEXT_TITLE, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT, padx=5)
-            tk.Label(frame, text=action_str, font=("Arial", 13, "bold"),
-                    fg=action_color, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT)
-            
-            # 理由
-            reason_str = str(reason) if reason else '無'
-            tk.Label(parent, text=f"   └─ 理由: {reason_str[:70]}", font=("Arial", 11),
-                    fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        
-        # 短線
-        short_rec = rec.get('short_term', {}) if isinstance(rec, dict) else {}
-        if not isinstance(short_rec, dict):
-            short_rec = {}
-        create_action_row(card, "短線操作 (1-5日)", 
-                         short_rec.get('action', '觀望'), 
-                         short_rec.get('reason', '技術面中性'), True)
-        
-        # 中線
-        mid_rec = rec.get('mid_term', {}) if isinstance(rec, dict) else {}
-        if not isinstance(mid_rec, dict):
-            mid_rec = {}
-        create_action_row(card, "中線操作 (1-4週)", 
-                         mid_rec.get('action', '觀望'), 
-                         mid_rec.get('reason', '趨勢中性'))
-        
-        # 長線
-        long_rec = rec.get('long_term', {}) if isinstance(rec, dict) else {}
-        if not isinstance(long_rec, dict):
-            long_rec = {}
-        create_action_row(card, "長線操作 (月/季)", 
-                         long_rec.get('action', '觀望'), 
-                         long_rec.get('reason', '基本面中性'))
-        
-        # 部位建議框
-        advice_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE,
-                               highlightbackground=DarkTheme.BORDER_COLOR, highlightthickness=1)
-        advice_frame.pack(fill=tk.X, pady=(15, 5))
-        
-        position = self.investment_advice.get('position_advice') or 'N/A'
-        stop_loss = self.investment_advice.get('stop_loss_advice') or 'N/A'
-        
-        tk.Label(advice_frame, text=f"💰 部位控制: {position}", font=("Arial", 12),
-                fg=DarkTheme.TEXT_TITLE, bg=DarkTheme.BG_HEADER, pady=6, padx=10).pack(anchor="w")
-        tk.Label(advice_frame, text=f"🛡️ 停損策略: {stop_loss}", font=("Arial", 12),
-                fg=DarkTheme.NEUTRAL_COLOR, bg=DarkTheme.BG_HEADER, pady=6, padx=10).pack(anchor="w")
-    
-    def _build_score_section(self):
-        """4. 雙軌評分系統"""
-        card = self._create_card(self.content_frame, "📊 雙軌評分系統 DUAL-TRACK SCORING", DarkTheme.DOWN_COLOR)
-        
-        # 說明文字
-        tk.Label(card, text="※ 基礎分50分，根據各項指標加減分，最終分數範圍0-100分",
-                font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        tk.Label(card, text="※ High(≥65)=偏多, Mid(45-65)=中性, Low(≤45)=偏空",
-                font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        
-        # 評分表格
-        score_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE,
-                              highlightbackground=DarkTheme.BORDER_COLOR, highlightthickness=1)
-        score_frame.pack(fill=tk.X, pady=5)
-        
-        # 表頭
-        header_frame = tk.Frame(score_frame, bg=DarkTheme.BG_MAIN)
-        header_frame.pack(fill=tk.X)
-        
-        for text in ["指標", "基礎分", "加減分", "最終分數", "區間"]:
-            tk.Label(header_frame, text=text, font=("Arial", 11, "bold"),
-                    fg=DarkTheme.ACCENT_GOLD, bg=DarkTheme.BG_MAIN, width=12, pady=8).pack(side=tk.LEFT, expand=True)
-        
-        def create_score_row(parent, label, base, adjust, final_score, zone, bg_color):
-            """創建評分行"""
-            row = tk.Frame(parent, bg=bg_color)
-            row.pack(fill=tk.X)
-            
-            zone_color = DarkTheme.UP_COLOR if zone == 'High' else \
-                         DarkTheme.DOWN_COLOR if zone == 'Low' else DarkTheme.NEUTRAL_COLOR
-            adj_color = DarkTheme.UP_COLOR if adjust > 0 else DarkTheme.DOWN_COLOR if adjust < 0 else DarkTheme.TEXT_SECONDARY
-            
-            tk.Label(row, text=label, font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                    bg=bg_color, width=12, pady=5).pack(side=tk.LEFT, expand=True)
-            tk.Label(row, text=f"{base}", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                    bg=bg_color, width=12).pack(side=tk.LEFT, expand=True)
-            tk.Label(row, text=f"{adjust:+d}", font=("Arial", 11, "bold"), fg=adj_color, 
-                    bg=bg_color, width=12).pack(side=tk.LEFT, expand=True)
-            tk.Label(row, text=f"{final_score}", font=("Arial", 13, "bold"), fg=zone_color, 
-                    bg=bg_color, width=12).pack(side=tk.LEFT, expand=True)
-            tk.Label(row, text=f"{zone}", font=("Arial", 11), fg=zone_color, 
-                    bg=bg_color, width=12).pack(side=tk.LEFT, expand=True)
-        
-        # 計算短線加減分總和
-        short_comp = self.short_term.get('components') or []
-        short_adjust = sum(item.get('score', 0) for item in short_comp)
-        short_score = self.short_term.get('score', 50)
-        short_zone = self.investment_advice.get('short_zone', 'Mid')
-        create_score_row(score_frame, "短線波段", 50, short_adjust, short_score, short_zone, DarkTheme.BG_TABLE_ODD)
-        
-        # 計算長線加減分總和
-        long_comp = self.long_term.get('components') or []
-        long_adjust = sum(item.get('score', 0) for item in long_comp)
-        long_score = self.long_term.get('score', 50)
-        long_zone = self.investment_advice.get('long_zone', 'Mid')
-        create_score_row(score_frame, "長線投資", 50, long_adjust, long_score, long_zone, DarkTheme.BG_TABLE_EVEN)
-        
-        # 加權總分
-        weighted = self.investment_advice.get('weighted_score', 50)
-        weighted_color = DarkTheme.UP_COLOR if weighted >= 70 else \
-                         DarkTheme.DOWN_COLOR if weighted <= 40 else DarkTheme.NEUTRAL_COLOR
-        
-        total_row = tk.Frame(score_frame, bg=DarkTheme.BG_MAIN)
-        total_row.pack(fill=tk.X)
-        tk.Label(total_row, text="加權總分", font=("Arial", 11, "bold"), fg=DarkTheme.ACCENT_GOLD, 
-                bg=DarkTheme.BG_MAIN, width=12, pady=8).pack(side=tk.LEFT, expand=True)
-        tk.Label(total_row, text=f"短×40%", font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_MAIN, width=12).pack(side=tk.LEFT, expand=True)
-        tk.Label(total_row, text=f"長×60%", font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_MAIN, width=12).pack(side=tk.LEFT, expand=True)
-        tk.Label(total_row, text=f"{weighted}", font=("Arial", 14, "bold"), fg=weighted_color, 
-                bg=DarkTheme.BG_MAIN, width=12).pack(side=tk.LEFT, expand=True)
-        tk.Label(total_row, text=f"={short_score}×0.4+{long_score}×0.6", font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_MAIN, width=12).pack(side=tk.LEFT, expand=True)
-        
-        # 評分明細
-        detail_frame = tk.Frame(card, bg=DarkTheme.BG_CARD)
-        detail_frame.pack(fill=tk.X, pady=(10, 0))
-        
-        # 左右兩欄
-        left_col = tk.Frame(detail_frame, bg=DarkTheme.BG_CARD)
-        left_col.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=5)
-        
-        right_col = tk.Frame(detail_frame, bg=DarkTheme.BG_CARD)
-        right_col.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=5)
-        
-        # 短線明細
-        if short_comp:
-            tk.Label(left_col, text=f"📈 短線加減分明細 (共{short_adjust:+d}分):", font=("Arial", 11, "bold"),
-                    fg=DarkTheme.TEXT_TITLE, bg=DarkTheme.BG_CARD).pack(anchor="w")
-            for item in short_comp[:6]:
-                name = item.get('name', '')
-                score = item.get('score', 0)
-                reason = item.get('reason', '')
-                color = DarkTheme.UP_COLOR if score > 0 else DarkTheme.DOWN_COLOR if score < 0 else DarkTheme.TEXT_SECONDARY
-                tk.Label(left_col, text=f"  • {name}: {score:+d}分", font=("Arial", 10),
-                        fg=color, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        
-        # 長線明細
-        if long_comp:
-            tk.Label(right_col, text=f"📊 長線加減分明細 (共{long_adjust:+d}分):", font=("Arial", 11, "bold"),
-                    fg=DarkTheme.TEXT_TITLE, bg=DarkTheme.BG_CARD).pack(anchor="w")
-            for item in long_comp[:6]:
-                name = item.get('name', '')
-                score = item.get('score', 0)
-                reason = item.get('reason', '')
-                color = DarkTheme.UP_COLOR if score > 0 else DarkTheme.DOWN_COLOR if score < 0 else DarkTheme.TEXT_SECONDARY
-                tk.Label(right_col, text=f"  • {name}: {score:+d}分", font=("Arial", 10),
-                        fg=color, bg=DarkTheme.BG_CARD).pack(anchor="w")
-    
-    def _build_technical_section(self):
-        """5. 技術指標區塊"""
-        card = self._create_card(self.content_frame, "📉 技術指標 TECHNICAL INDICATORS", DarkTheme.TEXT_TITLE)
-        
-        tech = self.result.get('technical', {})
-        signal = tech.get('signal', '中性')
-        trend = tech.get('trend', '盤整')
-        
-        # 趨勢狀態
-        trend_color = DarkTheme.UP_COLOR if "多" in str(trend) or "上" in str(trend) else \
-                      DarkTheme.DOWN_COLOR if "空" in str(trend) or "下" in str(trend) else DarkTheme.NEUTRAL_COLOR
-        
-        tk.Label(card, text=f"趨勢狀態: {trend} ({signal})", font=("Arial", 13, "bold"),
-                fg=trend_color, bg=DarkTheme.BG_CARD).pack(anchor="w", pady=5)
-        
-        # 指標表格
-        indicators_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE,
-                                   highlightbackground=DarkTheme.BORDER_COLOR, highlightthickness=1)
-        indicators_frame.pack(fill=tk.X, pady=5)
-        
-        # RSI 和 KD
-        row1 = tk.Frame(indicators_frame, bg=DarkTheme.BG_TABLE_ODD)
-        row1.pack(fill=tk.X, pady=3)
-        
-        rsi = tech.get('rsi', 50)
-        rsi_color = DarkTheme.DOWN_COLOR if rsi > 70 else DarkTheme.UP_COLOR if rsi < 30 else DarkTheme.TEXT_SECONDARY
-        rsi_status = "超買⚠️" if rsi > 70 else "超賣💰" if rsi < 30 else "中性"
-        
-        tk.Label(row1, text="RSI(14):", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_TABLE_ODD, width=10).pack(side=tk.LEFT, padx=10)
-        tk.Label(row1, text=f"{rsi:.1f} ({rsi_status})", font=("Arial", 11, "bold"), 
-                fg=rsi_color, bg=DarkTheme.BG_TABLE_ODD).pack(side=tk.LEFT)
-        
-        k = tech.get('k', 50)
-        d = tech.get('d', 50)
-        kd_color = DarkTheme.UP_COLOR if k > d else DarkTheme.DOWN_COLOR if k < d else DarkTheme.TEXT_SECONDARY
-        kd_status = "金叉" if k > d else "死叉" if k < d else "糾結"
-        
-        tk.Label(row1, text="KD(9,3):", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_TABLE_ODD, width=10).pack(side=tk.LEFT, padx=(20, 10))
-        tk.Label(row1, text=f"K:{k:.1f}/D:{d:.1f} ({kd_status})", font=("Arial", 11, "bold"), 
-                fg=kd_color, bg=DarkTheme.BG_TABLE_ODD).pack(side=tk.LEFT)
-        
-        # MACD 和 ADX
-        row2 = tk.Frame(indicators_frame, bg=DarkTheme.BG_TABLE_EVEN)
-        row2.pack(fill=tk.X, pady=3)
-        
-        macd = tech.get('macd', 0)
-        macd_signal = tech.get('macd_signal', 0)
-        macd_hist = tech.get('macd_hist', macd - macd_signal)
-        macd_color = DarkTheme.UP_COLOR if macd > macd_signal else DarkTheme.DOWN_COLOR
-        macd_status = "多方" if macd > macd_signal else "空方"
-        
-        tk.Label(row2, text="MACD:", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_TABLE_EVEN, width=10).pack(side=tk.LEFT, padx=10)
-        tk.Label(row2, text=f"DIF:{macd:.2f} DEA:{macd_signal:.2f} ({macd_status})", font=("Arial", 11, "bold"), 
-                fg=macd_color, bg=DarkTheme.BG_TABLE_EVEN).pack(side=tk.LEFT)
-        
-        adx = tech.get('adx', 20)
-        adx_status = "強趨勢📈" if adx > 25 else "弱趨勢/盤整"
-        adx_color = DarkTheme.UP_COLOR if adx > 25 else DarkTheme.TEXT_SECONDARY
-        
-        tk.Label(row2, text="ADX:", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_TABLE_EVEN, width=10).pack(side=tk.LEFT, padx=(20, 10))
-        tk.Label(row2, text=f"{adx:.1f} ({adx_status})", font=("Arial", 11), 
-                fg=adx_color, bg=DarkTheme.BG_TABLE_EVEN).pack(side=tk.LEFT)
-        
-        # 均線（None 防護：資料不足時為 None，用 `or 0` 避免比較/格式化拋錯）
-        ma5 = tech.get('ma5') or 0
-        ma20 = tech.get('ma20') or 0
-        ma60 = tech.get('ma60') or 0
-        price = self.result.get('current_price', 0)
-        
-        if ma5 > 0 and ma20 > 0:
-            row3 = tk.Frame(indicators_frame, bg=DarkTheme.BG_TABLE_ODD)
-            row3.pack(fill=tk.X, pady=3)
-            
-            ma_status = "多頭排列📈" if ma5 > ma20 > ma60 else "空頭排列📉" if ma5 < ma20 < ma60 else "糾結整理"
-            ma_color = DarkTheme.UP_COLOR if "多" in ma_status else DarkTheme.DOWN_COLOR if "空" in ma_status else DarkTheme.NEUTRAL_COLOR
-            
-            tk.Label(row3, text=f"均線: MA5={ma5:.1f} MA20={ma20:.1f} MA60={ma60:.1f} ({ma_status})",
-                    font=("Arial", 11), fg=ma_color, bg=DarkTheme.BG_TABLE_ODD).pack(side=tk.LEFT, padx=10)
-        
-        # 技術指標說明
-        explain_frame = tk.Frame(card, bg=DarkTheme.BG_CARD)
-        explain_frame.pack(fill=tk.X, pady=5)
-        
-        tk.Label(explain_frame, text="【指標說明】", font=("Arial", 10, "bold"),
-                fg=DarkTheme.TEXT_TITLE, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        tk.Label(explain_frame, text="• RSI > 70 超買區（可能回檔），RSI < 30 超賣區（可能反彈）",
-                font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        tk.Label(explain_frame, text="• KD金叉（K>D）偏多，KD死叉（K<D）偏空",
-                font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        tk.Label(explain_frame, text="• ADX > 25 趨勢明確，ADX < 20 盤整格局",
-                font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-    
-    def _build_chip_section(self):
-        """6. 籌碼分析區塊"""
-        chip = self.result.get('chip_flow', {})
-        if not chip.get('available'):
-            return
-        
-        card = self._create_card(self.content_frame, "🏦 籌碼動向 INSTITUTIONAL FLOW", DarkTheme.NEUTRAL_COLOR)
-        
-        signal = chip.get('signal', '中性')
-        signal_color = DarkTheme.UP_COLOR if "集中" in str(signal) or "多" in str(signal) else \
-                       DarkTheme.DOWN_COLOR if "發散" in str(signal) or "空" in str(signal) else DarkTheme.NEUTRAL_COLOR
-        
-        tk.Label(card, text=f"籌碼狀態: {signal}", font=("Arial", 13, "bold"),
-                fg=signal_color, bg=DarkTheme.BG_CARD).pack(anchor="w", pady=5)
-        
-        # 說明文字
-        tk.Label(card, text="※ 籌碼集中=法人買超，籌碼發散=法人賣超。法人連續買超視為看好訊號。",
-                font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        
-        # 法人買賣超
-        flow_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE,
-                             highlightbackground=DarkTheme.BORDER_COLOR, highlightthickness=1)
-        flow_frame.pack(fill=tk.X, pady=5)
-        
-        # 原始數據是股數，轉換為張數（除以1000）
-        foreign_shares = chip.get('foreign_net', 0)
-        trust_shares = chip.get('trust_net', 0)
-        foreign = foreign_shares / 1000  # 轉換為張數
-        trust = trust_shares / 1000      # 轉換為張數
-        
-        row1 = tk.Frame(flow_frame, bg=DarkTheme.BG_TABLE_ODD)
-        row1.pack(fill=tk.X, pady=3)
-        
-        f_color = DarkTheme.UP_COLOR if foreign > 0 else DarkTheme.DOWN_COLOR if foreign < 0 else DarkTheme.TEXT_SECONDARY
-        tk.Label(row1, text="外資:", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_TABLE_ODD, width=6).pack(side=tk.LEFT, padx=10)
-        tk.Label(row1, text=f"{foreign:+,.0f} 張", font=("Arial", 11, "bold"), 
-                fg=f_color, bg=DarkTheme.BG_TABLE_ODD).pack(side=tk.LEFT)
-        
-        t_color = DarkTheme.UP_COLOR if trust > 0 else DarkTheme.DOWN_COLOR if trust < 0 else DarkTheme.TEXT_SECONDARY
-        tk.Label(row1, text="投信:", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                bg=DarkTheme.BG_TABLE_ODD, width=6).pack(side=tk.LEFT, padx=(30, 10))
-        tk.Label(row1, text=f"{trust:+,.0f} 張", font=("Arial", 11, "bold"), 
-                fg=t_color, bg=DarkTheme.BG_TABLE_ODD).pack(side=tk.LEFT)
-        
-        # 連續天數
-        f_days = chip.get('foreign_consecutive_days', 0)
-        t_days = chip.get('trust_consecutive_days', 0)
-        
-        if f_days != 0 or t_days != 0:
-            row2 = tk.Frame(flow_frame, bg=DarkTheme.BG_TABLE_EVEN)
-            row2.pack(fill=tk.X, pady=3)
-            
-            if f_days != 0:
-                f_text = f"連{abs(f_days)}買" if f_days > 0 else f"連{abs(f_days)}賣"
-                tk.Label(row2, text=f"外資{f_text}", font=("Arial", 10), 
-                        fg=f_color, bg=DarkTheme.BG_TABLE_EVEN).pack(side=tk.LEFT, padx=10)
-            
-            if t_days != 0:
-                t_text = f"連{abs(t_days)}買" if t_days > 0 else f"連{abs(t_days)}賣"
-                tk.Label(row2, text=f"投信{t_text}", font=("Arial", 10), 
-                        fg=t_color, bg=DarkTheme.BG_TABLE_EVEN).pack(side=tk.LEFT, padx=10)
-    
-    def _build_price_section(self):
-        """7. 關鍵價位區塊"""
-        sr = self.result.get('support_resistance', {})
-        risk = self.result.get('risk_management', {})
-        
-        if not sr and not risk.get('available'):
-            return
-        
-        card = self._create_card(self.content_frame, "📍 關鍵價位 KEY PRICE LEVELS", "#a29bfe")
-        
-        price_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE,
-                              highlightbackground=DarkTheme.BORDER_COLOR, highlightthickness=1)
-        price_frame.pack(fill=tk.X, pady=5)
-        
-        # 支撐壓力
-        resistance = sr.get('resistance1', 0)
-        support = sr.get('support1', 0)
-        
-        if resistance > 0 or support > 0:
-            row1 = tk.Frame(price_frame, bg=DarkTheme.BG_TABLE_ODD)
-            row1.pack(fill=tk.X, pady=3)
-            
-            if resistance > 0:
-                tk.Label(row1, text="壓力位:", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                        bg=DarkTheme.BG_TABLE_ODD, width=8).pack(side=tk.LEFT, padx=10)
-                tk.Label(row1, text=f"${resistance:.2f}", font=("Arial", 11, "bold"), 
-                        fg=DarkTheme.DOWN_COLOR, bg=DarkTheme.BG_TABLE_ODD).pack(side=tk.LEFT)
-            
-            if support > 0:
-                tk.Label(row1, text="支撐位:", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                        bg=DarkTheme.BG_TABLE_ODD, width=8).pack(side=tk.LEFT, padx=(30, 10))
-                tk.Label(row1, text=f"${support:.2f}", font=("Arial", 11, "bold"), 
-                        fg=DarkTheme.UP_COLOR, bg=DarkTheme.BG_TABLE_ODD).pack(side=tk.LEFT)
-        
-        # 停損停利
-        if risk.get('available'):
-            stop_loss = risk.get('stop_loss', 0)
-            take_profit = risk.get('take_profit', 0)
-            
-            if stop_loss > 0 or take_profit > 0:
-                row2 = tk.Frame(price_frame, bg=DarkTheme.BG_TABLE_EVEN)
-                row2.pack(fill=tk.X, pady=3)
-                
-                if stop_loss > 0:
-                    tk.Label(row2, text="停損價:", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                            bg=DarkTheme.BG_TABLE_EVEN, width=8).pack(side=tk.LEFT, padx=10)
-                    tk.Label(row2, text=f"${stop_loss:.2f}", font=("Arial", 11, "bold"), 
-                            fg=DarkTheme.DOWN_COLOR, bg=DarkTheme.BG_TABLE_EVEN).pack(side=tk.LEFT)
-                
-                if take_profit > 0:
-                    tk.Label(row2, text="停利價:", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY, 
-                            bg=DarkTheme.BG_TABLE_EVEN, width=8).pack(side=tk.LEFT, padx=(30, 10))
-                    tk.Label(row2, text=f"${take_profit:.2f}", font=("Arial", 11, "bold"), 
-                            fg=DarkTheme.UP_COLOR, bg=DarkTheme.BG_TABLE_EVEN).pack(side=tk.LEFT)
-    
-    def _build_detail_section(self):
-        """8. 其他詳細分析"""
-        # 波段分析
-        wave = self.result.get('wave_analysis', {})
-        if wave.get('available'):
-            card = self._create_card(self.content_frame, "🌊 波段分析 WAVE ANALYSIS", "#74b9ff")
-            
-            status = wave.get('wave_status', '')
-            tk.Label(card, text=f"波段狀態: {status}", font=("Arial", 12),
-                    fg=DarkTheme.TEXT_TITLE, bg=DarkTheme.BG_CARD).pack(anchor="w")
-            
-            breakout = wave.get('breakout_signal', {})
-            if breakout.get('detected'):
-                tk.Label(card, text=f"✅ 突破訊號: 收盤 > {breakout.get('breakout_level', 'N/A')}", 
-                        font=("Arial", 11), fg=DarkTheme.UP_COLOR, bg=DarkTheme.BG_CARD).pack(anchor="w")
-            
-            breakdown = wave.get('breakdown_signal', {})
-            if breakdown.get('detected'):
-                tk.Label(card, text=f"⚠️ 跌破訊號: 收盤 < {breakdown.get('breakdown_level', 'N/A')}", 
-                        font=("Arial", 11), fg=DarkTheme.DOWN_COLOR, bg=DarkTheme.BG_CARD).pack(anchor="w")
-        
-        # 乖離分析
-        mr = self.result.get('mean_reversion', {})
-        if mr.get('available'):
-            card = self._create_card(self.content_frame, "📐 乖離分析 MEAN REVERSION", "#fd79a8")
-            
-            bias = mr.get('bias_analysis', {})
-            bias_20 = bias.get('bias_20', 0)
-            bias_60 = bias.get('bias_60', 0)
-            
-            b20_color = DarkTheme.DOWN_COLOR if bias_20 > 15 else DarkTheme.UP_COLOR if bias_20 < -10 else DarkTheme.TEXT_SECONDARY
-            b60_color = DarkTheme.DOWN_COLOR if bias_60 > 20 else DarkTheme.UP_COLOR if bias_60 < -15 else DarkTheme.TEXT_SECONDARY
-            
-            row = tk.Frame(card, bg=DarkTheme.BG_CARD)
-            row.pack(fill=tk.X)
-            tk.Label(row, text=f"20MA乖離: {bias_20:+.2f}%", font=("Arial", 11, "bold"),
-                    fg=b20_color, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT, padx=10)
-            tk.Label(row, text=f"60MA乖離: {bias_60:+.2f}%", font=("Arial", 11, "bold"),
-                    fg=b60_color, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT, padx=10)
-            
-            status = bias.get('bias_20_status', '')
-            if status:
-                tk.Label(card, text=f"狀態: {status}", font=("Arial", 11),
-                        fg=DarkTheme.TEXT_TITLE, bg=DarkTheme.BG_CARD).pack(anchor="w", pady=5)
-        
-        # 基本面
-        fund = self.result.get('fundamental', {})
-        if fund:
-            card = self._create_card(self.content_frame, "📈 基本面估值 FUNDAMENTALS", "#00b894")
-            
-            pe = fund.get('trailing_pe', 'N/A')
-            forward_pe = fund.get('forward_pe', 'N/A')
-            pe_pct = fund.get('pe_percentile', 'N/A')
-            eps = fund.get('eps', 'N/A')
-            price = self.result.get('current_price', 0)
-            
-            # 本益比計算過程顯示
-            calc_frame = tk.Frame(card, bg=DarkTheme.BG_HEADER, relief=tk.RIDGE,
-                                 highlightbackground=DarkTheme.BORDER_COLOR, highlightthickness=1)
-            calc_frame.pack(fill=tk.X, pady=5)
-            
-            tk.Label(calc_frame, text="【本益比計算過程】", font=("Arial", 11, "bold"),
-                    fg=DarkTheme.ACCENT_GOLD, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10, pady=5)
-            
-            # 數據來源
-            tk.Label(calc_frame, text=f"數據來源: Yahoo Finance API (yfinance)", font=("Arial", 10),
-                    fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10)
-            
-            # EPS
-            if eps != 'N/A' and eps is not None:
-                tk.Label(calc_frame, text=f"每股盈餘 (EPS): ${eps:.2f} (近四季合計)", font=("Arial", 10),
-                        fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10)
-            else:
-                tk.Label(calc_frame, text=f"每股盈餘 (EPS): 無資料", font=("Arial", 10),
-                        fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10)
-            
-            # 股價
-            tk.Label(calc_frame, text=f"現價: ${price:.2f}", font=("Arial", 10),
-                    fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10)
-            
-            # 計算公式
-            if pe != 'N/A' and pe is not None and eps != 'N/A' and eps is not None and eps != 0:
-                try:
-                    pe_float = float(pe) if not isinstance(pe, (int, float)) else pe
-                    eps_float = float(eps) if not isinstance(eps, (int, float)) else eps
-                    if eps_float > 0:
-                        calculated_pe = price / eps_float
-                        pe_diff = abs(calculated_pe - pe_float)
-                        pe_match = "✓ 吻合" if pe_diff < 1 else f"(API回傳={pe_float:.2f})"
-                        tk.Label(calc_frame, text=f"本益比 = 股價 ÷ EPS = {price:.2f} ÷ {eps_float:.2f} = {calculated_pe:.2f} {pe_match}",
-                                font=("Arial", 10, "bold"), fg=DarkTheme.UP_COLOR, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10)
-                    else:
-                        tk.Label(calc_frame, text=f"本益比: {pe} (EPS為負，公司虧損)", font=("Arial", 10),
-                                fg=DarkTheme.DOWN_COLOR, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10)
-                except:
-                    tk.Label(calc_frame, text=f"本益比 (Trailing PE): {pe} (由 API 直接提供)", font=("Arial", 10),
-                            fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10)
-            else:
-                tk.Label(calc_frame, text=f"本益比 (Trailing PE): {pe} (由 API 直接提供)", font=("Arial", 10),
-                        fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10)
-            
-            # Forward PE
-            tk.Label(calc_frame, text=f"預估本益比 (Forward PE): {forward_pe} (基於分析師預估EPS)", font=("Arial", 10),
-                    fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_HEADER).pack(anchor="w", padx=10, pady=(0, 5))
-            
-            # 估值判斷
-            value_frame = tk.Frame(card, bg=DarkTheme.BG_CARD)
-            value_frame.pack(fill=tk.X, pady=5)
-            
-            if pe_pct != 'N/A' and pe_pct is not None:
-                pct_color = DarkTheme.UP_COLOR if pe_pct < 30 else DarkTheme.DOWN_COLOR if pe_pct > 70 else DarkTheme.NEUTRAL_COLOR
-                status = "低估 💰" if pe_pct < 30 else "高估 ⚠️" if pe_pct > 70 else "合理"
-                tk.Label(value_frame, text=f"歷史百分位: {pe_pct}% ({status})", font=("Arial", 12, "bold"),
-                        fg=pct_color, bg=DarkTheme.BG_CARD).pack(anchor="w")
-                tk.Label(value_frame, text=f"※ 百分位 = 目前PE在過去5年PE分布中的位置，<30%偏低估，>70%偏高估",
-                        font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_CARD).pack(anchor="w")
-            
-            # PB 和殖利率（如果有）
-            pb = fund.get('pb', 'N/A')
-            div_yield = fund.get('dividend_yield', 'N/A')
-            
-            if pb != 'N/A' or div_yield != 'N/A':
-                other_frame = tk.Frame(card, bg=DarkTheme.BG_CARD)
-                other_frame.pack(fill=tk.X, pady=5)
-                
-                if pb != 'N/A' and pb is not None:
-                    tk.Label(other_frame, text=f"股價淨值比 (PB): {pb:.2f}", font=("Arial", 11),
-                            fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT, padx=10)
-                
-                if div_yield != 'N/A' and div_yield is not None:
-                    div_pct = div_yield * 100 if div_yield < 1 else div_yield
-                    div_color = DarkTheme.UP_COLOR if div_pct > 3 else DarkTheme.TEXT_SECONDARY
-                    tk.Label(other_frame, text=f"殖利率: {div_pct:.2f}%", font=("Arial", 11),
-                            fg=div_color, bg=DarkTheme.BG_CARD).pack(side=tk.LEFT, padx=10)
+                tk.Label(r, text=f" {val or '—'} ", font=(self._MONO, 11, "bold"),
+                         fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_HEADER).pack(side=tk.LEFT, padx=4)
+            note = notes.get(key) or '—'
+            tk.Label(r, text=f"  {note}", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT)
+        # 軌跡表
+        tk.Label(body, text="裁決軌跡", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                 bg=DarkTheme.BG_MAIN).pack(anchor="w", pady=(8, 2))
+        for step in (self.verdict.get('adjustments') or []):
+            downgrade = step.get('to') is not None and step.get('from') is not None
+            rbg = self._WARN_BG if downgrade else DarkTheme.BG_MAIN
+            r = tk.Frame(body, bg=rbg)
+            r.pack(fill=tk.X, pady=1)
+            change = (f"{step.get('from')}→{step.get('to')}" if downgrade else "—")
+            tk.Label(r, text=step.get('stage', ''), font=("Arial", 10), fg=DarkTheme.TEXT_PRIMARY,
+                     bg=rbg, width=10, anchor="w").pack(side=tk.LEFT, padx=(4, 0))
+            tk.Label(r, text=change, font=(self._MONO, 10), fg=DarkTheme.TEXT_PRIMARY,
+                     bg=rbg, width=8, anchor="w").pack(side=tk.LEFT)
+            tk.Label(r, text=step.get('reason', ''), font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=rbg, anchor="w").pack(side=tk.LEFT)
+
+    # ── 05 量價分析 ─────────────────────────────────────────────────────
+    def _build_block_05_volume(self):
+        body = self._section("05", "量價分析")
+        vp = self.verdict.get('volume_profile', {}) or {}
+        rows = [
+            ("今日量（張）", self._fmtnum(vp.get('today_volume'), 0), None),
+            ("量比 vs 5日均", self._fmtnum(vp.get('vol_ratio'), 2), None),
+            ("量能 Z", self._fmtnum(vp.get('volume_zscore'), 2), None),
+            ("均量結構", vp.get('volume_trend') or '—', None),
+            ("量價配合", (", ".join(vp.get('vp_signals') or []) or '—'), None),
+        ]
+        spike = vp.get('spike_signal')
+        if spike:
+            rows.append(("爆量／背離", str(spike), DarkTheme.NEUTRAL_COLOR))
+        self._kv_rows(body, rows)
+
+    # ── 06 籌碼近10日明細 ───────────────────────────────────────────────
+    def _build_block_06_chip_detail(self):
+        body = self._section("06", "籌碼近 10 日明細")
+        cs = self.verdict.get('chip_summary', {}) or {}
+        fd, td = cs.get('foreign_days'), cs.get('trust_days')
+        def _daytxt(d):
+            if not isinstance(d, (int, float)) or d == 0:
+                return "—"
+            return f"連{abs(int(d))}日{'買' if d > 0 else '賣'}超"
+        summ = f"外資 {_daytxt(fd)}　投信 {_daytxt(td)}　單位：張"
+        if cs.get('reliable') is False:
+            summ += f"　⚠️ 資料不完整（缺 {len(cs.get('missing_dates') or [])} 日，已排除於連買計算）"
+        tk.Label(body, text=summ, font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                 bg=DarkTheme.BG_MAIN).pack(anchor="w", pady=(0, 4))
+        cols = [("日期", 11), ("外資買", 8), ("外資賣", 8), ("外資淨", 8),
+                ("投信買", 8), ("投信賣", 8), ("投信淨", 8), ("自營淨", 8), ("合計淨", 9)]
+        hdr = tk.Frame(body, bg=DarkTheme.BG_HEADER)
+        hdr.pack(fill=tk.X)
+        for name, w in cols:
+            tk.Label(hdr, text=name, font=(self._MONO, 10), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=DarkTheme.BG_HEADER, width=w, anchor="e").pack(side=tk.LEFT, padx=1)
+        for i, d in enumerate(self.verdict.get('chip_detail') or []):
+            miss = d.get('is_missing')
+            rbg = self._WARN_BG if miss else (DarkTheme.BG_TABLE_ODD if i % 2 else DarkTheme.BG_TABLE_EVEN)
+            r = tk.Frame(body, bg=rbg)
+            r.pack(fill=tk.X)
+            if miss:
+                tk.Label(r, text=d.get('date', ''), font=(self._MONO, 10), fg=DarkTheme.TEXT_PRIMARY,
+                         bg=rbg, width=11, anchor="e").pack(side=tk.LEFT, padx=1)
+                tk.Label(r, text="資料缺漏（已排除於連買計算）", font=("Arial", 10),
+                         fg=DarkTheme.NEUTRAL_COLOR, bg=rbg, anchor="w").pack(side=tk.LEFT, padx=6)
+                continue
+            vals = [
+                (d.get('date', ''), DarkTheme.TEXT_PRIMARY),
+                (self._fmtnum(d.get('foreign_buy'), 0), DarkTheme.TEXT_PRIMARY),
+                (self._fmtnum(d.get('foreign_sell'), 0), DarkTheme.TEXT_PRIMARY),
+                (self._fmtnum(d.get('foreign_net'), 0, sign=True), self._net_color(d.get('foreign_net'))),
+                (self._fmtnum(d.get('trust_buy'), 0), DarkTheme.TEXT_PRIMARY),
+                (self._fmtnum(d.get('trust_sell'), 0), DarkTheme.TEXT_PRIMARY),
+                (self._fmtnum(d.get('trust_net'), 0, sign=True), self._net_color(d.get('trust_net'))),
+                (self._fmtnum(d.get('dealer_net'), 0, sign=True), self._net_color(d.get('dealer_net'))),
+                (self._fmtnum(d.get('total_net'), 0, sign=True), self._net_color(d.get('total_net'))),
+            ]
+            for (txt, col), (_n, w) in zip(vals, cols):
+                tk.Label(r, text=txt, font=(self._MONO, 10), fg=col, bg=rbg,
+                         width=w, anchor="e").pack(side=tk.LEFT, padx=1)
+
+    # ── 07 證據明細 ─────────────────────────────────────────────────────
+    def _build_block_07_evidence(self):
+        body = self._section("07", "證據明細")
+        ev = self.verdict.get('evidence', {}) or {}
+        pth = ev.get('pth')
+        pth_txt = (f"{self._fmtnum(pth,3)}（距52週高 {self._fmtnum(ev.get('dist_from_high'),1,sign=True)}%）"
+                   if pth is not None else '—')
+        tf = ev.get('timeframe', {}) or {}
+        tf_txt = "　".join([t for t in [
+            ("短波段✓" if tf.get('short_swing') else None),
+            ("趨勢波段✓" if tf.get('position_trend') else None)] if t]) or '—'
+        trig = ev.get('triggers') or []
+        trig_txt = "；".join(trig[:3]) if trig else '—'
+        yoy = ev.get('revenue_yoy')
+        rev_txt = ('—' if yoy is None else
+                   f"YoY {self._fmtnum(yoy*100,1,sign=True)}%" + ("　創12月高✓" if ev.get('rev_12m_high') else ""))
+        rows = [
+            ("PTH 52週高", pth_txt, None),
+            ("RS 同儕排名", (self._fmtnum(ev.get('rs_rank'), 0) if ev.get('rs_rank') is not None
+                          else self._fmtnum(ev.get('rs_score'), 0)), None),
+            ("突破觸發", trig_txt, None),
+            ("時間框架", tf_txt, None),
+            ("月營收動能", rev_txt, None),
+            ("組合標籤", (ev.get('combo_tag') or '—'), (DarkTheme.NEUTRAL_COLOR if ev.get('combo_tag') else None)),
+        ]
+        self._kv_rows(body, rows)
+
+    # ── 08 風險與警示＋免責 ─────────────────────────────────────────────
+    def _build_block_08_risk(self):
+        body = self._section("08", "風險與警示")
+        warns = self.verdict.get('warnings') or []
+        if not warns:
+            tk.Label(body, text="無重大警示", font=("Arial", 11), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=DarkTheme.BG_MAIN).pack(anchor="w")
+        for w in warns:
+            row = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+            row.pack(fill=tk.X, pady=2)
+            tk.Frame(row, bg=DarkTheme.NEUTRAL_COLOR, width=2).pack(side=tk.LEFT, fill=tk.Y)
+            tk.Label(row, text=f"  {w}", font=("Arial", 11), fg=DarkTheme.TEXT_PRIMARY,
+                     bg=DarkTheme.BG_MAIN, justify=tk.LEFT, wraplength=980, anchor="w").pack(side=tk.LEFT)
+        tk.Label(body, text="本報告為量化模型輸出，僅供研究參考，不構成投資建議；投資有風險，決策請自負盈虧。",
+                 font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_MAIN,
+                 wraplength=1000, justify=tk.LEFT).pack(anchor="w", pady=(10, 4))
 # ============================================================================
 # v4.0 新增：相關性分析彈窗
 # ============================================================================
@@ -7397,40 +7002,53 @@ class StockAnalysisApp(tk.Tk):
                     quant_score = item[8] if len(item) > 8 else 0
                     bias_20 = item[11] if len(item) > 11 else 0
                     
-                    # 解析建議字串
+                    # 解析建議字串："overall|scenario_name|short_action|timing"（同源 build_verdict）
                     signal = "待分析"
+                    _scen_name = ''
+                    _short_act = ''
                     if recommendation and '|' in recommendation:
                         parts = recommendation.split('|')
                         signal = parts[0] if len(parts) > 0 else '待分析'
+                        _scen_name = parts[1] if len(parts) > 1 else ''
+                        _short_act = parts[2] if len(parts) > 2 else ''
                     elif recommendation:
                         signal = recommendation
-                    
-                    # 決定顏色標籤：優先用三層引擎評等優先序（A琥珀>B藍>C灰），
-                    # 無法判定時退回 buy/sell/hold/wait（純呈現，不影響計算）
+
+                    # build_prompt_06 任務3：等級取自 scenario_name 首碼（A/B/C），
+                    # tag 以 grade 為主、grade_tag 字串比對降為 fallback。
+                    _grade = next((g for g in ('A', 'B', 'C')
+                                   if _scen_name.startswith(g) or signal.startswith(g)), '')
                     tags = []
-                    _gtag = self._theme.grade_tag(signal) if getattr(self, '_theme', None) else None
-                    if _gtag:
-                        tags.append(_gtag)
-                    elif any(x in signal for x in ["買", "多", "進場", "看好"]):
-                        tags.append("buy")
-                    elif any(x in signal for x in ["賣", "空", "減碼", "撤退", "停損"]):
-                        tags.append("sell")
-                    elif any(x in signal for x in ["持有", "續抱"]):
-                        tags.append("hold")
+                    if _grade:
+                        tags.append({'A': 'grade_A', 'B': 'grade_B', 'C': 'grade_C'}[_grade])
                     else:
-                        tags.append("wait")
+                        _gtag = self._theme.grade_tag(_scen_name or signal) if getattr(self, '_theme', None) else None
+                        if _gtag:
+                            tags.append(_gtag)
+                        elif any(x in signal for x in ["買", "多", "進場", "看好"]):
+                            tags.append("buy")
+                        elif any(x in signal for x in ["賣", "空", "減碼", "撤退", "停損"]):
+                            tags.append("sell")
+                        elif any(x in signal for x in ["持有", "續抱"]):
+                            tags.append("hold")
+                        else:
+                            tags.append("wait")
 
                     # 過熱/超跌背景
                     if bias_20 and bias_20 > 10:
                         tags.append("hot")
                     elif bias_20 and bias_20 < -10:
                         tags.append("cold")
-                    
+
                     # 評分顯示
                     score_str = f"{quant_score:.0f}" if quant_score else "-"
-                    
-                    # 清理建議文字（不使用表情符號）
-                    display_signal = signal.replace("建議", "")[:16]
+
+                    # build_prompt_06 任務3：欄位格式 {等級} {簡短action}，超長截斷（tooltip 由既有機制）
+                    if _grade:
+                        _act = (_short_act or signal).replace("建議", "").strip()
+                        display_signal = f"{_grade} {_act}"[:20]
+                    else:
+                        display_signal = signal.replace("建議", "")[:20]
                     
                     self.watchlist_tree.insert(group_id, "end", 
                         text=symbol, 
@@ -7479,26 +7097,39 @@ class StockAnalysisApp(tk.Tk):
                 
                 # 解析建議
                 signal = "待分析"
+                _scen_name = ''
+                _short_act = ''
                 if recommendation and '|' in recommendation:
                     parts = recommendation.split('|')
                     signal = parts[0]
+                    _scen_name = parts[1] if len(parts) > 1 else ''
+                    _short_act = parts[2] if len(parts) > 2 else ''
                 elif recommendation:
                     signal = recommendation
-                
-                # 決定顏色：優先評等優先序，否則退回 buy/sell/hold/wait
-                tag = (self._theme.grade_tag(signal) if getattr(self, '_theme', None) else None)
-                if not tag:
-                    if any(x in signal for x in ["買", "多"]):
-                        tag = "buy"
-                    elif any(x in signal for x in ["賣", "減碼"]):
-                        tag = "sell"
-                    elif "持有" in signal:
-                        tag = "hold"
-                    else:
-                        tag = "wait"
+
+                # build_prompt_06 任務3：tag 以 grade 為主，grade_tag 字串比對為 fallback
+                _grade = next((g for g in ('A', 'B', 'C')
+                               if _scen_name.startswith(g) or signal.startswith(g)), '')
+                if _grade:
+                    tag = {'A': 'grade_A', 'B': 'grade_B', 'C': 'grade_C'}[_grade]
+                else:
+                    tag = (self._theme.grade_tag(_scen_name or signal) if getattr(self, '_theme', None) else None)
+                    if not tag:
+                        if any(x in signal for x in ["買", "多"]):
+                            tag = "buy"
+                        elif any(x in signal for x in ["賣", "減碼"]):
+                            tag = "sell"
+                        elif "持有" in signal:
+                            tag = "hold"
+                        else:
+                            tag = "wait"
 
                 score_str = f"{quant_score:.0f}" if quant_score else "-"
-                display_signal = signal.replace("建議", "")[:16]
+                if _grade:
+                    _act = (_short_act or signal).replace("建議", "").strip()
+                    display_signal = f"{_grade} {_act}"[:20]
+                else:
+                    display_signal = signal.replace("建議", "")[:20]
 
                 self.watchlist_tree.insert("", "end",
                     text=display_text,

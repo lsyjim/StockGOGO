@@ -614,6 +614,11 @@ class DecisionMatrix:
     @staticmethod
     def calculate_short_term_score(result):
         """
+        [DEPRECATED build_prompt_06] 請勿用於「量化建議/等級」呈現——會重跑裸 score_timing
+        並重建等級，繞過 analyze() 的大盤濾網/籌碼過濾/形態覆蓋，造成首頁與報告不一致。
+        報告/首頁一律改讀 report_formatter.build_verdict()。此法僅保留供 watchlist 排序
+        用的 quant_score 計算（純數值排序，不決定等級）。
+
         v2.0 - 短線評分：對應三層引擎的 Layer 3（時機分）
 
         回傳格式與舊版兼容，但分數來源改為時機分級：
@@ -1090,8 +1095,11 @@ class DecisionMatrix:
     @staticmethod
     def calculate_long_term_score(result):
         """
+        [DEPRECATED build_prompt_06] 同 calculate_short_term_score：勿用於等級/建議呈現，
+        報告改讀 report_formatter.build_verdict()；此法僅保留供 watchlist quant_score 排序。
+
         計算中長線投資評分
-        
+
         =====================================================
         評分邏輯（加分制，基準 50 分）：
         =====================================================
@@ -1826,8 +1834,11 @@ class DecisionMatrix:
     @staticmethod
     def get_investment_advice(short_score, long_score):
         """
+        [DEPRECATED build_prompt_06] 以雙軌分數門檻「重建」等級，會與 analyze() 最終裁決
+        不一致（大盤空頭時尤其）。等級/建議一律改讀 report_formatter.build_verdict()。
+
         根據短線和長線評分，產生投資建議
-        
+
         =====================================================
         九大投資場景決策邏輯：
         =====================================================

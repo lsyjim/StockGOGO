@@ -124,9 +124,21 @@ class WatchlistDatabase:
                 dealer_net  INTEGER,
                 source      TEXT,
                 fetched_at  TEXT,
+                foreign_buy INTEGER, foreign_sell INTEGER,
+                trust_buy   INTEGER, trust_sell   INTEGER,
+                dealer_buy  INTEGER, dealer_sell  INTEGER,
                 PRIMARY KEY (symbol, date)
             )
         ''')
+        # migration：舊 chip_daily 補買/賣分列欄位（build_prompt_06 任務0）
+        cursor.execute("PRAGMA table_info(chip_daily)")
+        _chip_cols = {row[1] for row in cursor.fetchall()}
+        for _c in ('foreign_buy', 'foreign_sell', 'trust_buy', 'trust_sell', 'dealer_buy', 'dealer_sell'):
+            if _c not in _chip_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE chip_daily ADD COLUMN {_c} INTEGER")
+                except sqlite3.OperationalError:
+                    pass
         # build_prompt_03：台股交易日曆（連買天數依此往回走，具缺日偵測）
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS trading_calendar (
