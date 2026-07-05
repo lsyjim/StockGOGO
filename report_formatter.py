@@ -96,7 +96,12 @@ def build_verdict(result: dict) -> dict:
         _atr_mult = _QC.ATR_K_STOP
     except Exception:
         _atr_mult = 2.0
+    # fix_07 任務4：賣出族 → 出場計畫版型（is_exit）。壓力位作持有者停損。
+    _ac_u = str(action_code).upper()
+    _is_exit = _ac_u.startswith('SELL') or _ac_u in ('EXIT', 'TAKE_PROFIT')
+    _res1 = _num(sr.get('resistance1'))
     plan = {
+        'is_exit':      _is_exit,
         'entry_zone':   entry_zone,
         'stop_loss':    pt.get('stop_loss'),
         'stop_atr_mult': _atr_mult,
@@ -104,15 +109,24 @@ def build_verdict(result: dict) -> dict:
         'target2':      None,
         'rr':           pt.get('rr_ratio'),
         'position_pct': rm.get('position_pct'),
+        # 出場版型專用：現價（出場參考）、上方壓力（持有者停損）、下檔目標
+        'exit_ref':     current,
+        'holder_stop':  (_res1 if (_res1 is not None and current is not None and _res1 > current) else None),
+        'downside_ref': pt.get('target_price'),
     }
 
     # ── 量價分析（05 區）──
     va = result.get('volume_analysis', {}) or {}
     vp = result.get('volume_price', {}) or {}
     vp_signals = [s.get('name') or s.get('code') for s in (vp.get('signals') or [])] if vp.get('available') else []
+
+    # fix_07 任務5：hist Volume 單位為「股」，統一 // 1000 轉「張」再輸出
+    def _to_lots(x):
+        v = _num(x)
+        return int(v // 1000) if v is not None else None
     volume_profile = {
-        'today_volume': va.get('current_volume'),
-        'avg_volume':   va.get('avg_volume'),
+        'today_volume': _to_lots(va.get('current_volume')),   # 張
+        'avg_volume':   _to_lots(va.get('avg_volume')),       # 張（20日）
         'vol_ratio':    va.get('volume_ratio'),
         'volume_zscore': tech.get('volume_zscore'),
         'volume_trend': va.get('volume_trend'),
@@ -168,6 +182,25 @@ def build_verdict(result: dict) -> dict:
     if result.get('price_anomaly'):
         warnings.append('資料異常：漲跌幅超過±10%漲跌停，即時價與昨收可能未對齊')
 
+    # ── fix_07 任務2：情緒一致 fail-safe（防回歸最後保險，正常永不觸發）──
+    overall_text = rec.get('overall', dm.get('recommendation', '')) or ''
+    _ac = str(action_code).upper()
+    _ac_sell = _ac.startswith('SELL') or _ac in ('EXIT', 'TAKE_PROFIT')
+    _ac_buy  = _ac in ('STRONG_BUY', 'BUY')
+    _buy_kw  = ('買進', '進場', '佈局', '加碼')
+    _sell_kw = ('賣出', '出場', '減碼', '避開')
+    _txt_buy  = any(k in overall_text for k in _buy_kw)
+    _txt_sell = any(k in overall_text for k in _sell_kw)
+    if (_ac_sell and _txt_buy) or (_ac_buy and _txt_sell):
+        _canon = _ACTION_SHORT.get(action_code, '')
+        _fixed = f"{_GRADE_LABELS.get(grade, grade)}：{_canon}" if _canon else _GRADE_LABELS.get(grade, grade)
+        import logging
+        logging.getLogger(__name__).warning(
+            "verdict text/action mismatch: symbol=%s action_code=%s overall=%r -> corrected=%r",
+            symbol, action_code, overall_text, _fixed)
+        overall_text = _fixed
+        warnings.insert(0, '文字與裁決不一致已自動校正（以引擎 action_code 為準）')
+
     return {
         'symbol':       symbol,
         'name':         result.get('name', symbol),
@@ -175,7 +208,7 @@ def build_verdict(result: dict) -> dict:
         'grade_label':  _GRADE_LABELS.get(grade, dm.get('scenario_name', grade)),
         'action_code':  action_code,
         'action_short': _ACTION_SHORT.get(action_code, ''),
-        'overall_text': rec.get('overall', dm.get('recommendation', '')),
+        'overall_text': overall_text,
         'score':        dm.get('score'),
         'confidence':   dm.get('confidence', rec.get('confidence', '')),
         'data_date':    result.get('data_time', result.get('analysis_date', '')),

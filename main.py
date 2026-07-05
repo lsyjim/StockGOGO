@@ -3551,7 +3551,9 @@ class QuickAnalyzer:
             rr_ratio = dv.get('rr_ratio', 0)
             bias_20 = dv.get('bias_20', 0)
             
-            # v5.0：形態分析覆蓋建議（加入三道防線，避免矛盾訊號）
+            # v5.0 / fix_07：形態分析覆蓋建議（裁決層級：賣出訊號＞大盤/籌碼濾網＞形態覆蓋）
+            _overall_before = overall            # 記錄覆蓋前文字（供 adjustment_trail）
+            _pat_override_blocked = None          # 被防線擋下的原因（供 trail）
             if pattern_info and pattern_info.get('detected'):
                 pattern_status = pattern_info.get('status', '')
                 pattern_signal = pattern_info.get('signal', 'neutral')
@@ -3560,66 +3562,97 @@ class QuickAnalyzer:
                 p_stop         = pattern_info.get('stop_loss', 0) or 0
                 current_px     = result.get('current_price', 0) or 0
 
-                # ── 買進形態覆蓋：必須通過三道防線 ──────────────────
+                # ── 買進形態覆蓋：先過「前置否決」，再過三道防線 ──────
                 if 'CONFIRMED' in pattern_status and pattern_signal == 'buy':
 
-                    # 防線 1：目標價必須高於現價（目標已達則形態失效）
-                    _target_valid = (p_target <= 0) or (p_target > current_px * 1.02)
+                    # 前置資料
+                    _is_vshape = ('V型' in pattern_name or 'V形' in pattern_name)
+                    try:
+                        _vol_z = float(result.get('technical', {}).get('volume_zscore') or 0)
+                    except (TypeError, ValueError):
+                        _vol_z = 0.0
+                    _pat_desc = pattern_info.get('description', '') or ''
+                    _pending  = ('待確認' in pattern_status) or ('待確認' in _pat_desc)
 
-                    # 防線 2：三層引擎的場景不能是 SKIP / WAIT（方向或位置否決）
-                    _engine_ok = dm.get('scenario', '') not in ('SKIP', 'WAIT')
+                    # 防線 0（最優先，fix_07）：引擎裁決屬賣出族 → 買進覆蓋一律禁止
+                    _sell_state = (
+                        dm.get('scenario') in ('SELL', 'EXIT')
+                        or str(dm.get('action_code', '')).upper().startswith('SELL')
+                        or dm.get('three_layer', {}).get('sell_signal', {}).get('triggered', False)
+                    )
 
-                    # 防線 3：乖離率不能過熱（> 15%）。
-                    # A2 改動4：動能模式（RS 領先+趨勢成立）下，正乖離是強度不是過熱，
-                    # 不作為阻擋條件（飆股拉回常被此防線誤殺成「暫緩」）。
-                    _bias_ok = True if _is_mom else (abs(bias_20) <= 15)
+                    if _sell_state:
+                        # 不覆蓋，僅附註記（賣出訊號優先）
+                        warning_message = (warning_message + f' ｜ 形態註記：偵測到{pattern_name}，'
+                                           '但賣出訊號優先，不改變裁決').strip(' ｜')
+                        _pat_override_blocked = f'偵測到{pattern_name}，賣訊優先，不改變裁決'
+                    elif _is_vshape:
+                        # fix_07：V 型反轉移出買進覆蓋白名單（回測期望 −3.74%），僅觀察註記
+                        warning_message = (warning_message + f' ｜ 形態註記：偵測到{pattern_name}'
+                                           '（V型反轉回測期望為負，僅供觀察，不改變裁決）').strip(' ｜')
+                        _pat_override_blocked = f'偵測到{pattern_name}，V型不覆蓋，僅供觀察'
+                    elif _pending:
+                        # fix_07：量能待確認 → 不覆蓋
+                        warning_message = (warning_message + f' ｜ 形態註記：{pattern_name}成立，'
+                                           '待量能確認，不改變裁決').strip(' ｜')
+                        _pat_override_blocked = f'{pattern_name}量能待確認，不覆蓋'
+                    elif True:
+                        # 防線 1（fix_07 修）：目標價高於現價；無目標價時需帶量（量能 Z≥1.0）
+                        _target_valid = (p_target > current_px * 1.02) if p_target > 0 else (_vol_z >= 1.0)
 
-                    if _target_valid and _engine_ok and _bias_ok:
-                        # 三道防線全過 → 允許形態覆蓋，輸出買進建議
-                        overall = f'強烈建議買進（{pattern_name}確立）'
-                        action_timing = '形態突破，可進場'
-                        warning_message = (
-                            pattern_info.get('description', '')
-                            + (f' 目標價${p_target:.2f}，停損${p_stop:.2f}' if p_target > 0 else '')
-                        )
-                        confidence = 'High'
-                    elif _is_mom:
-                        # A2 改動4：強勢領漲股不蓋成「暫緩」。
-                        # 保留三層引擎的 overall 裁決，形態問題只當風險註記附上。
-                        _pat_notes = []
-                        if not _target_valid:
-                            _pat_notes.append(
-                                f'形態目標 ${p_target:.2f} 已被現價 ${current_px:.2f} 超越（測幅達成，僅供參考）'
+                        # 防線 2：三層引擎的場景不能是 SKIP / WAIT（方向或位置否決）
+                        _engine_ok = dm.get('scenario', '') not in ('SKIP', 'WAIT')
+
+                        # 防線 3：乖離率不能過熱（> 15%）。動能模式不擋（正乖離=強度）。
+                        _bias_ok = True if _is_mom else (abs(bias_20) <= 15)
+
+                        if _target_valid and _engine_ok and _bias_ok:
+                            # 全防線通過 → 允許形態覆蓋，輸出買進建議
+                            overall = f'強烈建議買進（{pattern_name}確立）'
+                            action_timing = '形態突破，可進場'
+                            warning_message = (
+                                pattern_info.get('description', '')
+                                + (f' 目標價${p_target:.2f}，停損${p_stop:.2f}' if p_target > 0 else '')
                             )
-                        if not _engine_ok:
-                            _pat_notes.append(
-                                f'三層引擎場景：{dm.get("scenario_name", dm.get("scenario", ""))}'
+                            confidence = 'High'
+                        elif _is_mom:
+                            # A2 改動4：強勢領漲股不蓋成「暫緩」。
+                            # 保留三層引擎的 overall 裁決，形態問題只當風險註記附上。
+                            _pat_notes = []
+                            if not _target_valid:
+                                _pat_notes.append(
+                                    f'形態目標 ${p_target:.2f} 已被現價 ${current_px:.2f} 超越（測幅達成，僅供參考）'
+                                )
+                            if not _engine_ok:
+                                _pat_notes.append(
+                                    f'三層引擎場景：{dm.get("scenario_name", dm.get("scenario", ""))}'
+                                )
+                            if _pat_notes:
+                                warning_message = (warning_message + ' ｜ 形態註記：'
+                                                   + '；'.join(_pat_notes)).strip(' ｜')
+                            _pat_override_blocked = '動能股防線未過，保留引擎裁決'
+                        else:
+                            # 非強勢股：任一防線失守 → 降為觀察，附上原因
+                            _block_reasons = []
+                            if not _target_valid:
+                                _block_reasons.append(
+                                    f'目標價 ${p_target:.2f} 已低於現價 ${current_px:.2f}（形態目標已達成，追高風險大）'
+                                )
+                            if not _engine_ok:
+                                _block_reasons.append(
+                                    f'三層引擎否決（場景：{dm.get("scenario_name", dm.get("scenario", ""))}）'
+                                )
+                            if not _bias_ok:
+                                _block_reasons.append(
+                                    f'乖離率過大（{bias_20:+.1f}%），追高風險高'
+                                )
+                            overall = f'形態確立但暫緩買進（{pattern_name}）'
+                            action_timing = '等待拉回或乖離收斂後再進場'
+                            warning_message = (
+                                pattern_info.get('description', '')
+                                + ' ⚠️ 覆蓋條件未達：' + '；'.join(_block_reasons)
                             )
-                        if _pat_notes:
-                            warning_message = (warning_message + ' ｜ 形態註記：'
-                                               + '；'.join(_pat_notes)).strip(' ｜')
-                    else:
-                        # 非強勢股：任一防線失守 → 降為觀察，附上原因
-                        _block_reasons = []
-                        if not _target_valid:
-                            _block_reasons.append(
-                                f'目標價 ${p_target:.2f} 已低於現價 ${current_px:.2f}（形態目標已達成，追高風險大）'
-                            )
-                        if not _engine_ok:
-                            _block_reasons.append(
-                                f'三層引擎否決（場景：{dm.get("scenario_name", dm.get("scenario", ""))}）'
-                            )
-                        if not _bias_ok:
-                            _block_reasons.append(
-                                f'乖離率過大（{bias_20:+.1f}%），追高風險高'
-                            )
-                        overall = f'形態確立但暫緩買進（{pattern_name}）'
-                        action_timing = '等待拉回或乖離收斂後再進場'
-                        warning_message = (
-                            pattern_info.get('description', '')
-                            + ' ⚠️ 覆蓋條件未達：' + '；'.join(_block_reasons)
-                        )
-                        confidence = 'Medium'
+                            confidence = 'Medium'
 
                 # ── 賣出形態覆蓋（無需防線，頭部形態確立直接賣）──────
                 elif 'CONFIRMED' in pattern_status and pattern_signal == 'sell':
@@ -3736,19 +3769,25 @@ class QuickAnalyzer:
             if range_info and scenario in ['E', 'F']:
                 recommendation_result['range_info'] = range_info
 
-            # build_prompt_06：回填「形態覆蓋」裁決軌跡（read-only 標註，grade 不變）
+            # fix_07：回填「形態覆蓋」裁決軌跡（文字層變化 from/to；被擋則 to=None）
             try:
                 _trail = decision_matrix.get('adjustment_trail')
-                _pat = result.get('pattern_analysis', {}) or {}
-                _orig_overall = decision_matrix.get('recommendation', '')
-                if _trail and _pat.get('detected') and 'CONFIRMED' in _pat.get('status', '') \
-                        and overall and overall != _orig_overall:
+                if _trail:
+                    _ob = _overall_before
                     for _e in _trail:
-                        if _e.get('stage') == '形態覆蓋':
-                            _e['from'] = decision_matrix.get('scenario')
-                            _e['to'] = decision_matrix.get('scenario')
-                            _e['reason'] = f"{_pat.get('pattern_name', '形態')}確立 → 建議覆蓋為「{overall}」"
-                            break
+                        if _e.get('stage') != '形態覆蓋':
+                            continue
+                        if overall and overall != _ob:
+                            # 覆蓋成功：記錄文字層變化
+                            _e['from'] = _ob
+                            _e['to'] = overall
+                            _e['reason'] = '形態確立 → 建議覆蓋'
+                        elif _pat_override_blocked:
+                            # 被防線擋下：to=None，記錄原因（修掉無意義的 SELL→SELL）
+                            _e['from'] = None
+                            _e['to'] = None
+                            _e['reason'] = _pat_override_blocked
+                        break
             except Exception:
                 pass
 
@@ -4654,11 +4693,13 @@ class RecommendationDialog:
     # ══════════════════════════════════════════════════════════════════
     _MONO = "Menlo"           # 等寬字體（macOS）；缺字時 tkinter 自動替換
     _WARN_BG = "#403a1e"      # 唯一允許的強調底色（軌跡降級行 / 缺日列）
+    # fix_07：等級徽章色（台股慣例）— A 琥珀 / B 藍 / C 灰 / SELL·X 綠；不用紅色。
+    # （綠自此只承載賣出/下跌語意，橘=買進族）
     _GRADE_COLORS = {
-        'A': ("#1b5e20", "#69f0ae"), 'B': ("#0d47a1", "#82b1ff"),
-        'C': ("#f57f17", "#ffe082"), 'SELL': ("#b71c1c", "#ff8a80"),
-        'WAIT': ("#37474f", "#b0bec5"), 'SKIP': ("#37474f", "#b0bec5"),
-        'X': ("#37474f", "#b0bec5"),
+        'A': ("#4a3d10", "#EF9F27"), 'B': ("#12365a", "#5FA8E0"),
+        'C': ("#2a2f37", "#8B9099"), 'SELL': ("#123a2a", "#4CB782"),
+        'WAIT': ("#2a2f37", "#8B9099"), 'SKIP': ("#2a2f37", "#8B9099"),
+        'X': ("#123a2a", "#4CB782"),
     }
 
     @staticmethod
@@ -4728,9 +4769,11 @@ class RecommendationDialog:
                  fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_MAIN).pack(side=tk.RIGHT)
         tk.Label(top, text="綜合分 ", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
                  bg=DarkTheme.BG_MAIN).pack(side=tk.RIGHT)
-        # 覆蓋建議一行（同源 overall_text）
+        # 覆蓋建議一行（同源 overall_text）— fix_07：文字色吃動作語意（買=橘/賣=綠/中性=灰）
+        import theme as _thm
+        _act_col = _thm.action_color(v.get('action_code') or v.get('overall_text', ''))
         tk.Label(body, text=v.get('overall_text', ''), font=("Arial", 12),
-                 fg=fg, bg=DarkTheme.BG_MAIN, anchor="w").pack(fill=tk.X, pady=(4, 2))
+                 fg=_act_col, bg=DarkTheme.BG_MAIN, anchor="w").pack(fill=tk.X, pady=(4, 2))
         # meta 行
         cs = v.get('chip_summary', {}) or {}
         reliable = cs.get('reliable')
@@ -4768,16 +4811,49 @@ class RecommendationDialog:
     def _build_block_03_trade_plan(self):
         body = self._section("03", "交易計畫")
         p = self.verdict.get('plan', {}) or {}
-        ez = p.get('entry_zone')
-        ez_txt = (f"{self._fmtnum(ez[0],2)} – {self._fmtnum(ez[1],2)}" if isinstance(ez, (list, tuple)) else '—')
-        sl = p.get('stop_loss')
-        sl_txt = f"{self._fmtnum(sl,2)}  (ATR×{self._fmtnum(p.get('stop_atr_mult'),1)})"
-        tgt = p.get('target')
-        rr = p.get('rr')
-        tgt_txt = f"{self._fmtnum(tgt,2)}   RR {self._fmtnum(rr,1)}"
-        pos = p.get('position_pct')
-        pos_txt = f"{self._fmtnum(pos,1)}%"
-        cards = [("進場參考區", ez_txt), ("停損", sl_txt), ("目標 ＋ RR", tgt_txt), ("建議部位", pos_txt)]
+
+        def _pos_num(x):
+            v = self._fmtnum(x, 2)
+            return v if v != '—' else None
+
+        if p.get('is_exit'):
+            # fix_07 任務4：賣出族 → 出場計畫版型（退化欄位一律 '—'）
+            body_title = "交易計畫（出場）"
+            exit_ref = _pos_num(p.get('exit_ref'))
+            hstop = _pos_num(p.get('holder_stop'))
+            dref = _pos_num(p.get('downside_ref'))
+            cards = [
+                ("出場參考", f"{exit_ref}" if exit_ref else '—'),
+                ("持有者停損", (f"{hstop}  (ATR×{self._fmtnum(p.get('stop_atr_mult'),1)})" if hstop else '—')),
+                ("下檔風險參考", f"{dref}" if dref else '—'),
+                ("建議部位", "出清 / 避開"),
+            ]
+        else:
+            ez = p.get('entry_zone')
+            # 禁止退化：單點進場區（上下緣相同）→ '—'
+            if isinstance(ez, (list, tuple)) and self._fmtnum(ez[0], 2) != self._fmtnum(ez[1], 2):
+                ez_txt = f"{self._fmtnum(ez[0],2)} – {self._fmtnum(ez[1],2)}"
+            else:
+                ez_txt = '—'
+            sl = self._fmtnum(p.get('stop_loss'), 2)
+            sl_txt = (f"{sl}  (ATR×{self._fmtnum(p.get('stop_atr_mult'),1)})" if sl != '—' else '—')
+            tgt = self._fmtnum(p.get('target'), 2)
+            rr = p.get('rr')
+            # 禁止退化：RR 0.0 → '—'
+            _rr_txt = self._fmtnum(rr, 1)
+            try:
+                if rr is None or float(rr) <= 0:
+                    _rr_txt = '—'
+            except (TypeError, ValueError):
+                _rr_txt = '—'
+            tgt_txt = (f"{tgt}   RR {_rr_txt}" if tgt != '—' else '—')
+            pos = p.get('position_pct')
+            # 禁止退化：部位 0.0% → '—'
+            try:
+                pos_txt = f"{self._fmtnum(pos,1)}%" if (pos is not None and float(pos) > 0) else '—'
+            except (TypeError, ValueError):
+                pos_txt = '—'
+            cards = [("進場參考區", ez_txt), ("停損", sl_txt), ("目標 ＋ RR", tgt_txt), ("建議部位", pos_txt)]
         grid = tk.Frame(body, bg=DarkTheme.BG_MAIN)
         grid.pack(fill=tk.X)
         for idx, (lab, val) in enumerate(cards):
@@ -4807,7 +4883,9 @@ class RecommendationDialog:
                 bar_bg.pack(side=tk.LEFT, padx=4)
                 bar_bg.pack_propagate(False)
                 fillw = max(0, min(200, int(val / 100 * 200)))
-                col = DarkTheme.UP_COLOR if val >= 55 else (DarkTheme.NEUTRAL_COLOR if val >= 45 else DarkTheme.DOWN_COLOR)
+                # fix_07 任務6 規則3：三層分數條由綠改中性藍（綠只承載賣出/下跌）
+                import theme as _thm
+                col = _thm.NEUTRAL_BLUE if val >= 50 else DarkTheme.TEXT_SECONDARY
                 fill = tk.Frame(bar_bg, bg=col, width=fillw, height=12)
                 fill.pack(side=tk.LEFT)
                 tk.Label(r, text=self._fmtnum(val, 0), font=(self._MONO, 11),
@@ -5449,10 +5527,12 @@ class StockAnalysisApp(tk.Tk):
             self._theme.style_treeview(self.watchlist_tree)
         else:
             self.watchlist_tree.tag_configure("group", background="#E0E0E0", foreground="#2C3E50", font=("Arial", 10, "bold"))
-            self.watchlist_tree.tag_configure("buy", foreground="#C0392B")
-            self.watchlist_tree.tag_configure("hold", foreground="#F39C12")
-            self.watchlist_tree.tag_configure("sell", foreground="#27AE60")
-            self.watchlist_tree.tag_configure("wait", foreground="#7F8C8D")
+            # fix_07 任務6：動作語意色（買=橘 ACTION_BUY / 賣=綠 ACTION_SELL / 中性=灰）
+            import theme as _thm
+            self.watchlist_tree.tag_configure("buy", foreground=_thm.ACTION_BUY)
+            self.watchlist_tree.tag_configure("hold", foreground=_thm.ACTION_NEUTRAL)
+            self.watchlist_tree.tag_configure("sell", foreground=_thm.ACTION_SELL)
+            self.watchlist_tree.tag_configure("wait", foreground=_thm.ACTION_NEUTRAL)
             self.watchlist_tree.tag_configure("hot", background="#FFEBEE")
             self.watchlist_tree.tag_configure("cold", background="#E8F5E9")
         
@@ -6539,12 +6619,9 @@ class StockAnalysisApp(tk.Tk):
                             return {'symbol': symbol, 'ok': False, 'error': '無分析結果'}
                         quant_score = 0; trend_status = "待分析"; bias_20 = 0
                         try:
-                            from analyzers import DecisionMatrix
-                            short_term_data = DecisionMatrix.calculate_short_term_score(result)
-                            long_term_data = DecisionMatrix.calculate_long_term_score(result)
-                            short_score = short_term_data.get('score', 50)
-                            long_score = long_term_data.get('score', 50)
-                            quant_score = short_score * 0.6 + long_score * 0.4
+                            # fix_07 任務3：watchlist 分數單一化 = 引擎綜合分（含賣訊下修），
+                            # 與報告綜合分同源，不再用雙軌分數另算。
+                            quant_score = result.get('decision_matrix', {}).get('score', 50)
                             trend_status = result.get('trend', {}).get('primary_trend', '盤整') if isinstance(result.get('trend'), dict) else '待分析'
                             bias_20 = result.get('bias', {}).get('bias_20', 0) if isinstance(result.get('bias'), dict) else 0
                         except Exception as dm_err:
@@ -6711,9 +6788,8 @@ class StockAnalysisApp(tk.Tk):
                             long_term_data = DecisionMatrix.calculate_long_term_score(result)
                             investment_advice = DecisionMatrix.get_investment_advice(
                                 short_term_data.get('score', 50), long_term_data.get('score', 50))
-                            short_score = short_term_data.get('score', 50)
-                            long_score = long_term_data.get('score', 50)
-                            quant_score = short_score * 0.6 + long_score * 0.4
+                            # fix_07 任務3：watchlist 分數單一化 = 引擎綜合分（與報告同源）
+                            quant_score = result.get('decision_matrix', {}).get('score', 50)
                             trend_status = result.get('trend', {}).get('primary_trend', '盤整') if isinstance(result.get('trend'), dict) else '待分析'
                             bias_20 = result.get('bias', {}).get('bias_20', 0) if isinstance(result.get('bias'), dict) else 0
                             scenario_code = investment_advice.get('scenario_code', 'E')
@@ -6945,10 +7021,12 @@ class StockAnalysisApp(tk.Tk):
         else:
             # 後備：主題未載入時維持可讀的深色 tag
             self.watchlist_tree.tag_configure("group", background="#1a1a2e", foreground="#ffffff")
-            self.watchlist_tree.tag_configure("buy", foreground="#ff4444")
-            self.watchlist_tree.tag_configure("hold", foreground="#ffaa00")
-            self.watchlist_tree.tag_configure("sell", foreground="#44ff44")
-            self.watchlist_tree.tag_configure("wait", foreground="#888888")
+            # fix_07 任務6：動作語意色（買=橘 / 賣=綠 / 中性=灰）
+            import theme as _thm
+            self.watchlist_tree.tag_configure("buy", foreground=_thm.ACTION_BUY)
+            self.watchlist_tree.tag_configure("hold", foreground=_thm.ACTION_NEUTRAL)
+            self.watchlist_tree.tag_configure("sell", foreground=_thm.ACTION_SELL)
+            self.watchlist_tree.tag_configure("wait", foreground=_thm.ACTION_NEUTRAL)
             self.watchlist_tree.tag_configure("hot", background="#3a1a1a")
             self.watchlist_tree.tag_configure("cold", background="#1a3a1a")
 

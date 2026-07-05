@@ -35,6 +35,27 @@ FLAT     = "#8B9099"   # 平盤
 ACCENT   = "#EF9F27"   # 選取 / 作用中 / 連結（琥珀）
 GRADE_B  = "#5FA8E0"   # B 級追蹤（中優先，藍）
 
+# ── fix_07：語意色 token（單一定義點；台股慣例）───────────────────────────
+# 動作語意（買/賣/中性）與價格漲跌分離：紅綠只承載價格，動作用橘/綠/灰。
+ACTION_BUY     = ACCENT    # 買進族（強烈買進/買進/分批佈局/加碼）= 橘（沿用 A 級琥珀系）
+ACTION_SELL    = DOWN      # 賣出族（賣出/出場/減碼/避開）= 綠
+ACTION_NEUTRAL = TEXT_2    # 觀望/等待/追蹤 = 灰
+PRICE_UP       = UP        # 價格上漲數字 = 紅（僅限價格/漲跌幅）
+PRICE_DOWN     = DOWN      # 價格下跌數字 = 綠（僅限價格/漲跌幅）
+NEUTRAL_BLUE   = GRADE_B   # 三層分數條等中性量值 = 藍（綠自此只承載賣出/下跌）
+
+
+def action_color(text_or_code):
+    """依動作文字/代碼回傳語意色（單一判斷點）。買=橘、賣=綠、其餘=灰。"""
+    s = str(text_or_code or '').upper()
+    if s.startswith('SELL') or s in ('EXIT', 'TAKE_PROFIT') or \
+            any(k in str(text_or_code) for k in ('賣出', '出場', '減碼', '避開')):
+        return ACTION_SELL
+    if s in ('STRONG_BUY', 'BUY') or \
+            any(k in str(text_or_code) for k in ('買進', '進場', '佈局', '加碼')):
+        return ACTION_BUY
+    return ACTION_NEUTRAL
+
 # 互動狀態
 BTN_BG     = "#1C2128"   # 按鈕底（比面板亮一階 = BG_ELEV）
 BTN_HOVER  = "#252B33"   # 按鈕 hover（再亮一階）

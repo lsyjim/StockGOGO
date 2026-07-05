@@ -226,11 +226,25 @@ class ThreeLayerEngine:
             else:
                 trail.append({'stage': '籌碼過濾', 'from': None, 'to': None, 'reason': '—'})
 
-            # 形態覆蓋佔位（實際覆蓋在 _generate_recommendation_v43，屆時回填此列）
-            trail.append({'stage': '形態覆蓋', 'from': None, 'to': None, 'reason': '—'})
-
             # 賣訊檢查（優先於買訊）
             sell = ThreeLayerEngine.check_sell_signal(result)
+
+            # fix_07 任務4：賣出訊號階段——讓「綜合分強制下修至 N」有跡可循
+            if sell.get('triggered'):
+                _pri = sell.get('primary') or {}
+                _forced = 25 if _pri.get('severity') == 'urgent' else 42
+                trail.append({
+                    'stage': '賣出訊號',
+                    'from': timing.get('grade'),
+                    'to': 'SELL',
+                    'reason': f"{_pri.get('type', '賣訊')}：{_pri.get('reason', '')}"
+                              f"｜綜合分強制下修至 {_forced}",
+                })
+            else:
+                trail.append({'stage': '賣出訊號', 'from': None, 'to': None, 'reason': '—'})
+
+            # 形態覆蓋佔位（實際覆蓋在 _generate_recommendation_v43，屆時回填此列）
+            trail.append({'stage': '形態覆蓋', 'from': None, 'to': None, 'reason': '—'})
 
             out = ThreeLayerEngine._build_buy_output(direction, position, timing, chip, sell, result)
             out['adjustment_trail'] = trail

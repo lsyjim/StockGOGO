@@ -105,7 +105,9 @@ def test_3_real_stocks_same_source():
         if not r:
             continue
         v = build_verdict(r)
-        assert v["overall_text"] == r["recommendation"]["overall"], f"{sym} overall 不一致"
+        # fix_07 任務3：verdict 分數 == 引擎綜合分（= watchlist 分數同源）
+        assert v["score"] == r["decision_matrix"]["score"], f"{sym} 分數不一致"
+        # overall 經 fail-safe 後可能與 rec.overall 不同；正常無矛盾時應相同
         assert v["grade"] == r["decision_matrix"]["scenario"], f"{sym} grade 不一致"
         # 分期建議 action 與 action_code 同源（STRONG_BUY 短線不得出現暫緩類）
         if v["action_code"] == "STRONG_BUY":
