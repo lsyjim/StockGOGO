@@ -169,6 +169,8 @@ def build_verdict(result: dict) -> dict:
         'revenue_yoy':  rev.get('revenue_yoy'),
         'rev_12m_high': rev.get('is_12m_high'),
         'combo_tag':    rev.get('combo_label') or '',
+        # build_prompt_08：所屬題材（顯示用）
+        'theme':        result.get('theme_info', {}) or {},
     }
 
     # ── 警示彙整 ──

@@ -1343,6 +1343,56 @@ class QuickAnalyzer:
             return symbol
         return f"{symbol}.TWO" if cls._is_otc(symbol) else f"{symbol}.TW"
 
+    # build_prompt_08：族群動能（顯示/排序加成，不進 grade）。題材強度當日快取。
+    _theme_mgr = None
+    _theme_strength_cache = None   # (date_str, strength_dict)
+
+    @classmethod
+    def _get_theme_strength(cls):
+        """計算/取當日各題材強度（等權 20 日報酬橫斷面排名）。當日快取。"""
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        if cls._theme_strength_cache and cls._theme_strength_cache[0] == today:
+            return cls._theme_strength_cache[1]
+        try:
+            if cls._theme_mgr is None:
+                from theme_momentum import ThemeMomentum
+                cls._theme_mgr = ThemeMomentum()
+            tm = cls._theme_mgr
+            rets = {}
+            for sym in tm.all_symbols():
+                try:
+                    h = DataSourceManager.get_history(sym, '台股', period='6mo')
+                    if h is None or len(h) < 21:
+                        continue
+                    c = h['Close']
+                    r20 = float(c.iloc[-1] / c.iloc[-21] - 1) * 100
+                    r60 = float(c.iloc[-1] / c.iloc[-61] - 1) * 100 if len(c) >= 61 else None
+                    rets[sym] = {'ret20': r20, 'ret60': r60}
+                except Exception:
+                    continue
+            strength = tm.compute(rets)
+            cls._theme_strength_cache = (today, strength)
+            return strength
+        except Exception as e:
+            print(f"[Theme] 強度計算略過: {e}")
+            return {}
+
+    @classmethod
+    def _get_theme_info(cls, symbol):
+        """個股題材加註（theme_name/theme_rank_pct/is_top_theme/is_theme_leader）。"""
+        try:
+            if cls._theme_mgr is None:
+                from theme_momentum import ThemeMomentum
+                cls._theme_mgr = ThemeMomentum()
+            if not cls._theme_mgr.sym2theme.get(str(symbol)):
+                return {'theme_name': None, 'theme_rank_pct': None,
+                        'is_top_theme': False, 'is_theme_leader': False}
+            return cls._theme_mgr.annotate(str(symbol), cls._get_theme_strength())
+        except Exception:
+            return {'theme_name': None, 'theme_rank_pct': None,
+                    'is_top_theme': False, 'is_theme_leader': False}
+
     @staticmethod
     def aligned_prev_close(df):
         """
@@ -1793,6 +1843,13 @@ class QuickAnalyzer:
                 technical, result.get('relative_strength', {}), result.get('volume_price', {}),
                 current_price
             )
+
+            # build_prompt_08：族群動能加註（顯示/排序用，不進 grade；歷史模式跳過）
+            if market == "台股" and not is_historical:
+                try:
+                    result["theme_info"] = QuickAnalyzer._get_theme_info(symbol)
+                except Exception:
+                    result["theme_info"] = {}
 
             # 歷史模式額外欄位
             if is_historical:
@@ -4991,6 +5048,19 @@ class RecommendationDialog:
         yoy = ev.get('revenue_yoy')
         rev_txt = ('—' if yoy is None else
                    f"YoY {self._fmtnum(yoy*100,1,sign=True)}%" + ("　創12月高✓" if ev.get('rev_12m_high') else ""))
+        # build_prompt_08：所屬題材（題材強度百分位／領導股）
+        th = ev.get('theme', {}) or {}
+        if th.get('theme_name'):
+            _parts = [th['theme_name']]
+            if th.get('theme_rank_pct') is not None:
+                _parts.append(f"題材強度 {self._fmtnum(th['theme_rank_pct'],0)}")
+            if th.get('is_theme_leader'):
+                _parts.append("領導股")
+            elif th.get('is_top_theme'):
+                _parts.append("主流題材")
+            theme_txt = "（".join([_parts[0], "・".join(_parts[1:]) + "）"]) if len(_parts) > 1 else _parts[0]
+        else:
+            theme_txt = '—'
         rows = [
             ("PTH 52週高", pth_txt, None),
             ("RS 同儕排名", (self._fmtnum(ev.get('rs_rank'), 0) if ev.get('rs_rank') is not None
@@ -4999,6 +5069,7 @@ class RecommendationDialog:
             ("時間框架", tf_txt, None),
             ("月營收動能", rev_txt, None),
             ("組合標籤", (ev.get('combo_tag') or '—'), (DarkTheme.NEUTRAL_COLOR if ev.get('combo_tag') else None)),
+            ("所屬題材", theme_txt, (DarkTheme.ACCENT_GOLD if th.get('is_top_theme') else None)),
         ]
         self._kv_rows(body, rows)
 

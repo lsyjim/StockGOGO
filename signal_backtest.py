@@ -174,6 +174,15 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
         triggers = tim.get('triggers', []) if isinstance(tim, dict) else []
         chip = result.get('chip_flow', {}) or {}
         mreg = result.get('market_regime', {}) or {}
+        tech = result.get('technical', {}) or {}
+        _trig_str = '｜'.join(triggers)
+        # build_prompt_08：動能模式、閘門歸因、安全閥旗標（量測用，讀引擎輸出，不改判定）
+        try:
+            _is_mom = bool(ThreeLayerEngine._is_momentum(result))
+        except Exception:
+            _is_mom = False
+        _safety_valve = ('超買安全閥' in _trig_str) or ('極度延伸' in _trig_str)
+        _bias_ceiling = ('天花板' in _trig_str)
 
         entry_open = float(fh['Open'].iloc[i + 1])
         row = {
@@ -186,11 +195,18 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
             'dir_score': dirn.get('score'),
             'pos_score': pos.get('score'),
             'timing_grade': tim.get('grade') if isinstance(tim, dict) else '',
-            'triggers': '｜'.join(triggers),
-            'pth_52w': (result['technical'] or {}).get('pth_52w'),
+            'triggers': _trig_str,
+            'pth_52w': tech.get('pth_52w'),
             'rs_score': result['relative_strength'].get('rs_score'),
             'chip_buy_days': chip.get('consecutive_buy_days'),
             'chip_reliable': chip.get('data_reliable'),
+            'is_mom': _is_mom,
+            'safety_valve': bool(_safety_valve),
+            'bias_ceiling': bool(_bias_ceiling),
+            'gate': _gate_attribution(decision),
+            'volume_zscore': tech.get('volume_zscore'),
+            'ret60': (round(float(fh['Close'].iloc[i] / fh['Close'].iloc[i - 60] - 1) * 100, 2)
+                      if i >= 60 else None),
             'entry': round(entry_open, 2),
         }
         for N in holds:
@@ -202,6 +218,37 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
         trades.append(row)
 
     return trades
+
+
+# ── build_prompt_08：閘門歸因（讀引擎輸出分類「卡在哪」，不改判定）──────────
+def _gate_attribution(decision) -> str:
+    scn = decision.get('scenario', '')
+    trail = decision.get('adjustment_trail', []) or []
+    tl = decision.get('three_layer', {}) or {}
+    tim = tl.get('timing', {}) or {}
+    trigs = ' '.join(tim.get('triggers', []) if isinstance(tim, dict) else [])
+    if scn == 'SELL':
+        return '賣出訊號'
+    if scn == 'SKIP':
+        return '方向分否決'
+    if scn == 'WAIT':
+        return '位置否決'
+    # 已達 C/B/X → 歸因「為何沒更高（未到 A）」
+    for st in trail:
+        if st.get('stage') == '大盤濾網' and st.get('to'):
+            return '大盤濾網降級'
+    if ('超買安全閥' in trigs) or ('極度延伸' in trigs):
+        return '過熱安全閥'
+    if ('PTH' in trigs and '52週高' in trigs):
+        return 'PTH未達'
+    if ('待確認' in trigs):
+        return '量能未確認'
+    _has_vp = any(k in trigs for k in ('三盤突破', 'D55突破', 'D20突破', 'VP05', '帶量突破'))
+    if _has_vp and ('法人連買' not in trigs):
+        return '缺法人腿'
+    if scn == 'X' or not trigs.strip() or '無明確' in trigs:
+        return '無訊號'
+    return '其他'
 
 
 # ── 統計 ───────────────────────────────────────────────────────────────────
@@ -385,6 +432,227 @@ def write_reports(trades, holds, out_dir, args, index_bh):
     return csv_path, md_path
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# build_prompt_08：捕捉率(recall) / 族群動能 / 第三腿實驗（量測，不改判定）
+# ══════════════════════════════════════════════════════════════════════════
+def detect_surge_events(closes, thresh=0.30, win=20, merge=20):
+    """暴漲事件：起漲日 i 後 win 交易日內最大漲幅 ≥ thresh。事件間隔 <merge → 同一事件。"""
+    events = []
+    last = -10 ** 9
+    n = len(closes)
+    for i in range(n - 1):
+        hi = closes[i + 1:min(n, i + win + 1)].max()
+        if closes[i] > 0 and (hi / closes[i] - 1) >= thresh and (i - last) >= merge:
+            events.append((i, hi / closes[i] - 1))
+            last = i
+    return events
+
+
+def build_theme_strength_by_date(full_hists, tm):
+    """{date_str: theme_strength}，用各檔 as_of 切片的 20/60 日報酬（防前視）。"""
+    per = {}   # (sym,date)->(r20,r60)
+    all_dates = set()
+    for sym, fh in full_hists.items():
+        c = fh['Close']
+        r20 = (c / c.shift(20) - 1) * 100
+        r60 = (c / c.shift(60) - 1) * 100
+        for ts in c.index:
+            ds = ts.date().isoformat()
+            all_dates.add(ds)
+            per[(sym, ds)] = (r20.loc[ts], r60.loc[ts])
+    by_date = {}
+    for ds in sorted(all_dates):
+        rets = {}
+        for sym in full_hists:
+            v = per.get((sym, ds))
+            if v and v[0] == v[0]:   # not NaN
+                rets[sym] = {'ret20': float(v[0]), 'ret60': (float(v[1]) if v[1] == v[1] else None)}
+        by_date[ds] = tm.compute(rets) if rets else {}
+    return by_date
+
+
+def _rs_rank_by_date(all_trades):
+    """每日以 ret60 橫斷面百分位 → {(symbol,date): rs_rank_pct}。"""
+    from collections import defaultdict
+    import bisect
+    bydate = defaultdict(list)
+    for t in all_trades:
+        if t.get('ret60') is not None:
+            bydate[t['as_of']].append((t['symbol'], t['ret60']))
+    out = {}
+    for ds, rows in bydate.items():
+        vals = sorted(v for _, v in rows)
+        n = len(vals)
+        for sym, v in rows:
+            lo = bisect.bisect_left(vals, v)
+            hi = bisect.bisect_right(vals, v)
+            out[(sym, ds)] = round((lo + hi) / 2.0 / n * 100, 1) if n else 50.0
+    return out
+
+
+def run_recall(symbols, full_hists, all_trades, holds, args, out_dir):
+    """任務1：捕捉率 + 閘門攔截歸因；任務4：安全閥動能豁免附錄。"""
+    os.makedirs(out_dir, exist_ok=True)
+    from collections import Counter
+    idx = {(t['symbol'], t['as_of']): t for t in all_trades}
+    grade_rank = {'A': 5, 'B': 4, 'C': 3, 'X': 2, 'WAIT': 2, 'SKIP': 1, 'SELL': 1}
+
+    events = []
+    for sym, fh in full_hists.items():
+        fh = fh.sort_index()
+        closes = fh['Close'].values
+        dates = [d.date().isoformat() for d in fh.index]
+        for (si, gain) in detect_surge_events(closes):
+            wdates = dates[max(0, si - 5): si + 6]
+            seq = [(wd, idx[(sym, wd)]) for wd in wdates if (sym, wd) in idx]
+            if not seq:
+                continue
+            launch = idx.get((sym, dates[si]))
+            best = max(seq, key=lambda x: grade_rank.get(x[1]['grade'], 0))
+            events.append({
+                'symbol': sym, 'start': dates[si], 'gain_pct': round(gain * 100, 1),
+                'launch_grade': (launch['grade'] if launch else '—'),
+                'launch_gate': (launch['gate'] if launch else '—'),
+                'max_grade': best[1]['grade'], 'best_gate': best[1]['gate'],
+                'window_days': len(seq),
+            })
+
+    # 事件 CSV
+    ev_csv = os.path.join(out_dir, 'recall_events.csv')
+    if events:
+        with open(ev_csv, 'w', newline='', encoding='utf-8-sig') as f:
+            w = csv.DictWriter(f, fieldnames=list(events[0].keys()))
+            w.writeheader()
+            w.writerows(events)
+
+    n_ev = len(events)
+    md = ["# 捕捉率（recall）驗證報告\n"]
+    md.append("> 回答「A 級稀有是精準還是漏接」：對清單內個股的暴漲事件（20 交易日內漲幅≥30%），")
+    md.append("> 逐日重放引擎，看系統在最佳買點看到什麼、卡在哪個閘門。\n")
+    md.append(f"- 標的：{len(symbols)} 檔，回測窗口 {'全歷史' if args.days<=0 else str(args.days)+'日'}")
+    md.append(f"- 暴漲事件數：{n_ev}\n")
+    if n_ev:
+        a = sum(1 for e in events if e['max_grade'] == 'A')
+        ab = sum(1 for e in events if e['max_grade'] in ('A', 'B'))
+        md.append("## 總捕捉率\n")
+        md.append(f"- 事件曾出現 **A**：{a}/{n_ev}（{a/n_ev*100:.1f}%）")
+        md.append(f"- 事件曾出現 **A 或 B**：{ab}/{n_ev}（{ab/n_ev*100:.1f}%）\n")
+
+        md.append("## 閘門攔截統計（never-B 事件歸因，核心）\n")
+        never = [e for e in events if e['max_grade'] not in ('A', 'B')]
+        md.append(f"從未達 B 以上的事件：{len(never)}/{n_ev}\n")
+        gc = Counter(e['best_gate'] for e in never)
+        if gc:
+            md.append("| 卡關閘門 | 事件數 | 佔比 |")
+            md.append("|---|---|---|")
+            for g, c in gc.most_common():
+                md.append(f"| {g} | {c} | {c/len(never)*100:.1f}% |")
+
+        md.append("\n## 起漲日當天等級分佈（最佳買點系統看到什麼）\n")
+        lc = Counter(e['launch_grade'] for e in events)
+        md.append("| 等級 | 事件數 | 佔比 |")
+        md.append("|---|---|---|")
+        for g in ['A', 'B', 'C', 'SELL', 'WAIT', 'SKIP', 'X', '—']:
+            if lc.get(g):
+                md.append(f"| {g} | {lc[g]} | {lc[g]/n_ev*100:.1f}% |")
+    else:
+        md.append("（區間內無符合定義的暴漲事件）\n")
+
+    # ── 任務4：過熱安全閥動能豁免檢視（併入附錄）──
+    md.append("\n## 附錄：過熱安全閥動能豁免檢視（任務4）\n")
+    Nref = 10 if 10 in holds else holds[0]
+    N2 = 20 if 20 in holds else holds[-1]
+    def _mean(rows, key):
+        xs = [r[key] for r in rows if r.get(key) is not None]
+        return round(statistics.mean(xs), 3) if xs else None
+    all_mean_10 = _mean(all_trades, f'ret_{Nref}_net')
+    sv = [t for t in all_trades if t.get('safety_valve') or t.get('bias_ceiling')]
+    sv_mom = [t for t in sv if t.get('is_mom')]
+    sv_non = [t for t in sv if not t.get('is_mom')]
+    md.append(f"- 全樣本 {Nref}日均報酬（基準）：{all_mean_10}%")
+    md.append(f"- 被安全閥/天花板壓制樣本：{len(sv)}（動能內 {len(sv_mom)} / 動能外 {len(sv_non)}）\n")
+    md.append(f"| 子集 | n | {Nref}日期望 | {N2}日期望 | 勝率({Nref}日) |")
+    md.append("|---|---|---|---|---|")
+    for lab, rows in [('動能內·被壓制', sv_mom), ('動能外·被壓制', sv_non)]:
+        nets = [r[f'ret_{Nref}_net'] for r in rows if r.get(f'ret_{Nref}_net') is not None]
+        wr = (sum(1 for x in nets if x > 0) / len(nets) * 100) if nets else 0
+        md.append(f"| {lab} | {len(rows)} | {_mean(rows,f'ret_{Nref}_net')} | {_mean(rows,f'ret_{N2}_net')} | {wr:.0f}% |")
+    _sv_mom_exp = _mean(sv_mom, f'ret_{Nref}_net')
+    if _sv_mom_exp is not None and all_mean_10 is not None and len(sv_mom) >= 30 and _sv_mom_exp > all_mean_10:
+        md.append(f"\n**結論：建議放寬** — 動能內被安全閥壓制子集 {Nref}日期望 {_sv_mom_exp}% > 全樣本 {all_mean_10}%，"
+                  "且樣本≥30。提案：`_is_mom` 且量價健康時，RSI 安全閥閾值 85→92（附本數據，僅提案不改引擎）。")
+    else:
+        md.append(f"\n**結論：維持現狀 / 需更多樣本** — 動能內被壓制子集期望 {_sv_mom_exp}、樣本 {len(sv_mom)}"
+                  f"（需 ≥30 且 > 全樣本 {all_mean_10}% 才提案放寬）。")
+
+    with open(os.path.join(out_dir, 'recall_report.md'), 'w', encoding='utf-8') as f:
+        f.write("\n".join(md) + "\n")
+    print(f"[Recall] 事件 {n_ev} 筆 → {out_dir}/recall_report.md")
+
+
+def run_experiment_thirdleg(all_trades, theme_by_date, tm, holds, out_dir):
+    """任務3：A vs A'（法人腿以 量能Z≥2.0 AND RS rank≥90 AND is_top_theme 替代）。"""
+    os.makedirs(out_dir, exist_ok=True)
+    rs_rank = _rs_rank_by_date(all_trades)
+
+    def _third_leg_ok(t):
+        vz = t.get('volume_zscore')
+        if vz is None or float(vz) < 2.0:
+            return False
+        rr = rs_rank.get((t['symbol'], t['as_of']))
+        if rr is None or rr < 90:
+            return False
+        strength = theme_by_date.get(t['as_of'], {})
+        info = tm.annotate(t['symbol'], strength)
+        return bool(info.get('is_top_theme'))
+
+    cur_A = [t for t in all_trades if t['grade'] == 'A']
+    # 第三腿子集：現狀因「缺法人腿」卡在 B/C，但滿足第三腿條件（原本會是 A）
+    subset = [t for t in all_trades
+              if t.get('gate') == '缺法人腿' and t['grade'] in ('B', 'C') and _third_leg_ok(t)]
+    prime_A = cur_A + subset
+
+    Nrefs = [h for h in (10, 20) if h in holds] or holds
+    def _tbl(rows, N):
+        nets = [r[f'ret_{N}_net'] for r in rows if r.get(f'ret_{N}_net') is not None]
+        s = _stats(nets)
+        return s
+
+    md = ["# A 級第三腿實驗報告（僅回測對照，不上線）\n"]
+    md.append("> 假設：對無法人連買的題材股，「量能 Z≥2.0 AND RS rank≥90 AND is_top_theme」可替代法人腿。")
+    md.append("> A' = 現行 A ∪ 第三腿新增子集。**不自動修改引擎。**\n")
+    md.append(f"- 現行 A 樣本：{len(cur_A)}｜第三腿新增：{len(subset)}｜A' 合計：{len(prime_A)}\n")
+    for N in Nrefs:
+        md.append(f"### 持有 {N} 日")
+        md.append("| 版本 | n | 期望 | 勝率 | 最大單筆虧損 |")
+        md.append("|---|---|---|---|---|")
+        for lab, rows in [('現行 A', cur_A), ("A'（含第三腿）", prime_A), ('僅第三腿子集', subset)]:
+            s = _tbl(rows, N)
+            if s:
+                md.append(f"| {lab} | {s['n']} | {s['expectancy']} | {s['win_rate']}% | {s['max_loss']} |")
+            else:
+                md.append(f"| {lab} | 0 | – | – | – |")
+        md.append("")
+
+    # 結論（以 10 日為準）
+    Nc = 10 if 10 in holds else holds[0]
+    sA = _tbl(cur_A, Nc)
+    sSub = _tbl(subset, Nc)
+    md.append("## 結論\n")
+    if sA and sSub and sSub['n'] >= 30 and sSub['expectancy'] >= 0.8 * sA['expectancy']:
+        md.append(f"**建議採納** — 僅第三腿子集 {Nc}日期望 {sSub['expectancy']}% ≥ 現行 A 的 80%"
+                  f"（{sA['expectancy']}%×0.8），且樣本 {sSub['n']}≥30。")
+    else:
+        _n = sSub['n'] if sSub else 0
+        _e = sSub['expectancy'] if sSub else None
+        md.append(f"**維持現狀 / 需更多樣本** — 僅第三腿子集期望 {_e}、樣本 {_n}"
+                  f"（需 ≥30 且 ≥ 現行 A 期望 {sA['expectancy'] if sA else '—'}% 的 80%）。")
+
+    with open(os.path.join(out_dir, 'third_leg_report.md'), 'w', encoding='utf-8') as f:
+        f.write("\n".join(md) + "\n")
+    print(f"[Experiment] 第三腿子集 {len(subset)} 筆 → {out_dir}/third_leg_report.md")
+
+
 # ── 主流程 ─────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="A/B/C 訊號級 walk-forward 回測")
@@ -396,6 +664,8 @@ def main():
     ap.add_argument('--discount', type=float, default=1.0, help='手續費折扣（如 0.28）')
     ap.add_argument('--workers', type=int, default=8)
     ap.add_argument('--out', default='', help='輸出目錄')
+    ap.add_argument('--recall', action='store_true', help='捕捉率模式（暴漲事件 + 閘門歸因）')
+    ap.add_argument('--experiment', default='', help='實驗開關：third_leg')
     args = ap.parse_args()
 
     holds = [int(x) for x in args.hold.split(',') if x.strip()]
@@ -407,13 +677,23 @@ def main():
     if args.symbols:
         if os.path.exists(args.symbols):
             with open(args.symbols) as f:
-                symbols = [l.strip() for l in f if l.strip()]
+                symbols = [l.strip() for l in f if l.strip() and not l.startswith('#')]
         else:
             symbols = [s.strip() for s in args.symbols.split(',') if s.strip()]
     else:
         from database import WatchlistDatabase
         db = WatchlistDatabase()
         symbols = [s[0] for s in db.get_all_stocks() if (s[2] if len(s) > 2 else '台股') == '台股']
+
+    # build_prompt_08：recall/experiment 需題材成分股歷史算題材強度 → 併入抓取集
+    _tm = None
+    if args.recall or args.experiment:
+        try:
+            from theme_momentum import ThemeMomentum
+            _tm = ThemeMomentum()
+            symbols = sorted(set(symbols) | set(_tm.all_symbols()))
+        except Exception as _te:
+            print(f"[Theme] 載入失敗: {_te}")
     args._nsym = len(symbols)
 
     out_dir = args.out or os.path.join('backtest_results', datetime.datetime.now().strftime('%Y%m%d_%H%M'))
@@ -493,10 +773,21 @@ def main():
                 print(f"[Backtest] {sym} 回測錯誤: {e}")
 
     all_trades.sort(key=lambda t: (t['as_of'], t['symbol']))
+    # 一律輸出基礎 trades/summary（含 recall/experiment 模式，供迴歸對照）
     csv_path, md_path = write_reports(all_trades, holds, out_dir, args, index_bh)
     print(f"[Backtest] 完成：{len(all_trades)} 筆訊號")
     print(f"[Backtest] trades:  {csv_path}")
     print(f"[Backtest] summary: {md_path}")
+
+    # build_prompt_08：捕捉率 / 第三腿實驗
+    if args.recall:
+        run_recall(symbols, full_hists, all_trades, holds, args, out_dir)
+    if args.experiment == 'third_leg':
+        if _tm is None:
+            from theme_momentum import ThemeMomentum
+            _tm = ThemeMomentum()
+        theme_by_date = build_theme_strength_by_date(full_hists, _tm)
+        run_experiment_thirdleg(all_trades, theme_by_date, _tm, holds, out_dir)
 
 
 if __name__ == '__main__':
