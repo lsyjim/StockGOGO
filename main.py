@@ -3635,7 +3635,7 @@ class QuickAnalyzer:
                     _sell_state = (
                         dm.get('scenario') in ('SELL', 'EXIT')
                         or str(dm.get('action_code', '')).upper().startswith('SELL')
-                        or dm.get('three_layer', {}).get('sell_signal', {}).get('triggered', False)
+                        or ((dm.get('three_layer') or {}).get('sell_signal') or {}).get('triggered', False)
                     )
 
                     if _sell_state:
