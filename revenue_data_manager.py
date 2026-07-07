@@ -50,6 +50,10 @@ class RevenueDataManager:
 
     # ── FinMind ──────────────────────────────────────────────────────────
     def _finmind_get(self, params: dict):
+        """build_prompt_09：共用額度守門；冷卻/限流回 None（營收無官方備援，缺月即缺月）。"""
+        import finmind_budget as _fb
+        if not _fb.before_request():
+            return None   # 冷卻中：營收非關鍵，直接跳過（不佔額度、不誤標）
         headers = {}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
@@ -57,13 +61,17 @@ class RevenueDataManager:
             r = requests.get(FINMIND_URL, params=params, headers=headers, timeout=25)
             if r.status_code in (402, 429):
                 print(f"[Revenue] FinMind 額度超限（HTTP {r.status_code}）")
+                _fb.note_rate_limited()
                 return None
             if r.status_code != 200:
                 print(f"[Revenue] FinMind HTTP {r.status_code}")
                 return None
             payload = r.json()
             if payload.get("status") != 200:
-                print(f"[Revenue] status={payload.get('status')} msg={payload.get('msg')}")
+                _msg = str(payload.get("msg", ""))
+                if "limit" in _msg.lower():
+                    _fb.note_rate_limited()
+                print(f"[Revenue] status={payload.get('status')} msg={_msg}")
                 return None
             return payload.get("data") or None
         except Exception as e:

@@ -34,6 +34,12 @@ class QuantConfig:
     
     # 籌碼面緩存設定
     CHIP_CACHE_HOURS = 8  # 籌碼數據緩存小時數（同一天內有效）
+
+    # build_prompt_09：FinMind 額度守門 + 官方備援
+    FINMIND_COOLDOWN_SEC = 3600     # 偵測 402/429 後的冷卻秒數（冷卻中一律走官方備援）
+    FINMIND_HOURLY_BUDGET = 550     # 每小時 FinMind 請求上限（<600 免費額度，留安全邊際）
+    CHIP_BULK_PREFER_GOV = True     # 單次補洞 symbol 數 ≥ 此門檻 → 官方 per-date 為主源
+    CHIP_BULK_GOV_THRESHOLD = 10    # 「大量」門檻
     
     # 大盤代碼
     MARKET_INDEX_TW = "^TWII"  # 台股加權指數

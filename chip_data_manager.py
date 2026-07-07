@@ -33,6 +33,10 @@ import requests
 FINMIND_URL       = "https://api.finmindtrade.com/api/v4/data"
 TWSE_T86_URL      = "https://www.twse.com.tw/rwd/zh/fund/T86"
 TPEX_OPENAPI_URL  = "https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading"
+TPEX_HIST_URL     = "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php"
+
+# build_prompt_09：FinMind 限流哨兵（與「查無資料」的 None 區分）
+RATE_LIMITED = "RATE_LIMITED"
 
 # FinMind 法人 name 欄位（實測 2330 確認的值集合）
 _FM_FOREIGN = ("Foreign_Investor", "Foreign_Dealer_Self")   # 外資合計
@@ -125,7 +129,15 @@ class ChipDataManager:
     # FinMind 客戶端
     # ────────────────────────────────────────────────────────────────────
     def _finmind_get(self, dataset: str, params: dict):
-        """FinMind 通用 GET。回傳 data list；失敗回 None（不以 0 填充）。"""
+        """
+        FinMind 通用 GET。build_prompt_09：
+          - 冷卻中/達額度 → 回哨兵 RATE_LIMITED（呼叫端切官方備援，不發請求）
+          - 收到 402/429 → 進入冷卻並回 RATE_LIMITED
+          - 查無資料 → None（None 語意不變，抓不到 ≠ 0）
+        """
+        import finmind_budget as _fb
+        if not _fb.before_request():
+            return RATE_LIMITED
         q = {"dataset": dataset}
         q.update(params)
         headers = {}
@@ -135,13 +147,20 @@ class ChipDataManager:
             r = requests.get(FINMIND_URL, params=q, headers=headers, timeout=20)
             if r.status_code in (402, 429):
                 print(f"[FinMind] 額度超限（HTTP {r.status_code}），dataset={dataset}")
-                return None
+                _fb.note_rate_limited()
+                return RATE_LIMITED
             if r.status_code != 200:
                 print(f"[FinMind] HTTP {r.status_code}，dataset={dataset}")
                 return None
             payload = r.json()
             if payload.get("status") != 200:
-                print(f"[FinMind] status={payload.get('status')} msg={payload.get('msg')}")
+                _msg = str(payload.get("msg", ""))
+                # FinMind 以 status!=200 + 訊息表達額度超限
+                if "limit" in _msg.lower() or "request" in _msg.lower() and "exceed" in _msg.lower():
+                    print(f"[FinMind] 額度訊息：{_msg}")
+                    _fb.note_rate_limited()
+                    return RATE_LIMITED
+                print(f"[FinMind] status={payload.get('status')} msg={_msg}")
                 return None
             data = payload.get("data", [])
             return data if data else None
@@ -159,6 +178,8 @@ class ChipDataManager:
             "TaiwanStockInstitutionalInvestorsBuySell",
             {"data_id": str(symbol), "start_date": start_date, "end_date": end_date},
         )
+        if data == RATE_LIMITED:
+            return RATE_LIMITED
         if not data:
             return None
         # 依日期彙總各法人 buy/sell（股）
@@ -266,7 +287,7 @@ class ChipDataManager:
         start = end - datetime.timedelta(days=int(trading_days * 1.6) + 20)
         chip = self._fetch_finmind_chip(symbol, start.isoformat(), end.isoformat())
 
-        if chip:
+        if chip and chip != RATE_LIMITED:
             # 只接受在交易日曆上的日期：FinMind 法人資料集偶有假日殘留列
             # （如端午節 2026-06-19），交易日曆（TradingDate）為權威來源。
             valid = set(self.get_trading_days_desc(limit=400))
@@ -280,9 +301,17 @@ class ChipDataManager:
                 written += 1
             return written
 
-        # FinMind 失敗 → 官方備援補最新一日（僅救急，非完整回填）
-        print(f"[Backfill] {symbol} FinMind 無資料，嘗試官方備援補最新日")
-        return self._backfill_official_latest(symbol)
+        # build_prompt_09：FinMind 限流/無資料 → 官方歷史備援補「完整缺洞」（非只補最新日）
+        reason = "限流" if chip == RATE_LIMITED else "FinMind 無資料"
+        cal = self.get_trading_days_desc(limit=trading_days)
+        if not cal:
+            return 0
+        have = self._existing_dates(symbol, min(cal))
+        miss = set(cal) - have
+        if not miss:
+            return 0
+        print(f"[Backfill] {symbol} {reason} → 官方歷史備援補 {len(miss)} 個缺洞")
+        return self._backfill_official_range([symbol], {symbol: miss})
 
     def daily_update(self, symbols: list, holes: int = 5):
         """
@@ -301,14 +330,36 @@ class ChipDataManager:
         min_day = min(recent_days)
         end = datetime.date.today().isoformat()
 
-        filled = 0
+        # 各 symbol 的缺洞
+        need_map = {}
         for sym in symbols:
             sym = str(sym)
-            have = self._existing_dates(sym, min_day)
-            need = recent_days - have
-            if not need:
-                continue
+            need = recent_days - self._existing_dates(sym, min_day)
+            if need:
+                need_map[sym] = need
+        if not need_map:
+            return 0
+
+        # build_prompt_09 任務5：大量補洞（≥門檻）或 FinMind 冷卻中 → 官方 per-date 為主源
+        import finmind_budget as _fb
+        try:
+            from config import QuantConfig as _QC
+            _bulk = _QC.CHIP_BULK_PREFER_GOV and len(need_map) >= _QC.CHIP_BULK_GOV_THRESHOLD
+        except Exception:
+            _bulk = False
+        if _fb.is_cooling() or _bulk:
+            _why = "FinMind 冷卻中" if _fb.is_cooling() else f"大量補洞（{len(need_map)}檔≥門檻）"
+            print(f"[daily_update] {_why} → 官方 per-date 備援")
+            return self._backfill_official_range(list(need_map), need_map)
+
+        # 一般：逐檔 FinMind；遇限流即切官方備援補剩餘
+        filled = 0
+        rl_map = {}
+        for sym, need in need_map.items():
             chip = self._fetch_finmind_chip(sym, min_day, end)
+            if chip == RATE_LIMITED:
+                rl_map[sym] = need
+                continue
             if chip:
                 for d in need:
                     if d in chip:
@@ -318,6 +369,9 @@ class ChipDataManager:
                                           v["d_buy"], v["d_sell"])
                         filled += 1
             time.sleep(0.2)   # 控制在額度內
+        if rl_map:
+            print(f"[daily_update] FinMind 限流 → 官方備援補 {len(rl_map)} 檔剩餘缺洞")
+            filled += self._backfill_official_range(list(rl_map), rl_map)
         return filled
 
     def _existing_dates(self, symbol, since_date):
@@ -333,90 +387,152 @@ class ChipDataManager:
         return out
 
     # ────────────────────────────────────────────────────────────────────
-    # 官方備援（FinMind 掛掉才走）
+    # 官方備援（FinMind 限流/故障才走）— build_prompt_09
+    # 回傳 9 元組：(f_net,t_net,d_net,f_buy,f_sell,t_buy,t_sell,d_buy,d_sell)（張）
     # ────────────────────────────────────────────────────────────────────
-    def _backfill_official_latest(self, symbol):
-        """用官方來源補最新一日（上市走 TWSE，上櫃走 TPEX）。回傳 0/1。"""
-        latest = self.get_latest_trading_day() or datetime.date.today().isoformat()
-        # 先試 TWSE（上市）
-        twse = self._fetch_twse_t86(latest)
-        if twse and symbol in twse:
-            f, t, dl = twse[symbol]
-            self._upsert_chip(symbol, latest, f, t, dl, "twse")
-            return 1
-        # 再試 TPEX（上櫃，OpenAPI 為最新日）
-        tpex = self._fetch_tpex_openapi()
-        if tpex:
-            tdate, table = tpex
-            if symbol in table:
-                f, t, dl = table[symbol]
-                self._upsert_chip(symbol, tdate, f, t, dl, "tpex")
-                return 1
-        return 0
+    @staticmethod
+    def _market_of(symbol):
+        """twstock 市場別：'上市'/'上櫃'/None。"""
+        try:
+            import twstock
+            info = twstock.codes.get(str(symbol))
+            return getattr(info, "market", None) if info else None
+        except Exception:
+            return None
+
+    def _gov_get(self, url, params, label):
+        """官方端點請求禮儀：sleep(1.5~3.0) + UA + timeout=15 + 403/429 指數退避（≤3 次）。"""
+        import random
+        for attempt in range(3):
+            try:
+                time.sleep(random.uniform(1.5, 3.0))
+                r = requests.get(
+                    url, params=params, timeout=15,
+                    headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+                )
+                if r.status_code in (403, 429):
+                    _w = (2 ** attempt) * 3
+                    print(f"[官方備援] {label} HTTP {r.status_code}，退避 {_w}s（第{attempt+1}次）")
+                    time.sleep(_w)
+                    continue
+                if r.status_code != 200:
+                    return None
+                return r.json()
+            except Exception as e:
+                print(f"[官方備援] {label} 錯誤: {e}")
+                time.sleep(2 ** attempt)
+        return None
+
+    def _upsert9(self, symbol, date, v9, source):
+        """以 9 元組寫入 chip_daily。"""
+        self._upsert_chip(symbol, date, v9[0], v9[1], v9[2], source,
+                          v9[3], v9[4], v9[5], v9[6], v9[7], v9[8])
 
     def _fetch_twse_t86(self, date_str):
         """
-        TWSE T86（上市當日全體）。date_str='YYYY-MM-DD'。
-        以 fields 名稱定位欄位（不寫死 index），單位股→張。
-        回傳 {symbol: (foreign_net, trust_net, dealer_net)} 或 None。
+        TWSE T86（上市當日全體，任意歷史日期）。以 fields 名稱定位（名稱唯一），股→張。
+        回傳 {symbol: 9元組} 或 None（整張失敗）。
+        外資口徑對齊 FinMind：外陸資(不含外資自營) + 外資自營商。
         """
         ymd = date_str.replace("-", "")
-        try:
-            time.sleep(3)   # TWSE 高頻會擋 IP
-            r = requests.get(
-                TWSE_T86_URL,
-                params={"date": ymd, "selectType": "ALLBUT0999", "response": "json"},
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=20,
-            )
-            if r.status_code != 200:
-                return None
-            d = r.json()
-            if d.get("stat") != "OK" or not d.get("data"):
-                return None
-            fields = [str(f).strip() for f in d.get("fields", [])]
+        d = self._gov_get(TWSE_T86_URL,
+                          {"date": ymd, "selectType": "ALLBUT0999", "response": "json"},
+                          f"{date_str} T86")
+        if not d or d.get("stat") != "OK" or not d.get("data"):
+            return None
+        fields = [str(f).strip() for f in d.get("fields", [])]
 
-            def idx(name):
-                # 精確比對（TWSE fields 名稱唯一），避免 '自營商買賣超股數' 誤中
-                # '外資自營商買賣超股數' / '自營商買賣超股數(自行買賣)' 等子字串欄位
-                for i, f in enumerate(fields):
-                    if f == name:
-                        return i
-                return None
-
-            i_fore     = idx("外陸資買賣超股數(不含外資自營商)")
-            i_foreself = idx("外資自營商買賣超股數")
-            i_trust    = idx("投信買賣超股數")
-            i_dealer   = idx("自營商買賣超股數")   # 合計欄（自行買賣+避險）
-            if None in (i_fore, i_trust, i_dealer):
-                print("[TWSE] fields 定位失敗")
-                return None
-
-            def to_int(s):
-                try:
-                    return int(str(s).replace(",", "").strip() or 0)
-                except ValueError:
-                    return 0
-
-            out = {}
-            for row in d["data"]:
-                sym = row[0].strip()
-                fore = to_int(row[i_fore])
-                if i_foreself is not None:
-                    fore += to_int(row[i_foreself])
-                trust = to_int(row[i_trust])
-                dealer = to_int(row[i_dealer])
-                out[sym] = (_shares_to_lots(fore), _shares_to_lots(trust), _shares_to_lots(dealer))
-            return out
-        except Exception as e:
-            print(f"[TWSE] T86 抓取錯誤: {e}")
+        def idx(name):
+            for i, f in enumerate(fields):
+                if f == name:
+                    return i
             return None
 
+        ix = {
+            'fe_net': idx("外陸資買賣超股數(不含外資自營商)"),
+            'fe_buy': idx("外陸資買進股數(不含外資自營商)"),
+            'fe_sell': idx("外陸資賣出股數(不含外資自營商)"),
+            'fs_net': idx("外資自營商買賣超股數"),
+            'fs_buy': idx("外資自營商買進股數"),
+            'fs_sell': idx("外資自營商賣出股數"),
+            't_net': idx("投信買賣超股數"), 't_buy': idx("投信買進股數"), 't_sell': idx("投信賣出股數"),
+            'd_net': idx("自營商買賣超股數"),
+            'ds_buy': idx("自營商買進股數(自行買賣)"), 'ds_sell': idx("自營商賣出股數(自行買賣)"),
+            'dh_buy': idx("自營商買進股數(避險)"), 'dh_sell': idx("自營商賣出股數(避險)"),
+        }
+        if None in (ix['fe_net'], ix['t_net'], ix['d_net']):
+            print("[TWSE] T86 fields 定位失敗")
+            return None
+
+        def gi(row, key):
+            i = ix.get(key)
+            if i is None:
+                return 0
+            try:
+                return int(str(row[i]).replace(",", "").strip() or 0)
+            except (ValueError, IndexError):
+                return 0
+
+        out = {}
+        for row in d["data"]:
+            sym = str(row[0]).strip()
+            f_net = gi(row, 'fe_net') + gi(row, 'fs_net')
+            f_buy = gi(row, 'fe_buy') + gi(row, 'fs_buy')
+            f_sell = gi(row, 'fe_sell') + gi(row, 'fs_sell')
+            t_net, t_buy, t_sell = gi(row, 't_net'), gi(row, 't_buy'), gi(row, 't_sell')
+            d_net = gi(row, 'd_net')
+            d_buy = gi(row, 'ds_buy') + gi(row, 'dh_buy')
+            d_sell = gi(row, 'ds_sell') + gi(row, 'dh_sell')
+            out[sym] = tuple(_shares_to_lots(x) for x in
+                             (f_net, t_net, d_net, f_buy, f_sell, t_buy, t_sell, d_buy, d_sell))
+        return out
+
+    def _fetch_tpex_hist(self, date_str):
+        """
+        TPEx 歷史三大法人（上櫃當日全體，任意歷史日期）。
+        欄名重複 → 以「固定位置」映射，並用最末欄「三大法人合計」錨點驗證（防位置漂移）。
+        位置：外資含自營合計 idx8-10；投信 idx11-13；自營合計 idx20-22；合計 idx23。
+        回傳 {symbol: 9元組} 或 None。
+        """
+        y, m, dd = date_str.split("-")
+        roc = f"{int(y) - 1911}/{m}/{dd}"   # 民國年/MM/DD（常見雷點，單元測試鎖住）
+        ymd = date_str.replace("-", "")
+        d = self._gov_get(TPEX_HIST_URL, {"l": "zh-tw", "d": roc, "se": "EW", "t": "D"},
+                          f"{date_str} TPEx")
+        if not d or str(d.get("stat", "")).lower() != "ok":
+            return None
+        # 日期校驗：回應日期需與請求日一致（避免無資料日回退最新日）
+        if str(d.get("date", "")).strip() not in (ymd, ""):
+            return None
+        tables = d.get("tables") or []
+        if not tables or not tables[0].get("data"):
+            return None
+        rows = tables[0]["data"]
+
+        def gi(row, i):
+            try:
+                return int(str(row[i]).replace(",", "").strip() or 0)
+            except (ValueError, IndexError):
+                return 0
+
+        out = {}
+        for row in rows:
+            if not isinstance(row, list) or len(row) < 24:
+                continue
+            sym = str(row[0]).strip()
+            f_buy, f_sell, f_net = gi(row, 8), gi(row, 9), gi(row, 10)
+            t_buy, t_sell, t_net = gi(row, 11), gi(row, 12), gi(row, 13)
+            d_buy, d_sell, d_net = gi(row, 20), gi(row, 21), gi(row, 22)
+            total = gi(row, 23)
+            # 錨點驗證：三法人淨額和 == 合計欄（不符 → 位置漂移，跳過該列）
+            if abs((f_net + t_net + d_net) - total) > max(1, abs(total) * 0.001):
+                continue
+            out[sym] = tuple(_shares_to_lots(x) for x in
+                             (f_net, t_net, d_net, f_buy, f_sell, t_buy, t_sell, d_buy, d_sell))
+        return out
+
     def _fetch_tpex_openapi(self):
-        """
-        TPEX OpenAPI（上櫃當日全體，最新日）。以欄位名稱定位（key 空白不一致→正規化比對）。
-        回傳 (date_str, {symbol: (f,t,d)}) 或 None。
-        """
+        """TPEX OpenAPI（上櫃最新日；保留供最新日備援）。回傳 (date_str, {symbol:9元組}) 或 None。"""
         try:
             r = requests.get(TPEX_OPENAPI_URL, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
             if r.status_code != 200:
@@ -426,40 +542,36 @@ class ChipDataManager:
                 return None
 
             def norm(k):
-                return "".join(str(k).split())   # 移除所有空白
+                return "".join(str(k).split())
 
-            # 預先建立正規化鍵對照（取第一列）
             sample = data[0]
             keymap = {norm(k): k for k in sample.keys()}
 
-            def get_val(row, norm_key):
-                real = keymap.get(norm_key)
+            def gv(row, nk):
+                real = keymap.get(nk)
                 if real is None:
                     return 0
-                v = row.get(real, 0)
                 try:
-                    return int(str(v).replace(",", "").strip() or 0)
+                    return int(str(row.get(real, 0)).replace(",", "").strip() or 0)
                 except ValueError:
                     return 0
 
-            # 外資合計 = 外陸資(排除外資自營)差額 + 外資自營差額；投信差額；自營差額
-            k_fore   = norm("Foreign Investors include Mainland Area Investors (Foreign Dealers excluded)-Difference")
+            k_fore = norm("Foreign Investors include Mainland Area Investors (Foreign Dealers excluded)-Difference")
             k_foredl = norm("ForeignDealers-Difference")
-            k_trust  = norm("SecuritiesInvestmentTrustCompanies-Difference")
+            k_trust = norm("SecuritiesInvestmentTrustCompanies-Difference")
             k_dealer = norm("Dealers-Difference")
-
-            roc_date = str(sample.get("Date", "")).strip()
-            date_str = self._roc_to_iso(roc_date)
-
+            date_str = self._roc_to_iso(str(sample.get("Date", "")).strip())
             out = {}
             for row in data:
                 sym = str(row.get("SecuritiesCompanyCode", "")).strip()
                 if not sym:
                     continue
-                fore = get_val(row, k_fore) + get_val(row, k_foredl)
-                trust = get_val(row, k_trust)
-                dealer = get_val(row, k_dealer)
-                out[sym] = (_shares_to_lots(fore), _shares_to_lots(trust), _shares_to_lots(dealer))
+                fore = gv(row, k_fore) + gv(row, k_foredl)
+                trust = gv(row, k_trust)
+                dealer = gv(row, k_dealer)
+                # OpenAPI 無買/賣分列 → buy/sell 補 None
+                out[sym] = (_shares_to_lots(fore), _shares_to_lots(trust), _shares_to_lots(dealer),
+                            None, None, None, None, None, None)
             return (date_str, out) if date_str else None
         except Exception as e:
             print(f"[TPEX] OpenAPI 抓取錯誤: {e}")
@@ -467,12 +579,64 @@ class ChipDataManager:
 
     @staticmethod
     def _roc_to_iso(roc):
-        """民國日期 '1150703' → '2025-07-03'。"""
+        """民國日期 '1150703' → '2026-07-03'。"""
         roc = str(roc).strip()
         if len(roc) == 7 and roc.isdigit():
             y = int(roc[:3]) + 1911
             return f"{y}-{roc[3:5]}-{roc[5:7]}"
         return roc
+
+    def _backfill_official_range(self, symbols, missing):
+        """
+        歷史備援路由（核心）：對各 symbol 的缺洞日期，per-date 一次 T86/TPEx 請求服務所有股票。
+        missing: {symbol: set(dates)}。回傳寫入筆數。
+        真零原則：整張表抓成功但表中查無該股 → 寫 0（當日無法人活動）；
+        整張表抓失敗 → 不寫，維持缺洞（None 原則，嚴禁以 0 填充）。
+        """
+        from collections import defaultdict
+        date_to_syms = defaultdict(set)
+        for sym, dates in missing.items():
+            for dd in dates:
+                date_to_syms[dd].add(str(sym))
+        valid_cal = set(self.get_trading_days_desc(limit=800))
+        written = 0
+        for dd in sorted(date_to_syms):
+            if valid_cal and dd not in valid_cal:
+                continue   # 假日殘留防線
+            syms = set(date_to_syms[dd])
+            listed = {s for s in syms if self._market_of(s) != '上櫃'}   # 上市 + 未知
+            otc = {s for s in syms if self._market_of(s) == '上櫃'}
+            # 上市（+未知）→ T86 一次服務全體
+            if listed:
+                t86 = self._fetch_twse_t86(dd)
+                if t86 is not None:
+                    n = 0
+                    for s in list(listed):
+                        v = t86.get(s)
+                        if v is None:
+                            if self._market_of(s) is None:
+                                otc.add(s)   # 未知且 T86 查無 → 改試 TPEx
+                                continue
+                            v = (0, 0, 0, 0, 0, 0, 0, 0, 0)   # 上市真零
+                        self._upsert9(s, dd, v, "t86")
+                        written += 1; n += 1
+                    print(f"[官方備援] {dd} T86 ✓ 覆蓋 {n} 檔")
+            # 上櫃 → TPEx 一次服務全體
+            if otc:
+                tp = self._fetch_tpex_hist(dd)
+                if tp is not None:
+                    n = 0
+                    for s in otc:
+                        v = tp.get(s) or (0, 0, 0, 0, 0, 0, 0, 0, 0)   # 表中查無 → 真零
+                        self._upsert9(s, dd, v, "tpex_hist")
+                        written += 1; n += 1
+                    print(f"[官方備援] {dd} TPEx ✓ 覆蓋 {n} 檔")
+        return written
+
+    def _backfill_official_latest(self, symbol):
+        """補最新一日（委派 _backfill_official_range）。回傳 0/1+。"""
+        latest = self.get_latest_trading_day() or datetime.date.today().isoformat()
+        return self._backfill_official_range([str(symbol)], {str(symbol): {latest}})
 
     # ────────────────────────────────────────────────────────────────────
     # 本地連買/連賣計算（依交易日曆）
