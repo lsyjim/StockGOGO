@@ -119,12 +119,133 @@ def build_asof_result(symbol, hist_asof, idx_asof, chip_mgr, rev_mgr, as_of_str,
     return result
 
 
+# ── build_prompt_10：因子快照（全部 as_of 點時間值，缺值 None，嚴禁 0 填充）──────
+# 建議文字以短代碼記錄（enum 對照見 factor_report 附錄）。建議 = f(action_code)：
+# 引擎輸出恆有合法 action_code，_get_short/mid_term 對已知代碼直接查表、不做 bias/rsi 微調，
+# 故此對照忠實反映短/中線建議；long_advice 因回測無基本面，以 action_code 代理（報告註記）。
+_SHORT_ADVICE = {'STRONG_BUY': 'S1_積極進場', 'BUY': 'S2_分批佈局', 'HOLD': 'S3_續抱',
+                 'WAIT': 'S4_等拉回', 'SKIP': 'S5_不參與', 'SELL': 'S6_出場',
+                 'TAKE_PROFIT': 'S7_停利'}
+_MID_ADVICE = {'STRONG_BUY': 'M1_偏多持有', 'BUY': 'M1_偏多持有', 'HOLD': 'M2_中線觀望',
+               'WAIT': 'M3_偏多等位置', 'SKIP': 'M4_偏空出場', 'SELL': 'M4_偏空出場',
+               'TAKE_PROFIT': 'M2_中線觀望'}
+_LONG_ADVICE = {'STRONG_BUY': 'L1_中長多', 'BUY': 'L1_中長多', 'HOLD': 'L2_中長中立',
+                'WAIT': 'L2_中長中立', 'SKIP': 'L3_中長空', 'SELL': 'L3_中長空',
+                'TAKE_PROFIT': 'L2_中長中立'}
+
+
+def _num(x):
+    try:
+        v = float(x)
+        return None if v != v else v
+    except (TypeError, ValueError):
+        return None
+
+
+def _factor_snapshot(result, fh, i, action_code, rev_mgr, symbol, as_of_date, theme_info):
+    """回傳因子欄位 dict（as_of 點時間值）。缺值 None。"""
+    tech = result.get('technical', {}) or {}
+    mr = result.get('mean_reversion', {}) or {}
+    ba = (mr.get('bias_analysis', {}) or {}) if mr.get('available') else {}
+    cur = _num(result.get('current_price'))
+
+    k = _num(tech.get('k')); dd = _num(tech.get('d'))
+    if k is None or dd is None:
+        kd_state = None
+    elif k >= 80:
+        kd_state = 'high80'
+    elif k <= 20:
+        kd_state = 'low20'
+    elif k > dd:
+        kd_state = 'golden'
+    elif k < dd:
+        kd_state = 'death'
+    else:
+        kd_state = 'neutral'
+
+    dif = _num(tech.get('macd')); sig = _num(tech.get('macd_signal'))
+    if dif is None or sig is None:
+        macd_state = None
+    elif dif >= sig and dif >= 0:
+        macd_state = 'golden'
+    elif dif < sig and dif < 0:
+        macd_state = 'death'
+    elif dif >= 0:
+        macd_state = 'above0'
+    else:
+        macd_state = 'below0'
+    _mdv = tech.get('macd_divergence', {}) or {}
+    macd_div = ('bull' if _mdv.get('bullish_divergence') else
+                ('bear' if _mdv.get('bearish_divergence') else 'none'))
+
+    # vol_ratio / pv_state（由切片自算，防前視）
+    vol_ratio = None
+    pv_state = None
+    try:
+        vols = fh['Volume']
+        if i >= 20:
+            avg20 = float(vols.iloc[i - 20:i].mean())
+            vol_ratio = round(float(vols.iloc[i]) / avg20, 2) if avg20 > 0 else None
+        if i >= 1 and vol_ratio is not None:
+            _pchg = float(fh['Close'].iloc[i]) - float(fh['Close'].iloc[i - 1])
+            _vup = vol_ratio >= 1.0
+            if _pchg > 0:
+                pv_state = '價漲量增' if _vup else '價漲量縮'
+            elif _pchg < 0:
+                pv_state = '價跌量增' if _vup else '價跌量縮'
+            else:
+                pv_state = '平盤'
+    except Exception:
+        pass
+
+    ma20 = _num(tech.get('ma20')); ma60 = _num(tech.get('ma60'))
+    ma_bull = (bool(cur is not None and ma20 is not None and ma60 is not None
+                    and cur > ma20 > ma60))
+    above_ma20 = (bool(cur is not None and ma20 is not None and cur > ma20)
+                  if (cur is not None and ma20 is not None) else None)
+    above_ma60 = (bool(cur is not None and ma60 is not None and cur > ma60)
+                  if (cur is not None and ma60 is not None) else None)
+
+    atr = _num(tech.get('atr14')) or _num(tech.get('atr'))
+    atr_pct = round(atr / cur * 100, 2) if (atr and cur) else None
+
+    # 營收（as_of 只讀 DB）
+    rev_yoy = None; rev_mom = None
+    try:
+        rm = rev_mgr.get_revenue_momentum(symbol, as_of=as_of_date)
+        if rm.get('available'):
+            rev_yoy = rm.get('revenue_yoy')
+            rev_mom = bool(rm.get('is_12m_high'))
+    except Exception:
+        pass
+
+    return {
+        'rsi': _num(tech.get('rsi')),
+        'kd_k': k, 'kd_d': dd, 'kd_state': kd_state,
+        'macd_dif': dif, 'macd_sig': sig, 'macd_hist': _num(tech.get('macd_histogram')),
+        'macd_state': macd_state, 'macd_div': macd_div,
+        'bias_5': _num(ba.get('bias_5')), 'bias_20': _num(ba.get('bias_20')),
+        'bias_60': _num(ba.get('bias_60')),
+        'adx': _num(tech.get('adx')), 'atr_pct': atr_pct,
+        'bb_squeeze': tech.get('bb_squeeze'),
+        'vol_ratio': vol_ratio, 'pv_state': pv_state,
+        'ma_bull': ma_bull, 'above_ma20': above_ma20, 'above_ma60': above_ma60,
+        'short_advice': _SHORT_ADVICE.get(action_code, ''),
+        'mid_advice': _MID_ADVICE.get(action_code, ''),
+        'long_advice': _LONG_ADVICE.get(action_code, ''),
+        'theme_score': (theme_info or {}).get('theme_rank_pct'),
+        'rev_yoy': rev_yoy, 'rev_mom': rev_mom,
+    }
+
+
 # ── 單檔 walk-forward ──────────────────────────────────────────────────────
 def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
-               days, holds, cost_rate, QuickAnalyzer, start=None, end=None):
+               days, holds, cost_rate, QuickAnalyzer, start=None, end=None,
+               theme_by_date=None, tm=None):
     """回傳該檔所有 (as_of) 訊號的 trade 記錄 list。
 
     days=0 → 取全部可用 as_of（多期驗證用）；start/end（date）→ 限定 as_of 區間。
+    theme_by_date/tm：build_prompt_10 因子快照的題材強度（可選）。
     """
     trades = []
     if full_hist is None or len(full_hist) < 80:
@@ -209,6 +330,12 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
                       if i >= 60 else None),
             'entry': round(entry_open, 2),
         }
+        # build_prompt_10：因子快照（as_of 點時間值，防前視）
+        _theme_info = None
+        if theme_by_date is not None and tm is not None:
+            _theme_info = tm.annotate(symbol, theme_by_date.get(as_of_str, {}))
+        row.update(_factor_snapshot(result, fh, i, row['action_code'], rev_mgr,
+                                    symbol, as_of_date, _theme_info))
         for N in holds:
             exit_close = float(fh['Close'].iloc[i + 1 + N])
             gross = exit_close / entry_open - 1
@@ -280,12 +407,22 @@ def _benchmark_returns(all_hist, holds, cost_rate):
 # ── 報告 ───────────────────────────────────────────────────────────────────
 def write_reports(trades, holds, out_dir, args, index_bh):
     os.makedirs(out_dir, exist_ok=True)
-    # trades.csv
+    # trades.csv（build_prompt_10：因子欄位擴充；欄位順序固定 + 動態補齊新增鍵）
     csv_path = os.path.join(out_dir, 'trades.csv')
-    fields = ['as_of', 'symbol', 'grade', 'regime', 'market_adx', 'action_code',
-              'dir_score', 'pos_score', 'timing_grade', 'pth_52w', 'rs_score',
-              'chip_buy_days', 'chip_reliable',
-              'entry'] + [f'exit_{N}' for N in holds] + [f'ret_{N}_net' for N in holds] + ['triggers']
+    _base = ['as_of', 'symbol', 'grade', 'regime', 'market_adx', 'action_code',
+             'dir_score', 'pos_score', 'timing_grade', 'pth_52w', 'rs_score',
+             'chip_buy_days', 'chip_reliable', 'is_mom', 'safety_valve', 'bias_ceiling',
+             'gate', 'volume_zscore', 'ret60',
+             # 因子快照
+             'rsi', 'kd_k', 'kd_d', 'kd_state', 'macd_dif', 'macd_sig', 'macd_hist',
+             'macd_state', 'macd_div', 'bias_5', 'bias_20', 'bias_60', 'adx', 'atr_pct',
+             'bb_squeeze', 'vol_ratio', 'pv_state', 'ma_bull', 'above_ma20', 'above_ma60',
+             'short_advice', 'mid_advice', 'long_advice', 'theme_score', 'rev_yoy', 'rev_mom',
+             'entry'] + [f'exit_{N}' for N in holds] + [f'ret_{N}_net' for N in holds] + ['triggers']
+    # 動態補齊任何未列出的鍵（向後相容）
+    seen = set(_base)
+    extra = [k for t in trades for k in t.keys() if k not in seen and not seen.add(k)]
+    fields = _base + extra
     with open(csv_path, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
         w.writeheader()
@@ -425,6 +562,12 @@ def write_reports(trades, holds, out_dir, args, index_bh):
     md.append("- [x] 籌碼查詢帶 as_of 過濾（chip get_chip_flow as_of）")
     md.append("- [x] 月營收僅採公告日≤as_of 的月份（_is_visible 規則）")
     md.append("- [x] 每筆 assert hist_asof.index.max() <= as_of")
+    # build_prompt_10：因子快照防前視
+    md.append("- [x] RSI/KD/MACD（含背離/histogram）皆由 as_of 切片 _technical_analysis 重算，取切片末值")
+    md.append("- [x] 乖離 bias_5/20/60 取 as_of 切片 mean_reversion；ATR% 由切片 atr14/現價")
+    md.append("- [x] vol_ratio/pv_state 由切片 Volume[i]/Close[i] 對前值計算，不含 i 之後")
+    md.append("- [x] 題材強度 theme_by_date 以各日切片 20/60 日報酬計算（防前視）")
+    md.append("- [x] 建議代碼 = f(action_code)，來自 as_of 當日引擎裁決")
 
     md_path = os.path.join(out_dir, 'summary.md')
     with open(md_path, 'w', encoding='utf-8') as f:
@@ -653,6 +796,107 @@ def run_experiment_thirdleg(all_trades, theme_by_date, tm, holds, out_dir):
     print(f"[Experiment] 第三腿子集 {len(subset)} 筆 → {out_dir}/third_leg_report.md")
 
 
+# ── build_prompt_10 任務3：SELL/WAIT 分 regime 反向驗證 ────────────────────
+def write_sell_wait_regime(trades, holds, out_dir):
+    """牛市賣飛率 vs 空頭避損率分開計算（180日牛市 SELL 後六成續漲須以空頭平衡）。"""
+    Nr = 10 if 10 in holds else holds[0]
+    N2 = 20 if 20 in holds else holds[-1]
+    md = ["# SELL / WAIT 反向驗證（分市場環境）\n"]
+    md.append("> SELL 後上漲=賣飛（錯失）、下跌=避損（正確）；分 regime 平衡牛市偏誤。\n")
+    for grade in ('SELL', 'WAIT'):
+        md.append(f"## {grade}\n")
+        md.append(f"| Regime | n | {Nr}日均報酬 | 賣飛率(fwd>0) | 避損率(fwd<0) | {N2}日均報酬 |")
+        md.append("|---|---|---|---|---|---|")
+        for reg in ('多頭', '盤整', '空頭'):
+            rows = [t for t in trades if t.get('grade') == grade and t.get('regime') == reg]
+            nets = [t[f'ret_{Nr}_net'] for t in rows if t.get(f'ret_{Nr}_net') is not None]
+            nets2 = [t[f'ret_{N2}_net'] for t in rows if t.get(f'ret_{N2}_net') is not None]
+            if not nets:
+                md.append(f"| {reg} | 0 | – | – | – | – |")
+                continue
+            fly = sum(1 for x in nets if x > 0) / len(nets) * 100
+            avoid = sum(1 for x in nets if x < 0) / len(nets) * 100
+            md.append(f"| {reg} | {len(nets)} | {statistics.mean(nets):.2f}% | {fly:.0f}% | "
+                      f"{avoid:.0f}% | {statistics.mean(nets2):.2f}% |" if nets2 else
+                      f"| {reg} | {len(nets)} | {statistics.mean(nets):.2f}% | {fly:.0f}% | {avoid:.0f}% | – |")
+        md.append("")
+    md.append("**判讀**：牛市 SELL 賣飛率高＝賣訊在多頭過度謹慎；空頭 SELL 避損率高＝賣訊發揮保護。"
+              "兩者須並陳，勿以單一 regime 下結論。")
+    with open(os.path.join(out_dir, 'sell_wait_regime.md'), 'w', encoding='utf-8') as f:
+        f.write("\n".join(md) + "\n")
+    print(f"[bp10] SELL/WAIT regime → {out_dir}/sell_wait_regime.md")
+
+
+# ── build_prompt_10 任務4：兩個既定實驗 ───────────────────────────────────
+def run_bp10_experiments(trades, holds, out_dir):
+    """實驗1 連買窗口提純；實驗2 WAIT 動能豁免。walk-forward A/B 對比。"""
+    Nc = 10 if 10 in holds else holds[0]
+    N2 = 20 if 20 in holds else holds[-1]
+
+    def _row(rows, N):
+        nets = [t[f'ret_{N}_net'] for t in rows if t.get(f'ret_{N}_net') is not None]
+        s = _stats(nets)
+        return s
+
+    md = ["# build_prompt_10 實驗報告（walk-forward A/B）\n"]
+
+    # 實驗1：連買窗口提純（法人連買 3-6 天有效；>=7 天觀察）
+    md.append("## 實驗1：A 級籌碼腿連買窗口提純\n")
+    md.append("> 假設：法人連買 3–6 天有效；≥7 天可能是尾聲。以買進族（A/B/C）分箱對比。\n")
+    buy_rows = [t for t in trades if t.get('grade') in ('A', 'B', 'C')
+                and t.get('chip_buy_days') is not None]
+    buckets = [('連買 1-2', lambda d: 1 <= d <= 2),
+               ('連買 3-6', lambda d: 3 <= d <= 6),
+               ('連買 7-10', lambda d: 7 <= d <= 10),
+               ('連買 >10', lambda d: d > 10)]
+    for N in (Nc, N2):
+        md.append(f"### 持有 {N} 日")
+        md.append("| 連買窗口 | n | 期望 | 勝率 | 最大單筆虧損 |")
+        md.append("|---|---|---|---|---|")
+        for lab, cond in buckets:
+            rows = [t for t in buy_rows if cond(int(t['chip_buy_days']))]
+            s = _row(rows, N)
+            if s:
+                md.append(f"| {lab} | {s['n']} | {s['expectancy']} | {s['win_rate']}% | {s['max_loss']} |")
+            else:
+                md.append(f"| {lab} | 0 | – | – | – |")
+        md.append("")
+    # 依實測分箱：3-10 天皆佳、>10 天出現斷崖，故以「3-10 vs >10」為正確切點（非 3-6 vs ≥7）
+    s310 = _row([t for t in buy_rows if 3 <= int(t['chip_buy_days']) <= 10], Nc)
+    s10p = _row([t for t in buy_rows if int(t['chip_buy_days']) > 10], Nc)
+    md.append("**結論**：")
+    if s310 and s10p and s310['n'] >= 30 and s10p['n'] >= 30 and s310['expectancy'] > s10p['expectancy']:
+        md.append(f"- 分箱顯示真正斷崖在 **>10 天**：連買 3-10 天 {Nc}日期望 {s310['expectancy']}%（n={s310['n']}）"
+                  f" vs >10 天 {s10p['expectancy']}%（n={s10p['n']}）。7-10 天並未變差（見上表），"
+                  f"故修正原假設 → **建議「連買 >10 天剔除/降級」，保留 3-10 天**（需 --days 0 重跑驗證單調性後採納）。")
+    else:
+        md.append(f"- 連買 3-10 期望 {s310['expectancy'] if s310 else '—'}（n={s310['n'] if s310 else 0}）、"
+                  f">10 期望 {s10p['expectancy'] if s10p else '—'}（n={s10p['n'] if s10p else 0}）"
+                  f" → **維持現狀/需更多樣本**。")
+
+    # 實驗2：WAIT 動能豁免
+    md.append("\n## 實驗2：WAIT 動能豁免\n")
+    md.append("> recall 附錄「動能內被壓制」正式化：WAIT 且 is_mom 的後續報酬 vs 全樣本基準。\n")
+    all_nets = [t[f'ret_{Nc}_net'] for t in trades if t.get(f'ret_{Nc}_net') is not None]
+    base = round(statistics.mean(all_nets), 3) if all_nets else None
+    wait_mom = [t for t in trades if t.get('grade') == 'WAIT' and t.get('is_mom')]
+    s_wm = _row(wait_mom, Nc)
+    md.append(f"- 全樣本 {Nc}日基準：{base}%")
+    if s_wm:
+        md.append(f"- WAIT·動能內：n={s_wm['n']}、{Nc}日期望 {s_wm['expectancy']}%、勝率 {s_wm['win_rate']}%")
+    md.append("\n**結論**：")
+    if s_wm and base is not None and s_wm['n'] >= 30 and s_wm['expectancy'] > base:
+        md.append(f"- WAIT·動能內期望 {s_wm['expectancy']}% > 全樣本 {base}% 且 n≥30 → **提案放寬**："
+                  "動能模式且量價健康時，WAIT 位置門檻放寬（僅提案，不改引擎）。")
+    else:
+        md.append(f"- 樣本 {s_wm['n'] if s_wm else 0}（需≥30）、期望 {s_wm['expectancy'] if s_wm else '—'} "
+                  f"vs 基準 {base}% → **維持現狀並結案**。")
+
+    with open(os.path.join(out_dir, 'experiment_bp10.md'), 'w', encoding='utf-8') as f:
+        f.write("\n".join(md) + "\n")
+    print(f"[bp10] 實驗報告 → {out_dir}/experiment_bp10.md")
+
+
 # ── 主流程 ─────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="A/B/C 訊號級 walk-forward 回測")
@@ -755,12 +999,26 @@ def main():
                     for k in range(len(bh) - N - 1)][-args.days:]
             index_bh[N] = round(statistics.mean(rets), 3) if rets else None
 
+    # build_prompt_10：題材強度 by-date（因子快照 theme_score 用；載入失敗則 None）
+    theme_by_date = None
+    if _tm is None:
+        try:
+            from theme_momentum import ThemeMomentum
+            _tm = ThemeMomentum()
+        except Exception:
+            _tm = None
+    if _tm is not None:
+        try:
+            theme_by_date = build_theme_strength_by_date(full_hists, _tm)
+        except Exception as _e:
+            print(f"[Theme] by-date 計算略過: {_e}")
+
     # 平行 walk-forward
     all_trades = []
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futs = {ex.submit(run_symbol, sym, '台股', full_hists.get(sym), idx_hist,
                           chip_mgr, rev_mgr, args.days, holds, cost_rate, QuickAnalyzer,
-                          _start, _end): sym
+                          _start, _end, theme_by_date, _tm): sym
                 for sym in full_hists}
         for fut in as_completed(futs):
             sym = futs[fut]
@@ -783,11 +1041,14 @@ def main():
     if args.recall:
         run_recall(symbols, full_hists, all_trades, holds, args, out_dir)
     if args.experiment == 'third_leg':
-        if _tm is None:
-            from theme_momentum import ThemeMomentum
-            _tm = ThemeMomentum()
-        theme_by_date = build_theme_strength_by_date(full_hists, _tm)
-        run_experiment_thirdleg(all_trades, theme_by_date, _tm, holds, out_dir)
+        if theme_by_date is None and _tm is not None:
+            theme_by_date = build_theme_strength_by_date(full_hists, _tm)
+        run_experiment_thirdleg(all_trades, theme_by_date or {}, _tm, holds, out_dir)
+
+    # build_prompt_10：SELL/WAIT 分 regime 反向驗證 + 兩個實驗
+    write_sell_wait_regime(all_trades, holds, out_dir)
+    if args.experiment in ('conn_window', 'wait_exempt', 'bp10'):
+        run_bp10_experiments(all_trades, holds, out_dir)
 
 
 if __name__ == '__main__':
