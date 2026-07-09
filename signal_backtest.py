@@ -278,6 +278,15 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
         try:
             result = build_asof_result(symbol, hist_asof, idx_asof, chip_mgr, rev_mgr,
                                        as_of_str, as_of_date, QuickAnalyzer)
+            # build_prompt_11 任務3：題材強度須在決策前掛到 result，否則 C→B 升級旗標無法觸發。
+            # 旗標關閉時引擎僅在 gated 區塊讀 theme_momentum → 對 baseline 無副作用。
+            _theme_info = None
+            if tm is not None and theme_by_date is not None:
+                try:
+                    _theme_info = tm.annotate(symbol, theme_by_date.get(as_of_str, {}))
+                    result['theme_momentum'] = _theme_info
+                except Exception:
+                    _theme_info = None
             decision = ThreeLayerEngine.analyze(result)
         except AssertionError:
             raise
@@ -331,9 +340,7 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
             'entry': round(entry_open, 2),
         }
         # build_prompt_10：因子快照（as_of 點時間值，防前視）
-        _theme_info = None
-        if theme_by_date is not None and tm is not None:
-            _theme_info = tm.annotate(symbol, theme_by_date.get(as_of_str, {}))
+        # 復用決策前已計算的 _theme_info，避免重複 annotate。
         row.update(_factor_snapshot(result, fh, i, row['action_code'], rev_mgr,
                                     symbol, as_of_date, _theme_info))
         for N in holds:

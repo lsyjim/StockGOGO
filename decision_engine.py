@@ -961,6 +961,15 @@ class ThreeLayerEngine:
         elif grade == 'X':
             triggers.append('無明確進場訊號')
 
+        # ── build_prompt_11 任務3：題材強度進 grade（flag-gated, bounded）──
+        from config import QuantConfig as _QC11t
+        if getattr(_QC11t, 'THEME_GRADE_ENABLED', False) and getattr(_QC11t, 'THEME_WEIGHT', 0) >= 1:
+            _tm11 = result.get('theme_momentum', {}) or {}
+            if grade == 'C' and (_tm11.get('is_theme_leader') or _tm11.get('is_top_theme')):
+                grade = 'B'
+                _tt11 = '題材領導股' if _tm11.get('is_theme_leader') else '主流題材'
+                triggers.append(f'⬆️ {_tt11}（強度{_tm11.get("theme_rank_pct")}）C→B 升級')
+
         # ── 超買安全閥（v3.1 M4）───────────────────────────────────
         # 設計意圖：Layer 2 靠籌碼去化（chip_relax）撐過否決門檻後，
         # Layer 3 若仍輸出 A 級，代表在極度過熱狀態追高。

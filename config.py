@@ -54,6 +54,10 @@ class QuantConfig:
     SAFETY_VALVE_RSI = 85       # 非動能 / 一般情況
     SAFETY_VALVE_RSI_MOM = 92   # _is_momentum 且量價健康時放寬
 
+    # build_prompt_11 任務3：題材強度進 grade（新輸入，預設關閉）— 見計畫 Spec Deviations
+    THEME_GRADE_ENABLED = False
+    THEME_WEIGHT = 1            # C→B 升級所需的題材強度檔位（0=舊行為/不進grade）
+
     # 大盤代碼
     MARKET_INDEX_TW = "^TWII"  # 台股加權指數
     MARKET_INDEX_US = "^GSPC"  # S&P 500
