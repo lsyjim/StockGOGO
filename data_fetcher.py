@@ -1098,8 +1098,20 @@ class DataSourceManager:
                 return df[df.index >= cutoff].copy()
             out = df
             idx_naive = out.index.tz_localize(None) if out.index.tz is not None else out.index
-            if isinstance(start_date, _dt.datetime):
-                out = out[idx_naive >= start_date]
+            # 字串 start_date 一律 coerce 成 datetime 再比較；否則字串請求會整份回傳、
+            # 靜默截斷（批次快取只有 period 覆蓋，例如 prefetch 的 2y）。
+            sd = start_date
+            if isinstance(sd, str):
+                try:
+                    sd = _dt.datetime.fromisoformat(sd)
+                except ValueError:
+                    sd = pd.to_datetime(sd).to_pydatetime()
+            if isinstance(sd, _dt.datetime):
+                # 快取最早日期晚於要求 start → 這只是被截斷的超集，回 None 逼真正的
+                # 帶日期抓取，而非拿 2y 快取冒充回溯到更早的請求。
+                if len(idx_naive) and pd.Timestamp(idx_naive.min()) > pd.Timestamp(sd):
+                    return None
+                out = out[idx_naive >= sd]
                 idx_naive = out.index.tz_localize(None) if out.index.tz is not None else out.index
             if isinstance(end_date, _dt.datetime):
                 out = out[idx_naive <= end_date]
