@@ -313,6 +313,42 @@ class ChipDataManager:
         print(f"[Backfill] {symbol} {reason} → 官方歷史備援補 {len(miss)} 個缺洞")
         return self._backfill_official_range([symbol], {symbol: miss})
 
+    def deep_backfill(self, symbol, start_date: str = None):
+        """build_prompt_11：單檔 FinMind 日期區間深度回補（1 請求 / 檔）。
+        缺洞語意不變：FinMind 限流/無資料 → 官方 per-date 備援補完整缺洞，
+        仍缺的日子留白（data_reliable 由讀取端判定，嚴禁 0 填充）。"""
+        from config import QuantConfig as _QC
+        symbol = str(symbol)
+        start = start_date or getattr(_QC, 'CHIP_DEEP_START_DATE', '2020-01-01')
+        end = datetime.date.today().isoformat()
+        # 單一 FinMind 請求涵蓋整段日期區間
+        chip = self._fetch_finmind_chip(symbol, start, end)
+        # 交易日曆（權威來源）；DB 無日曆表時回空 list，不讓缺洞邏輯崩潰
+        try:
+            all_days = self.get_trading_days_desc(limit=100000)
+        except Exception:
+            all_days = []
+        written = 0
+        if chip and chip != RATE_LIMITED:
+            # 只接受交易日曆上的日期（FinMind 偶有假日殘留列，日曆為權威來源）
+            valid = set(all_days)
+            for d, v in chip.items():
+                if valid and d not in valid:
+                    continue
+                self._upsert_chip(symbol, d, v["f_net"], v["t_net"], v["d_net"], "finmind",
+                                  v["f_buy"], v["f_sell"], v["t_buy"], v["t_sell"],
+                                  v["d_buy"], v["d_sell"])
+                written += 1
+        # 缺洞：交易日曆 start~end 之間、仍無資料的日子 → 官方歷史備援補完整缺洞
+        cal = [d for d in all_days if d >= start]
+        if cal:
+            have = self._existing_dates(symbol, start)
+            miss = set(cal) - have
+            if miss:
+                print(f"[DeepBackfill] {symbol} 官方歷史備援補 {len(miss)} 個缺洞")
+                self._backfill_official_range([symbol], {symbol: miss})
+        return written
+
     def daily_update(self, symbols: list, holes: int = 5):
         """
         對 watchlist 逐檔補「最近 holes 個交易日」的洞（含節流 0.2s）。

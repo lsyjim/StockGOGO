@@ -950,13 +950,13 @@ def main():
     rev_mgr = get_revenue_manager()
     # 全歷史模式一律強制加寬日曆（既有 DB 可能只存了短窗口）；一般模式空才同步。
     if args.days <= 0:
-        chip_mgr.sync_calendar(lookback_days=1200)
+        chip_mgr.sync_calendar(lookback_days=2600)
     elif not chip_mgr.get_latest_trading_day():
         chip_mgr.sync_calendar(lookback_days=max(500, args.days * 2))
 
     # 大盤指數（一次抓，全體共用）
     try:
-        idx_hist = QuickAnalyzer._get_index_history_cached(QuantConfig.MARKET_INDEX_TW, period="3y")
+        idx_hist = QuickAnalyzer._get_index_history_cached(QuantConfig.MARKET_INDEX_TW, period="max")
     except Exception:
         idx_hist = None
 
@@ -968,14 +968,17 @@ def main():
     full_hists = {}
     for sym in symbols:
         try:
-            h = DataSourceManager.get_history(sym, '台股', period="3y")
+            h = DataSourceManager.get_history(sym, '台股', start_date=QuantConfig.HISTORY_START_DATE)
             if h is not None and not h.empty:
                 full_hists[sym] = h.dropna()
         except Exception as e:
             print(f"[Backtest] {sym} 抓取失敗: {e}")
         # 籌碼回測需要足夠歷史：backfill 一次（含 as_of 前的日子）
         try:
-            chip_mgr.backfill(sym, trading_days=_chip_days)
+            if args.days <= 0:
+                chip_mgr.deep_backfill(sym, start_date=QuantConfig.CHIP_DEEP_START_DATE)
+            else:
+                chip_mgr.backfill(sym, trading_days=_chip_days)
         except Exception:
             pass
         try:
@@ -988,7 +991,7 @@ def main():
     bh = full_hists.get('0050')
     if bh is None:
         try:
-            bh = DataSourceManager.get_history('0050', '台股', period="3y")
+            bh = DataSourceManager.get_history('0050', '台股', start_date=QuantConfig.HISTORY_START_DATE)
             bh = bh.dropna() if bh is not None else None
         except Exception:
             bh = None

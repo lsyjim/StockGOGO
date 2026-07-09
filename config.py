@@ -40,7 +40,11 @@ class QuantConfig:
     FINMIND_HOURLY_BUDGET = 550     # 每小時 FinMind 請求上限（<600 免費額度，留安全邊際）
     CHIP_BULK_PREFER_GOV = True     # 單次補洞 symbol 數 ≥ 此門檻 → 官方 per-date 為主源
     CHIP_BULK_GOV_THRESHOLD = 10    # 「大量」門檻
-    
+
+    # build_prompt_11：歷史資料窗口擴充至 2020（COVID/2022/2023-10/2025-04 四次空頭）
+    HISTORY_START_DATE = "2020-01-01"   # 價格與回測起點
+    CHIP_DEEP_START_DATE = "2020-01-01" # 籌碼深度回補起點（FinMind 法人可回溯至 2012）
+
     # 大盤代碼
     MARKET_INDEX_TW = "^TWII"  # 台股加權指數
     MARKET_INDEX_US = "^GSPC"  # S&P 500
