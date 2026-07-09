@@ -226,6 +226,38 @@ class ThreeLayerEngine:
             else:
                 trail.append({'stage': '籌碼過濾', 'from': None, 'to': None, 'reason': '—'})
 
+            # ── build_prompt_11 任務1：盤整 M-Lite 路徑（flag-gated）──────
+            from config import QuantConfig as _QC11
+            if getattr(_QC11, 'MLITE_RANGE_ENABLED', False):
+                _g_before_ml = timing['grade']
+                _tech_ml = result.get('technical', {}) or {}
+                _cur_ml = result.get('current_price', 0) or 0
+                _ma20_ml = _tech_ml.get('ma20', _cur_ml) or _cur_ml
+                _ma60_ml = _tech_ml.get('ma60', _cur_ml) or _cur_ml
+                _ma_bull = (_cur_ml > _ma20_ml) and (_ma20_ml > _ma60_ml)
+                _rs_ml = (result.get('relative_strength', {}) or {}).get('rs_score', 50) or 50
+                _chip_ml = _get_chip(result)
+                _buy_days_ml = (_chip_ml.get('consecutive_buy_days', 0) or 0) if isinstance(_chip_ml, dict) else 0
+                _chip_reliable_ml = _chip_ml.get('data_reliable') is not False if isinstance(_chip_ml, dict) else False
+                # 位階鎖：僅盤整（空頭/多頭因條件不符自然排除；空頭為數據紅線）
+                if (market_available and market_trend == '盤整'
+                        and _ma_bull and _rs_ml >= _QC11.MLITE_RS_MIN
+                        and _buy_days_ml >= _QC11.MLITE_CHIP_MIN and _chip_reliable_ml
+                        and timing['grade'] in ('X', 'C')):
+                    timing['grade'] = 'B'
+                    _ml_reason = (f'M-Lite盤整：盤整+均線多頭+RS{_rs_ml:.0f}'
+                                  f'+法人連買{_buy_days_ml}天 → B')
+                    timing['label'] = '追蹤（M-Lite盤整）'
+                    timing['triggers'].append('🟡 ' + _ml_reason)
+                    trail.append({'stage': 'M-Lite盤整', 'from': _g_before_ml,
+                                  'to': 'B', 'reason': _ml_reason})
+                else:
+                    # append-only 慣例：未觸發仍寫入占位列（to=None），
+                    # 供 A/B 歸因工具統計「評估次數 vs 觸發次數」。
+                    # 空頭紅線由 market_trend=='盤整' 條件結構保證（永不進 if 分支）。
+                    trail.append({'stage': 'M-Lite盤整', 'from': None,
+                                  'to': None, 'reason': '—'})
+
             # 賣訊檢查（優先於買訊）
             sell = ThreeLayerEngine.check_sell_signal(result)
 

@@ -45,6 +45,11 @@ class QuantConfig:
     HISTORY_START_DATE = "2020-01-01"   # 價格與回測起點
     CHIP_DEEP_START_DATE = "2020-01-01" # 籌碼深度回補起點（FinMind 法人可回溯至 2012）
 
+    # build_prompt_11 任務1：盤整 M-Lite 路徑（預設關閉）
+    MLITE_RANGE_ENABLED = False   # 僅盤整授予 B 級；空頭嚴禁、多頭不啟用
+    MLITE_RS_MIN = 80             # rs_score 門檻
+    MLITE_CHIP_MIN = 3            # chip_buy_days 門檻
+
     # 大盤代碼
     MARKET_INDEX_TW = "^TWII"  # 台股加權指數
     MARKET_INDEX_US = "^GSPC"  # S&P 500
