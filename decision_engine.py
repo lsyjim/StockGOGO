@@ -978,7 +978,13 @@ class ThreeLayerEngine:
                 _bias_ov  = ((current - _ma20_ov) / _ma20_ov * 100) if _ma20_ov > 0 else 0
             _bias_z_ov = _bias_ov / (2.0 * _sigma_ov)
 
-            if _rsi_ov > 85 and _bias_z_ov > 1.5:
+            from config import QuantConfig as _QC11v
+            _vr = tech.get('vol_ratio', None); _vz = tech.get('volume_zscore', None)
+            _vp_healthy = ((_vr is not None and _vr > 1.0) or (_vz is not None and _vz > 0))
+            _rsi_thresh = (getattr(_QC11v, 'SAFETY_VALVE_RSI_MOM', 92)
+                           if (ThreeLayerEngine._is_momentum(result) and _vp_healthy)
+                           else getattr(_QC11v, 'SAFETY_VALVE_RSI', 85))
+            if _rsi_ov > _rsi_thresh and _bias_z_ov > 1.5:
                 # A2 改動2 + 修正2：強勢領漲股的超買處理分兩段（與 L2 動能分支
                 # 對「極度延伸 bias_z>2.5」的態度對齊）：
                 #   1.5σ < bias_z ≤ 2.5σ：動能股只警示、不降級（維持 A2 寬鬆待遇）。

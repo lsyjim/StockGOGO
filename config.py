@@ -50,6 +50,10 @@ class QuantConfig:
     MLITE_RS_MIN = 80             # rs_score 門檻
     MLITE_CHIP_MIN = 3            # chip_buy_days 門檻
 
+    # build_prompt_11 任務2：RSI 安全閥動能豁免
+    SAFETY_VALVE_RSI = 85       # 非動能 / 一般情況
+    SAFETY_VALVE_RSI_MOM = 92   # _is_momentum 且量價健康時放寬
+
     # 大盤代碼
     MARKET_INDEX_TW = "^TWII"  # 台股加權指數
     MARKET_INDEX_US = "^GSPC"  # S&P 500
