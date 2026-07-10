@@ -957,7 +957,7 @@ def main():
     rev_mgr = get_revenue_manager()
     # 全歷史模式一律強制加寬日曆（既有 DB 可能只存了短窗口）；一般模式空才同步。
     if args.days <= 0:
-        chip_mgr.sync_calendar(lookback_days=2600)
+        chip_mgr.sync_calendar(lookback_days=2900)
     elif not chip_mgr.get_latest_trading_day():
         chip_mgr.sync_calendar(lookback_days=max(500, args.days * 2))
 

@@ -41,9 +41,11 @@ class QuantConfig:
     CHIP_BULK_PREFER_GOV = True     # 單次補洞 symbol 數 ≥ 此門檻 → 官方 per-date 為主源
     CHIP_BULK_GOV_THRESHOLD = 10    # 「大量」門檻
 
-    # build_prompt_11：歷史資料窗口擴充至 2020（COVID/2022/2023-10/2025-04 四次空頭）
-    HISTORY_START_DATE = "2020-01-01"   # 價格與回測起點
-    CHIP_DEEP_START_DATE = "2020-01-01" # 籌碼深度回補起點（FinMind 法人可回溯至 2012）
+    # build_prompt_11：歷史資料窗口擴充（COVID-2020-03/2022/2023-10/2025-04 四次空頭）
+    # 起點 2019-06：預留 ~68 交易日暖機，讓第一個 as_of 落在 2020-01 前，
+    # 捕捉 2020-02~03 COVID 崩盤的空頭訊號與 V 型反彈（否則暖機期會吃掉 COVID）。
+    HISTORY_START_DATE = "2019-06-01"   # 價格與回測起點
+    CHIP_DEEP_START_DATE = "2019-06-01" # 籌碼深度回補起點（FinMind 法人可回溯至 2012）
 
     # build_prompt_11 任務1：盤整 M-Lite 路徑（預設關閉）
     MLITE_RANGE_ENABLED = False   # 僅盤整授予 B 級；空頭嚴禁、多頭不啟用
