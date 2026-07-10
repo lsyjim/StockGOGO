@@ -2,6 +2,26 @@
 config.py - Configuration Module (v4.4 升級版)
 """
 
+import os as _os
+
+
+# build_prompt_11：A/B 驗證用環境變數覆寫（未設環境變數時一律用預設值，
+# 生產行為不變）。讓 run_ab_bp11 orchestrator 能以單一變數逐輪切換而不改原始碼。
+def _env_bool(name, default):
+    v = _os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ('', '0', 'false', 'no', 'off')
+
+
+def _env_int(name, default):
+    v = _os.environ.get(name)
+    try:
+        return int(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
 # ============================================================================
 # v4.0 新增：全域配置參數
 # ============================================================================
@@ -48,16 +68,16 @@ class QuantConfig:
     CHIP_DEEP_START_DATE = "2019-06-01" # 籌碼深度回補起點（FinMind 法人可回溯至 2012）
 
     # build_prompt_11 任務1：盤整 M-Lite 路徑（預設關閉）
-    MLITE_RANGE_ENABLED = False   # 僅盤整授予 B 級；空頭嚴禁、多頭不啟用
+    MLITE_RANGE_ENABLED = _env_bool('BP11_MLITE', False)   # 僅盤整授予 B 級；空頭嚴禁、多頭不啟用（A/B 用 BP11_MLITE 覆寫）
     MLITE_RS_MIN = 80             # rs_score 門檻
     MLITE_CHIP_MIN = 3            # chip_buy_days 門檻
 
     # build_prompt_11 任務2：RSI 安全閥動能豁免
     SAFETY_VALVE_RSI = 85       # 非動能 / 一般情況
-    SAFETY_VALVE_RSI_MOM = 92   # _is_momentum 且量價健康時放寬
+    SAFETY_VALVE_RSI_MOM = _env_int('BP11_RSI_MOM', 92)   # _is_momentum 且量價健康時放寬（A/B baseline 設 85=無豁免）
 
     # build_prompt_11 任務3：題材強度進 grade（新輸入，預設關閉）— 見計畫 Spec Deviations
-    THEME_GRADE_ENABLED = False
+    THEME_GRADE_ENABLED = _env_bool('BP11_THEME', False)
     THEME_WEIGHT = 1            # C→B 升級所需的題材強度檔位（0=舊行為/不進grade）
 
     # 大盤代碼
