@@ -226,6 +226,38 @@ class ThreeLayerEngine:
             else:
                 trail.append({'stage': '籌碼過濾', 'from': None, 'to': None, 'reason': '—'})
 
+            # ── build_prompt_11 任務1：盤整 M-Lite 路徑（flag-gated）──────
+            from config import QuantConfig as _QC11
+            if getattr(_QC11, 'MLITE_RANGE_ENABLED', False):
+                _g_before_ml = timing['grade']
+                _tech_ml = result.get('technical', {}) or {}
+                _cur_ml = result.get('current_price', 0) or 0
+                _ma20_ml = _tech_ml.get('ma20', _cur_ml) or _cur_ml
+                _ma60_ml = _tech_ml.get('ma60', _cur_ml) or _cur_ml
+                _ma_bull = (_cur_ml > _ma20_ml) and (_ma20_ml > _ma60_ml)
+                _rs_ml = (result.get('relative_strength', {}) or {}).get('rs_score', 50) or 50
+                _chip_ml = _get_chip(result)
+                _buy_days_ml = (_chip_ml.get('consecutive_buy_days', 0) or 0) if isinstance(_chip_ml, dict) else 0
+                _chip_reliable_ml = _chip_ml.get('data_reliable') is not False if isinstance(_chip_ml, dict) else False
+                # 位階鎖：僅盤整（空頭/多頭因條件不符自然排除；空頭為數據紅線）
+                if (market_available and market_trend == '盤整'
+                        and _ma_bull and _rs_ml >= _QC11.MLITE_RS_MIN
+                        and _buy_days_ml >= _QC11.MLITE_CHIP_MIN and _chip_reliable_ml
+                        and timing['grade'] in ('X', 'C')):
+                    timing['grade'] = 'B'
+                    _ml_reason = (f'M-Lite盤整：盤整+均線多頭+RS{_rs_ml:.0f}'
+                                  f'+法人連買{_buy_days_ml}天 → B')
+                    timing['label'] = '追蹤（M-Lite盤整）'
+                    timing['triggers'].append('🟡 ' + _ml_reason)
+                    trail.append({'stage': 'M-Lite盤整', 'from': _g_before_ml,
+                                  'to': 'B', 'reason': _ml_reason})
+                else:
+                    # append-only 慣例：未觸發仍寫入占位列（to=None），
+                    # 供 A/B 歸因工具統計「評估次數 vs 觸發次數」。
+                    # 空頭紅線由 market_trend=='盤整' 條件結構保證（永不進 if 分支）。
+                    trail.append({'stage': 'M-Lite盤整', 'from': None,
+                                  'to': None, 'reason': '—'})
+
             # 賣訊檢查（優先於買訊）
             sell = ThreeLayerEngine.check_sell_signal(result)
 
@@ -929,6 +961,15 @@ class ThreeLayerEngine:
         elif grade == 'X':
             triggers.append('無明確進場訊號')
 
+        # ── build_prompt_11 任務3：題材強度進 grade（flag-gated, bounded）──
+        from config import QuantConfig as _QC11t
+        if getattr(_QC11t, 'THEME_GRADE_ENABLED', False) and getattr(_QC11t, 'THEME_WEIGHT', 0) >= 1:
+            _tm11 = result.get('theme_momentum', {}) or {}
+            if grade == 'C' and (_tm11.get('is_theme_leader') or _tm11.get('is_top_theme')):
+                grade = 'B'
+                _tt11 = '題材領導股' if _tm11.get('is_theme_leader') else '主流題材'
+                triggers.append(f'⬆️ {_tt11}（強度{_tm11.get("theme_rank_pct")}）C→B 升級')
+
         # ── 超買安全閥（v3.1 M4）───────────────────────────────────
         # 設計意圖：Layer 2 靠籌碼去化（chip_relax）撐過否決門檻後，
         # Layer 3 若仍輸出 A 級，代表在極度過熱狀態追高。
@@ -946,7 +987,13 @@ class ThreeLayerEngine:
                 _bias_ov  = ((current - _ma20_ov) / _ma20_ov * 100) if _ma20_ov > 0 else 0
             _bias_z_ov = _bias_ov / (2.0 * _sigma_ov)
 
-            if _rsi_ov > 85 and _bias_z_ov > 1.5:
+            from config import QuantConfig as _QC11v
+            _vr = tech.get('vol_ratio', None); _vz = tech.get('volume_zscore', None)
+            _vp_healthy = ((_vr is not None and _vr > 1.0) or (_vz is not None and _vz > 0))
+            _rsi_thresh = (getattr(_QC11v, 'SAFETY_VALVE_RSI_MOM', 92)
+                           if (ThreeLayerEngine._is_momentum(result) and _vp_healthy)
+                           else getattr(_QC11v, 'SAFETY_VALVE_RSI', 85))
+            if _rsi_ov > _rsi_thresh and _bias_z_ov > 1.5:
                 # A2 改動2 + 修正2：強勢領漲股的超買處理分兩段（與 L2 動能分支
                 # 對「極度延伸 bias_z>2.5」的態度對齊）：
                 #   1.5σ < bias_z ≤ 2.5σ：動能股只警示、不降級（維持 A2 寬鬆待遇）。

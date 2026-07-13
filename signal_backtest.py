@@ -278,6 +278,15 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
         try:
             result = build_asof_result(symbol, hist_asof, idx_asof, chip_mgr, rev_mgr,
                                        as_of_str, as_of_date, QuickAnalyzer)
+            # build_prompt_11 任務3：題材強度須在決策前掛到 result，否則 C→B 升級旗標無法觸發。
+            # 旗標關閉時引擎僅在 gated 區塊讀 theme_momentum → 對 baseline 無副作用。
+            _theme_info = None
+            if tm is not None and theme_by_date is not None:
+                try:
+                    _theme_info = tm.annotate(symbol, theme_by_date.get(as_of_str, {}))
+                    result['theme_momentum'] = _theme_info
+                except Exception:
+                    _theme_info = None
             decision = ThreeLayerEngine.analyze(result)
         except AssertionError:
             raise
@@ -331,9 +340,7 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
             'entry': round(entry_open, 2),
         }
         # build_prompt_10：因子快照（as_of 點時間值，防前視）
-        _theme_info = None
-        if theme_by_date is not None and tm is not None:
-            _theme_info = tm.annotate(symbol, theme_by_date.get(as_of_str, {}))
+        # 復用決策前已計算的 _theme_info，避免重複 annotate。
         row.update(_factor_snapshot(result, fh, i, row['action_code'], rev_mgr,
                                     symbol, as_of_date, _theme_info))
         for N in holds:
@@ -897,6 +904,38 @@ def run_bp10_experiments(trades, holds, out_dir):
     print(f"[bp10] 實驗報告 → {out_dir}/experiment_bp10.md")
 
 
+# ── 價格歷史快取（--reuse-data）─────────────────────────────────────────────
+def _hist_cache_path(start_date):
+    import hashlib
+    key = hashlib.md5(str(start_date).encode()).hexdigest()[:10]
+    return os.path.join('backtest_results', f'_histcache_{key}.pkl')
+
+def _save_hist_cache(full_hists, start_date):
+    import pickle
+    p = _hist_cache_path(start_date)
+    os.makedirs('backtest_results', exist_ok=True)
+    try:
+        with open(p, 'wb') as f:
+            pickle.dump(full_hists, f)
+        print(f"[ReuseData] 價格歷史快取已寫入 {p}（{len(full_hists)} 檔）")
+    except Exception as e:
+        print(f"[ReuseData] 快取寫入失敗（不影響本次）：{e}")
+
+def _load_hist_cache(start_date):
+    import pickle
+    p = _hist_cache_path(start_date)
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, 'rb') as f:
+            d = pickle.load(f)
+        print(f"[ReuseData] 載入價格歷史快取 {p}（{len(d)} 檔）")
+        return d
+    except Exception as e:
+        print(f"[ReuseData] 快取載入失敗，改走即時抓取：{e}")
+        return None
+
+
 # ── 主流程 ─────────────────────────────────────────────────────────────────
 def main():
     ap = argparse.ArgumentParser(description="A/B/C 訊號級 walk-forward 回測")
@@ -910,6 +949,8 @@ def main():
     ap.add_argument('--out', default='', help='輸出目錄')
     ap.add_argument('--recall', action='store_true', help='捕捉率模式（暴漲事件 + 閘門歸因）')
     ap.add_argument('--experiment', default='', help='實驗開關：third_leg')
+    ap.add_argument('--reuse-data', action='store_true',
+                    help='重用凍結的價格歷史快取 + 已暖機的籌碼DB，跳過重抓/回補（A/B 多輪用；保證各輪資料一致）')
     args = ap.parse_args()
 
     holds = [int(x) for x in args.hold.split(',') if x.strip()]
@@ -950,13 +991,13 @@ def main():
     rev_mgr = get_revenue_manager()
     # 全歷史模式一律強制加寬日曆（既有 DB 可能只存了短窗口）；一般模式空才同步。
     if args.days <= 0:
-        chip_mgr.sync_calendar(lookback_days=1200)
+        chip_mgr.sync_calendar(lookback_days=2900)
     elif not chip_mgr.get_latest_trading_day():
         chip_mgr.sync_calendar(lookback_days=max(500, args.days * 2))
 
     # 大盤指數（一次抓，全體共用）
     try:
-        idx_hist = QuickAnalyzer._get_index_history_cached(QuantConfig.MARKET_INDEX_TW, period="3y")
+        idx_hist = QuickAnalyzer._get_index_history_cached(QuantConfig.MARKET_INDEX_TW, period="max")
     except Exception:
         idx_hist = None
 
@@ -966,29 +1007,43 @@ def main():
     _rev_months = 40 if args.days <= 0 else 30
     print(f"[Backtest] {len(symbols)} 檔 × {'全歷史' if args.days<=0 else str(args.days)+'日'}，持有 {holds}，輸出 {out_dir}")
     full_hists = {}
-    for sym in symbols:
-        try:
-            h = DataSourceManager.get_history(sym, '台股', period="3y")
-            if h is not None and not h.empty:
-                full_hists[sym] = h.dropna()
-        except Exception as e:
-            print(f"[Backtest] {sym} 抓取失敗: {e}")
-        # 籌碼回測需要足夠歷史：backfill 一次（含 as_of 前的日子）
-        try:
-            chip_mgr.backfill(sym, trading_days=_chip_days)
-        except Exception:
-            pass
-        try:
-            rev_mgr.backfill(sym, months=_rev_months)
-        except Exception:
-            pass
+    _reused = False
+    if args.reuse_data:
+        _cached = _load_hist_cache(QuantConfig.HISTORY_START_DATE)
+        if _cached:
+            full_hists = _cached
+            _reused = True
+            print("[ReuseData] 跳過歷史抓取與籌碼/營收回補（重用暖機DB）")
+    if not _reused:
+        for sym in symbols:
+            try:
+                h = DataSourceManager.get_history(sym, '台股', start_date=QuantConfig.HISTORY_START_DATE)
+                if h is not None and not h.empty:
+                    full_hists[sym] = h.dropna()
+            except Exception as e:
+                print(f"[Backtest] {sym} 抓取失敗: {e}")
+            # 籌碼回測需要足夠歷史：backfill 一次（含 as_of 前的日子）
+            try:
+                if args.days <= 0:
+                    chip_mgr.deep_backfill(sym, start_date=QuantConfig.CHIP_DEEP_START_DATE)
+                else:
+                    chip_mgr.backfill(sym, trading_days=_chip_days)
+            except Exception:
+                pass
+            try:
+                rev_mgr.backfill(sym, months=_rev_months)
+            except Exception:
+                pass
+        # 全歷史模式落地快取，供後續 --reuse-data 重用（預設行為不變）
+        if args.days <= 0:
+            _save_hist_cache(full_hists, QuantConfig.HISTORY_START_DATE)
 
     # 0050 基準（同持有期毛報酬平均）
     index_bh = {}
     bh = full_hists.get('0050')
     if bh is None:
         try:
-            bh = DataSourceManager.get_history('0050', '台股', period="3y")
+            bh = DataSourceManager.get_history('0050', '台股', start_date=QuantConfig.HISTORY_START_DATE)
             bh = bh.dropna() if bh is not None else None
         except Exception:
             bh = None

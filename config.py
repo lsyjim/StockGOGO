@@ -2,6 +2,26 @@
 config.py - Configuration Module (v4.4 升級版)
 """
 
+import os as _os
+
+
+# build_prompt_11：A/B 驗證用環境變數覆寫（未設環境變數時一律用預設值，
+# 生產行為不變）。讓 run_ab_bp11 orchestrator 能以單一變數逐輪切換而不改原始碼。
+def _env_bool(name, default):
+    v = _os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() not in ('', '0', 'false', 'no', 'off')
+
+
+def _env_int(name, default):
+    v = _os.environ.get(name)
+    try:
+        return int(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
 # ============================================================================
 # v4.0 新增：全域配置參數
 # ============================================================================
@@ -40,7 +60,28 @@ class QuantConfig:
     FINMIND_HOURLY_BUDGET = 550     # 每小時 FinMind 請求上限（<600 免費額度，留安全邊際）
     CHIP_BULK_PREFER_GOV = True     # 單次補洞 symbol 數 ≥ 此門檻 → 官方 per-date 為主源
     CHIP_BULK_GOV_THRESHOLD = 10    # 「大量」門檻
-    
+
+    # build_prompt_11：歷史資料窗口擴充（COVID-2020-03/2022/2023-10/2025-04 四次空頭）
+    # 起點 2019-06：預留 ~68 交易日暖機，讓第一個 as_of 落在 2020-01 前，
+    # 捕捉 2020-02~03 COVID 崩盤的空頭訊號與 V 型反彈（否則暖機期會吃掉 COVID）。
+    HISTORY_START_DATE = "2019-06-01"   # 價格與回測起點
+    CHIP_DEEP_START_DATE = "2019-06-01" # 籌碼深度回補起點（FinMind 法人可回溯至 2012）
+
+    # build_prompt_11 任務1：盤整 M-Lite 路徑（預設關閉）
+    MLITE_RANGE_ENABLED = _env_bool('BP11_MLITE', False)   # 僅盤整授予 B 級；空頭嚴禁、多頭不啟用（A/B 用 BP11_MLITE 覆寫）
+    MLITE_RS_MIN = 80             # rs_score 門檻
+    MLITE_CHIP_MIN = 3            # chip_buy_days 門檻
+
+    # build_prompt_11 任務2：RSI 安全閥動能豁免
+    SAFETY_VALVE_RSI = 85       # 非動能 / 一般情況
+    # 任務2 A/B 否決（放行高位股使 A 級 20 日期望 3.360→3.318 劣化，見 bp11_ab_rounds.md）
+    # → 預設還原為 85（＝無豁免、等同 pre-bp11）。BP11_RSI_MOM=92 可一行再啟用機制。
+    SAFETY_VALVE_RSI_MOM = _env_int('BP11_RSI_MOM', 85)
+
+    # build_prompt_11 任務3：題材強度進 grade（新輸入，預設關閉）— 見計畫 Spec Deviations
+    THEME_GRADE_ENABLED = _env_bool('BP11_THEME', False)
+    THEME_WEIGHT = 1            # C→B 升級所需的題材強度檔位（0=舊行為/不進grade）
+
     # 大盤代碼
     MARKET_INDEX_TW = "^TWII"  # 台股加權指數
     MARKET_INDEX_US = "^GSPC"  # S&P 500
