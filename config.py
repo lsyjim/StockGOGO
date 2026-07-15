@@ -82,6 +82,12 @@ class QuantConfig:
     THEME_GRADE_ENABLED = _env_bool('BP11_THEME', False)
     THEME_WEIGHT = 1            # C→B 升級所需的題材強度檔位（0=舊行為/不進grade）
 
+    # build_prompt_12：R 軌（超跌反彈獨立軌，見 research_r_signal.md §7）
+    R_TRACK_ENABLED = _env_bool('R_TRACK', False)  # 預設關；驗收全過後最後一個 commit 才改 True
+    R_HOLD_DAYS = 10                # 出場：as_of 起第 10 個交易日（時間出場，無停損）
+    R_POSITION_CAP = 0.15           # 單筆倉位上限
+    R_TRADE_REGIMES = ['盤整']       # 僅盤整可交易（R-TRADE）；其餘 regime 僅 R-WATCH 參考
+
     # 大盤代碼
     MARKET_INDEX_TW = "^TWII"  # 台股加權指數
     MARKET_INDEX_US = "^GSPC"  # S&P 500
