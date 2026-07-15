@@ -3442,9 +3442,14 @@ class MeanReversionAnalyzer:
             
             signal['rsi'] = round(rsi, 1)
             signal['lower_band'] = round(lower_band, 2)
-            
+
+            # build_prompt_12 任務1：修復 trigger_reasons 鍵名 bug。
+            # decision_engine 讀 trigger_reasons，本函式原僅寫 conditions_met → n_reasons 恆 0。
+            # 提供 trigger_reasons=conditions_met 內容，保留 conditions_met 向後相容。
+            signal['trigger_reasons'] = list(signal['conditions_met'])
+
             return signal
-            
+
         except Exception as e:
             print(f"左側買訊偵測錯誤: {e}")
             return {'triggered': False, 'message': '偵測錯誤'}
