@@ -30,6 +30,7 @@ import pandas as pd
 
 from config import QuantConfig
 from decision_engine import ThreeLayerEngine
+from r_track import evaluate_r_track
 from analyzers import (WaveAnalyzer, MeanReversionAnalyzer, VolumePriceAnalyzer,
                        PatternAnalyzer, wilder_adx)
 
@@ -253,6 +254,8 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
 
     fh = full_hist.sort_index()
     dates = list(fh.index)
+    # build_prompt_12 任務3：R 軌交易日曆（升冪；含未來日，供 10 交易日時間出場推算）
+    trading_days = [d.date().isoformat() for d in fh.index]
     n = len(fh)
     max_hold = max(holds)
 
@@ -343,6 +346,14 @@ def run_symbol(symbol, market, full_hist, idx_hist, chip_mgr, rev_mgr,
         # 復用決策前已計算的 _theme_info，避免重複 annotate。
         row.update(_factor_snapshot(result, fh, i, row['action_code'], rev_mgr,
                                     symbol, as_of_date, _theme_info))
+        # build_prompt_12 任務3：R 軌獨立欄位（附加，絕不觸碰動能欄位/判定）。
+        # 任何例外都不得中斷回測 → 預設 None。
+        try:
+            r = evaluate_r_track(result, as_of_str, trading_days)
+        except Exception:
+            r = {'r_signal': None, 'r_strength': None}
+        row['r_signal'] = r.get('r_signal')
+        row['r_strength'] = r.get('r_strength')
         for N in holds:
             exit_close = float(fh['Close'].iloc[i + 1 + N])
             gross = exit_close / entry_open - 1
@@ -425,7 +436,8 @@ def write_reports(trades, holds, out_dir, args, index_bh):
              'macd_state', 'macd_div', 'bias_5', 'bias_20', 'bias_60', 'adx', 'atr_pct',
              'bb_squeeze', 'vol_ratio', 'pv_state', 'ma_bull', 'above_ma20', 'above_ma60',
              'short_advice', 'mid_advice', 'long_advice', 'theme_score', 'rev_yoy', 'rev_mom',
-             'entry'] + [f'exit_{N}' for N in holds] + [f'ret_{N}_net' for N in holds] + ['triggers']
+             'entry'] + [f'exit_{N}' for N in holds] + [f'ret_{N}_net' for N in holds] + ['triggers'] \
+            + ['r_signal', 'r_strength']   # build_prompt_12 任務3：R 軌欄位一律附加於最末（向後相容）
     # 動態補齊任何未列出的鍵（向後相容）
     seen = set(_base)
     extra = [k for t in trades for k in t.keys() if k not in seen and not seen.add(k)]
@@ -834,6 +846,70 @@ def write_sell_wait_regime(trades, holds, out_dir):
     print(f"[bp10] SELL/WAIT regime → {out_dir}/sell_wait_regime.md")
 
 
+# ── build_prompt_12 任務3：R 軌矩陣（附加於 summary.md，讀 trade 欄位，不改判定）──
+def write_r_track_summary(trades, holds, out_dir):
+    """R 軌矩陣：R-TRADE 子集的 10 日統計 + R-WATCH 分 regime。
+    以附加模式寫入本輪 summary.md（與 sell_wait 等區塊一致的獨立寫法）。
+    R_TRACK 停用時兩子集皆空 → 寫一行「未啟用」。"""
+    # 10 日為主；若 holds 不含 10 取最接近者並標註
+    if 10 in holds:
+        Nr, hold_note = 10, ""
+    else:
+        Nr = min(holds, key=lambda h: abs(h - 10))
+        hold_note = f"（holds 不含 10，改用最接近的 {Nr} 日）"
+    ret_key = f'ret_{Nr}_net'
+
+    def _nets(rows):
+        return [t[ret_key] for t in rows if t.get(ret_key) is not None and t.get(ret_key) != '']
+
+    md = ["", f"## R 軌矩陣（build_prompt_12）", ""]
+
+    r_trade = [t for t in trades if t.get('r_signal') == 'R-TRADE']
+    r_watch = [t for t in trades if t.get('r_signal') == 'R-WATCH']
+
+    if not r_trade and not r_watch:
+        md.append("R_TRACK 未啟用（本輪無 R 訊號）")
+        _append_md(out_dir, md)
+        return
+
+    # R-TRADE 子集 10 日統計
+    md.append(f"### R-TRADE（可交易；盤整 regime）{hold_note}")
+    md.append(f"| 子集 | n | 勝率 | 平均 | 中位 | P5 | 最差 |")
+    md.append("|---|---|---|---|---|---|---|")
+    nets = _nets(r_trade)
+    if nets:
+        wr = sum(1 for x in nets if x > 0) / len(nets) * 100
+        srt = sorted(nets)
+        p5 = srt[max(0, int(round(0.05 * (len(srt) - 1))))]
+        md.append(f"| R-TRADE | {len(nets)} | {wr:.1f}% | {statistics.mean(nets):.3f}% | "
+                  f"{statistics.median(nets):.3f}% | {p5:.3f}% | {min(nets):.3f}% |")
+    else:
+        md.append(f"| R-TRADE | {len(r_trade)} | – | – | – | – | – |")
+
+    # R-WATCH 分 regime（多頭/空頭）
+    md.append("")
+    md.append(f"### R-WATCH（僅參考；分 regime）")
+    md.append(f"| Regime | n | {Nr}日平均 |")
+    md.append("|---|---|---|")
+    for reg in ('多頭', '空頭'):
+        rows = [t for t in r_watch if t.get('regime') == reg]
+        rn = _nets(rows)
+        if rn:
+            md.append(f"| {reg} | {len(rows)} | {statistics.mean(rn):.3f}% |")
+        else:
+            md.append(f"| {reg} | {len(rows)} | – |")
+
+    _append_md(out_dir, md)
+
+
+def _append_md(out_dir, lines):
+    """把區塊附加到本輪 summary.md（存在則 append，否則建立）。"""
+    path = os.path.join(out_dir, 'summary.md')
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"[bp12] R 軌矩陣 → {path}")
+
+
 # ── build_prompt_10 任務4：兩個既定實驗 ───────────────────────────────────
 def run_bp10_experiments(trades, holds, out_dir):
     """實驗1 連買窗口提純；實驗2 WAIT 動能豁免。walk-forward A/B 對比。"""
@@ -1102,6 +1178,8 @@ def main():
 
     # build_prompt_10：SELL/WAIT 分 regime 反向驗證 + 兩個實驗
     write_sell_wait_regime(all_trades, holds, out_dir)
+    # build_prompt_12 任務3：R 軌矩陣附加至 summary.md
+    write_r_track_summary(all_trades, holds, out_dir)
     if args.experiment in ('conn_window', 'wait_exempt', 'bp10'):
         run_bp10_experiments(all_trades, holds, out_dir)
 
