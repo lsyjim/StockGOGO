@@ -632,6 +632,68 @@ from analyzers import (DecisionMatrix, WaveAnalyzer, MeanReversionAnalyzer,
 from backtesting import BacktestEngine
 from database import WatchlistDatabase
 
+
+# ============================================================================
+# build_prompt_12 Task5：R 軌 DB 遷移 + 持久化（僅 main.py，冪等 ADD COLUMN）
+# ============================================================================
+def migrate_watchlist_r_signal(db_path):
+    """為 watchlist 表新增 r_signal 欄位（冪等，僅 ADD COLUMN）。
+
+    鏡射 database.py init_database 的既有升級樣式：先 PRAGMA table_info 檢查現有
+    欄位，僅在缺 r_signal 時 ALTER TABLE ... ADD COLUMN。可安全重複執行、絕不
+    重建表、不刪任何資料。回傳 True 表示欄位存在（本次新增或早已存在），
+    表格不存在則回傳 False。
+    """
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(watchlist)")
+        existing_columns = [col[1] for col in cursor.fetchall()]
+        if not existing_columns:
+            # watchlist 表尚未建立（正常啟動時 WatchlistDatabase() 已先建表）
+            return False
+        if 'r_signal' not in existing_columns:
+            try:
+                cursor.execute("ALTER TABLE watchlist ADD COLUMN r_signal TEXT DEFAULT ''")
+                conn.commit()
+                print("[Database] 資料庫升級：已添加 r_signal 欄位（R 軌）")
+            except sqlite3.OperationalError as e:
+                print(f"[Database] 警告：無法添加 r_signal 欄位: {e}")
+                return False
+        return True
+    finally:
+        conn.close()
+
+
+def persist_r_signal(db_path, symbol, r_signal):
+    """將 R 軌 r_signal 寫入 watchlist 表（獨立欄位，不碰任何動能欄位）。"""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("UPDATE watchlist SET r_signal = ? WHERE symbol = ?",
+                     (r_signal or '', symbol))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_r_signal_map(db_path):
+    """讀取 {symbol: r_signal} 對照表供列表 R 徽章使用。欄位缺失時回傳空 dict。"""
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(watchlist)")
+        cols = [c[1] for c in cursor.fetchall()]
+        if 'r_signal' not in cols:
+            return {}
+        cursor.execute("SELECT symbol, r_signal FROM watchlist WHERE r_signal IS NOT NULL AND r_signal != ''")
+        return {row[0]: row[1] for row in cursor.fetchall()}
+    finally:
+        conn.close()
+
+
 # ============================================================================
 # v4.5.17 新增：熱門題材掃描模組
 # ============================================================================
@@ -4599,7 +4661,8 @@ class RecommendationDialog:
         self._build_block_06_chip_detail()    # 06 籌碼近10日明細
         self._build_block_07_evidence()       # 07 證據明細
         self._build_block_08_risk()           # 08 風險與警示＋免責
-        
+        self._build_block_09_r_track()        # 09 R 軌（超跌反彈獨立軌，僅在觸發時顯示）
+
         # 關閉按鈕 - 使用深色背景
         btn_frame = tk.Frame(self.dialog, bg=DarkTheme.BG_MAIN)
         btn_frame.pack(fill=tk.X, pady=10)
@@ -5089,6 +5152,103 @@ class RecommendationDialog:
         tk.Label(body, text="本報告為量化模型輸出，僅供研究參考，不構成投資建議；投資有風險，決策請自負盈虧。",
                  font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_MAIN,
                  wraplength=1000, justify=tk.LEFT).pack(anchor="w", pady=(10, 4))
+
+    # ── 09 R 軌（超跌反彈獨立軌）─────────────────────────────────────────
+    def _build_block_09_r_track(self):
+        """build_prompt_12 Task5：R 軌區塊。與動能軌完全獨立（順勢 vs 逆勢），
+        紅線：只讀 r_track 獨立輸出，不觸碰 grade/action_code/動能建議文字。
+        僅在 r_signal 觸發（R-TRACK 啟用且左尾買訊成立）時顯示。"""
+        try:
+            from r_track import evaluate_r_track
+        except Exception as _ie:
+            print(f"[R軌] 報告區塊略過（模組未載入）: {_ie}")
+            return
+
+        # 交易日曆（供時間出場日估算；取不到 → exit_date None → 顯示預估）
+        trading_days = []
+        try:
+            from chip_data_manager import get_chip_manager
+            _dbobj = getattr(getattr(self, 'parent', None), 'db', None)
+            _dbname = getattr(_dbobj, 'db_name', None) or 'watchlist_v4.db'
+            _cm = get_chip_manager(_dbname)
+            trading_days = sorted(_cm.get_trading_days_desc(limit=400))
+        except Exception:
+            trading_days = []
+
+        _as_of = self.result.get('analysis_date') or datetime.datetime.now().strftime("%Y-%m-%d")
+        try:
+            r = evaluate_r_track(self.result, _as_of, trading_days)
+        except Exception as _re:
+            print(f"[R軌] 報告評估略過: {_re}")
+            return
+
+        r_signal = r.get('r_signal')
+        if not r_signal:
+            return  # 未觸發 / R 軌未啟用 → 不顯示區塊（動能報告零影響）
+
+        r_strength = r.get('r_strength') or '—'
+        r_exit_date = r.get('r_exit_date')
+        exit_txt = r_exit_date if r_exit_date else "預估（近端資料未及）"
+
+        # 觸發條件明細（讀 mean_reversion.left_buy_signal，不重算）
+        lbs = (self.result.get('mean_reversion') or {}).get('left_buy_signal') or {}
+        conds = lbs.get('conditions_met') or []
+        reasons = lbs.get('trigger_reasons') or []
+        detail = "；".join([str(x) for x in (reasons or conds)]) or '—'
+        rsi = lbs.get('rsi')
+        lower_band = lbs.get('lower_band')
+
+        # regime / 動能賣訊（共存判斷）
+        reg = (self.result.get('market_regime') or {})
+        trend = reg.get('trend_direction') if reg.get('available') else None
+        _ac = str(self.verdict.get('action_code', '')).upper()
+        momentum_is_sell = (_ac.startswith('SELL') or _ac in ('EXIT', 'TAKE_PROFIT')
+                            or (self.verdict.get('plan', {}) or {}).get('is_exit'))
+
+        # 區塊標題：R-TRADE=可交易（金），R-WATCH=僅參考（灰）
+        is_trade = (r_signal == 'R-TRADE')
+        head_color = DarkTheme.ACCENT_GOLD if is_trade else DarkTheme.TEXT_SECONDARY
+        body = self._section("09", "R 軌（超跌反彈獨立軌）")
+
+        badge = "◆ R-TRADE（盤整限定・可交易）" if is_trade else "◇ R-WATCH（僅供參考）"
+        tk.Label(body, text=badge, font=("Arial", 13, "bold"), fg=head_color,
+                 bg=DarkTheme.BG_MAIN, anchor="w").pack(fill=tk.X, pady=(0, 4))
+
+        rows = [
+            ("觸發條件明細", detail, None),
+            ("RSI／下軌", (f"{rsi}／{lower_band}" if (rsi is not None or lower_band is not None) else '—'), None),
+            ("R 強度", r_strength, None),
+            ("市場狀態", (trend or '—'), None),
+            ("時間出場日", f"若於訊號次日進場，時間出場日＝{exit_txt}", None),
+        ]
+        self._kv_rows(body, rows)
+
+        # 固定規則文字
+        rule_txt = ("規則：盤整限定可交易／10 日時間出場／無停損"
+                    "（硬停損已被 BP11 研究否證，mean 4.37→1.43）／"
+                    "單筆倉位上限 15%／左尾 P5 −14%・worst −28.6%")
+        tk.Label(body, text=rule_txt, font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                 bg=DarkTheme.BG_MAIN, wraplength=1000, justify=tk.LEFT).pack(anchor="w", pady=(6, 2))
+
+        # 共存：動能賣訊 且 R-TRADE → 兩者並陳，明確標註互不覆蓋
+        if momentum_is_sell and is_trade:
+            note = ("動能軌與 R 軌為相反哲學之獨立判斷（順勢 vs 逆勢），互不覆蓋："
+                    "動能軌現為賣出／出場，R 軌現為 R-TRADE，兩者同時成立、各自獨立。")
+            nrow = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+            nrow.pack(fill=tk.X, pady=(6, 2))
+            tk.Frame(nrow, bg=DarkTheme.ACCENT_GOLD, width=2).pack(side=tk.LEFT, fill=tk.Y)
+            tk.Label(nrow, text=f"  {note}", font=("Arial", 11), fg=DarkTheme.TEXT_PRIMARY,
+                     bg=DarkTheme.BG_MAIN, justify=tk.LEFT, wraplength=980, anchor="w").pack(side=tk.LEFT)
+
+        # R-WATCH 且 空頭 → 接刀警告
+        if r_signal == 'R-WATCH' and trend == '空頭':
+            wrow = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+            wrow.pack(fill=tk.X, pady=(6, 2))
+            tk.Frame(wrow, bg=DarkTheme.NEUTRAL_COLOR, width=2).pack(side=tk.LEFT, fill=tk.Y)
+            tk.Label(wrow, text="  空頭反彈屬接刀操作，僅供參考、不建議交易",
+                     font=("Arial", 11), fg=DarkTheme.NEUTRAL_COLOR, bg=DarkTheme.BG_MAIN,
+                     justify=tk.LEFT, wraplength=980, anchor="w").pack(side=tk.LEFT)
+
 # ============================================================================
 # v4.0 新增：相關性分析彈窗
 # ============================================================================
@@ -5206,7 +5366,12 @@ class StockAnalysisApp(tk.Tk):
             self._theme = None
 
         self.db = WatchlistDatabase()
-        
+        # build_prompt_12 Task5：R 軌獨立欄位遷移（冪等 ADD COLUMN，安全重複執行）
+        try:
+            migrate_watchlist_r_signal(self.db.db_name)
+        except Exception as _me:
+            print(f"[Database] r_signal 遷移略過: {_me}")
+
         self.df = None
         self.current_symbol = None
         self.auto_analysis_done = False
@@ -6653,6 +6818,18 @@ class StockAnalysisApp(tk.Tk):
             ThreadSafeGC.enter_background_thread()
             success_count = 0
 
+            # build_prompt_12 Task5：R 軌時間出場日需要交易日曆（由舊到新排序，
+            # 可含未來日則能算出場日；僅過去日 → 近端訊號 exit_date=None，顯示為預估）。
+            _as_of = datetime.datetime.now().strftime("%Y-%m-%d")
+            _trading_days = []
+            try:
+                from chip_data_manager import get_chip_manager as _get_cm_r
+                _cm_r = _get_cm_r(self.db.db_name)
+                _trading_days = sorted(_cm_r.get_trading_days_desc(limit=400))
+            except Exception as _tde:
+                print(f"[R軌] 交易日曆讀取略過: {_tde}")
+                _trading_days = []
+
             try:
                 # B2 #1：刷新前批次預抓歷史，逐檔 get_history 命中快取
                 try:
@@ -6707,9 +6884,21 @@ class StockAnalysisApp(tk.Tk):
                             recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
                         else:
                             overall = str(rec); recommendation = str(rec)
+                        # build_prompt_12 Task5：R 軌獨立評估（紅線：不碰 grade/action_code/
+                        # 動能建議；R_TRACK_ENABLED=False 時 evaluate_r_track 一律回 None）。
+                        # 以 try/except 包住，R 永不破壞掃描。
+                        r_signal = None
+                        try:
+                            from r_track import evaluate_r_track
+                            _r = evaluate_r_track(result, _as_of, _trading_days)
+                            r_signal = _r.get('r_signal')
+                        except Exception as _re:
+                            print(f"[R軌] {symbol} 評估略過: {_re}")
+                            r_signal = None
                         return {'symbol': symbol, 'ok': True, 'overall': overall,
                                 'recommendation': recommendation, 'quant_score': quant_score,
                                 'trend_status': trend_status, 'bias_20': bias_20,
+                                'r_signal': r_signal,
                                 # build_prompt_04：橫斷面RS用 60日報酬
                                 'ret_60d': (result.get('technical', {}) or {}).get('ret_60d')}
                     except Exception as e:
@@ -6733,6 +6922,11 @@ class StockAnalysisApp(tk.Tk):
                             self.db.update_quant_data(
                                 r['symbol'], quant_score=r['quant_score'],
                                 trend_status=r['trend_status'], bias_20=r['bias_20'])
+                            # build_prompt_12 Task5：持久化 R 軌 r_signal（獨立欄位）
+                            try:
+                                persist_r_signal(self.db.db_name, r['symbol'], r.get('r_signal'))
+                            except Exception as _rpe:
+                                print(f"[R軌] {r['symbol']} r_signal 寫入略過: {_rpe}")
                             success_count += 1
                             _scan_results.append(r)
                             print(f"[自選股刷新] {r['symbol']} 完成: {r['overall']} (Score: {r['quant_score']:.0f})")
@@ -7076,7 +7270,24 @@ class StockAnalysisApp(tk.Tk):
             order_by = 'industry'  # 預設按族群排序
         
         stocks = self.db.get_all_stocks(order_by=order_by)
-        
+
+        # build_prompt_12 Task5：R 軌徽章對照（獨立欄位，不影響動能建議/等級/顏色）。
+        # 徽章以文字前綴呈現，保留原有 grade/action 顏色 tag：
+        #   ◆R = R-TRADE（盤整限定，可交易）；◇r = R-WATCH（僅參考，不建議交易）
+        try:
+            _rmap = load_r_signal_map(self.db.db_name)
+        except Exception as _rme:
+            print(f"[R軌] r_signal 對照讀取略過: {_rme}")
+            _rmap = {}
+
+        def _r_badge(sym):
+            rs = _rmap.get(sym)
+            if rs == 'R-TRADE':
+                return '◆R '
+            if rs == 'R-WATCH':
+                return '◇r '
+            return ''
+
         # ========================================
         # v4.5.18 標準金融終端機風格
         # ========================================
@@ -7198,8 +7409,10 @@ class StockAnalysisApp(tk.Tk):
                         display_signal = f"{_grade} {_act}"[:20]
                     else:
                         display_signal = signal.replace("建議", "")[:20]
-                    
-                    self.watchlist_tree.insert(group_id, "end", 
+                    # build_prompt_12 Task5：R 軌徽章前綴（獨立於動能建議）
+                    display_signal = (_r_badge(symbol) + display_signal)[:24]
+
+                    self.watchlist_tree.insert(group_id, "end",
                         text=symbol, 
                         values=(name, score_str, display_signal),
                         tags=tuple(tags)
@@ -7279,6 +7492,8 @@ class StockAnalysisApp(tk.Tk):
                     display_signal = f"{_grade} {_act}"[:20]
                 else:
                     display_signal = signal.replace("建議", "")[:20]
+                # build_prompt_12 Task5：R 軌徽章前綴（獨立於動能建議）
+                display_signal = (_r_badge(symbol) + display_signal)[:24]
 
                 self.watchlist_tree.insert("", "end",
                     text=display_text,
