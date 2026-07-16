@@ -6302,233 +6302,539 @@ class StockAnalysisApp(tk.Tk):
             )
     
     def _create_right_panel(self, parent):
-        """建立右側圖表區域"""
-        # 圖表選項
-        options_frame = ttk.Frame(parent)
-        options_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        ttk.Checkbutton(options_frame, text="顯示均線", variable=self.show_ma_var,
-                       command=self.plot_chart).pack(side=tk.LEFT, padx=5)
-        ttk.Checkbutton(options_frame, text="顯示成交量", variable=self.show_vol_var,
-                       command=self.plot_chart).pack(side=tk.LEFT, padx=5)
-        ttk.Checkbutton(options_frame, text="顯示布林通道", variable=self.show_bb_var,
-                       command=self.plot_chart).pack(side=tk.LEFT, padx=5)
-        
-        ttk.Label(options_frame, text="副圖指標：").pack(side=tk.LEFT, padx=(20, 5))
-        indicators = ["KD", "MACD", "RSI"]
-        indicator_combo = ttk.Combobox(options_frame, textvariable=self.indicator_var,
-                                      values=indicators, state="readonly", width=10)
-        indicator_combo.pack(side=tk.LEFT)
-        indicator_combo.bind('<<ComboboxSelected>>', lambda e: self.update_indicator())
-        
-        # 主圖表區域
+        """build_prompt_13 任務 4＋5：右工作區＝摘要卡列＋個股標題列＋K 線區＋
+        指標副圖＋底部狀態帶。K 線區為雙向擴張的唯一受益者。"""
+        # 新增 UI 變數（純呈現）
+        self.show_signals_var = tk.BooleanVar(value=True)      # 訊號標記疊加開關
+        self.timeframe_var = tk.StringVar(value="日K")         # 日K / 週K
+        try:
+            self.indicator_var.set("RSI")                     # 副圖預設 RSI（spec）
+        except Exception:
+            pass
+
+        # (1) 訊號摘要卡列（五張等分，高度固定）
+        self._build_summary_cards(parent)
+
+        # (2) 個股標題列
+        self._build_stock_title_bar(parent)
+
+        # (3) 副圖指標控制列（單窗切換 KD/MACD/RSI，成交量開關）
+        self._build_indicator_controls(parent)
+
+        # (4) 主圖表區域（K 線＋量＋副圖同窗；雙向擴張的唯一受益者）
         self.main_chart_frame = ttk.Frame(parent)
         self.main_chart_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # 副圖表區域
-        self.lower_chart_frame = ttk.Frame(parent, height=200)
-        self.lower_chart_frame.pack(fill=tk.X, pady=(5, 0))
-        self.lower_chart_frame.pack_propagate(False)
-    
+
+        # (5) 底部狀態帶（三段以分隔線隔開）
+        self._build_status_band(parent)
+
+    # ── 任務 4：訊號摘要卡列 ─────────────────────────────────────────
+    def _build_summary_cards(self, parent):
+        """五張等分卡：A 級主攻／B 級追蹤／◆R 可交易／賣訊出場／R 持倉倒數。
+        前四張點擊＝套用對應過濾（與清單 chips 連動）。"""
+        _th = getattr(self, '_theme', None)
+        C_BG    = self._dash('DASH_BG', "#14161b")
+        C_PANEL = self._dash('DASH_PANEL', "#1a1d24")
+        C_BORD  = self._dash('DASH_BORDER', "#2a2d35")
+        C_TEXT  = self._dash('DASH_TEXT', "#e8e6e1")
+        C_T2    = self._dash('DASH_TEXT_2', "#9aa0ab")
+        C_T3    = self._dash('DASH_TEXT_3', "#6b6f78")
+        f_cap   = _th.ui_font(_th.SIZE_SMALL) if _th else ("TkDefaultFont", 11)
+        f_big   = _th.num_font(_th.SIZE_BIGNUM, bold=True) if _th else ("TkFixedFont", 21, "bold")
+
+        row = tk.Frame(parent, bg=C_BG)
+        row.pack(fill=tk.X, pady=(0, 6))
+
+        self._card_widgets = {}
+        specs = [
+            ('A',    'A 級主攻',  self._dash('DASH_A', "#efc042"), True),
+            ('B',    'B 級追蹤',  self._dash('DASH_B', "#6db3f2"), True),
+            ('R',    '◆R 可交易', self._dash('DASH_R_GOLD', "#d8c66a"), True),
+            ('SELL', '賣訊出場',  self._dash('DASH_SELL', "#e05c5c"), True),
+            ('RCOUNT', 'R 持倉倒數', self._dash('DASH_R_GOLD', "#d8c66a"), False),
+        ]
+        for i, (key, caption, col, clickable) in enumerate(specs):
+            card = tk.Frame(row, bg=C_PANEL, highlightbackground=C_BORD,
+                            highlightcolor=C_BORD, highlightthickness=1, bd=0)
+            card.grid(row=0, column=i, sticky='nsew', padx=(0 if i == 0 else 6, 0))
+            row.grid_columnconfigure(i, weight=1, uniform='cards')
+
+            tk.Label(card, text=caption, bg=C_PANEL, fg=C_T2, font=f_cap,
+                     anchor='w').pack(fill=tk.X, padx=10, pady=(8, 0))
+            if key == 'RCOUNT':
+                val = tk.Label(card, text="—", bg=C_PANEL, fg=col,
+                               font=(f_cap[0], f_cap[1] + 2, 'bold'), anchor='w')
+            else:
+                val = tk.Label(card, text="0", bg=C_PANEL, fg=col, font=f_big, anchor='w')
+            val.pack(fill=tk.X, padx=10, pady=(0, 8))
+
+            self._card_widgets[key] = {'frame': card, 'value': val, 'accent': col,
+                                       'accent_on': False}
+            if clickable:
+                card.configure(cursor="hand2")
+                for w in (card, val):
+                    w.bind('<Button-1>', lambda e, k=key: self._set_filter(k))
+                # caption label 亦可點
+                card.winfo_children()[0].bind('<Button-1>', lambda e, k=key: self._set_filter(k))
+
+    # ── 任務 5.1：個股標題列 ─────────────────────────────────────────
+    def _build_stock_title_bar(self, parent):
+        """代碼名稱｜現價漲跌（紅漲綠跌）｜M 軌裁決膠囊｜R 軌膠囊｜彈性空白｜
+        週期切換（日K／週K）｜疊加開關（訊號/MA/布林）｜完整報告鈕。"""
+        _th = getattr(self, '_theme', None)
+        C_BG    = self._dash('DASH_BG', "#14161b")
+        C_TEXT  = self._dash('DASH_TEXT', "#e8e6e1")
+        C_T2    = self._dash('DASH_TEXT_2', "#9aa0ab")
+        C_T3    = self._dash('DASH_TEXT_3', "#6b6f78")
+        C_GOLD  = self._dash('DASH_R_GOLD', "#d8c66a")
+        f_title = _th.ui_font(_th.SIZE_TITLE, bold=True) if _th else ("TkDefaultFont", 15, "bold")
+        f_num   = _th.num_font(_th.SIZE_BASE, bold=True) if _th else ("TkFixedFont", 13, "bold")
+        f_lbl   = _th.ui_font(_th.SIZE_SMALL) if _th else ("TkDefaultFont", 11)
+
+        bar = tk.Frame(parent, bg=C_BG, height=40)
+        bar.pack(fill=tk.X, pady=(0, 4))
+        bar.pack_propagate(False)
+
+        self._tb_name = tk.Label(bar, text="選擇個股", bg=C_BG, fg=C_TEXT, font=f_title)
+        self._tb_name.pack(side=tk.LEFT, padx=(4, 10))
+        self._tb_price = tk.Label(bar, text="", bg=C_BG, fg=C_TEXT, font=f_num)
+        self._tb_price.pack(side=tk.LEFT, padx=(0, 4))
+        self._tb_change = tk.Label(bar, text="", bg=C_BG, fg=C_T2, font=f_num)
+        self._tb_change.pack(side=tk.LEFT, padx=(0, 10))
+        # M 軌裁決膠囊
+        self._tb_verdict = tk.Label(bar, text="", bg=C_BG, fg=C_T3, font=f_lbl)
+        self._tb_verdict.pack(side=tk.LEFT, padx=(0, 6))
+        # R 軌膠囊
+        self._tb_rpill = tk.Label(bar, text="", bg=C_BG, fg=C_GOLD, font=f_lbl)
+        self._tb_rpill.pack(side=tk.LEFT, padx=(0, 6))
+
+        # 彈性空白
+        tk.Frame(bar, bg=C_BG).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # 完整報告（開啟現有 v4.5 報告視窗）
+        ttk.Button(bar, text="完整報告", command=self.show_analysis_report,
+                   style=("Accent.TButton" if _th else "TButton")).pack(side=tk.RIGHT, padx=(6, 4))
+        # 疊加開關
+        ttk.Checkbutton(bar, text="布林", variable=self.show_bb_var,
+                        command=self._redraw_from_cache).pack(side=tk.RIGHT, padx=2)
+        ttk.Checkbutton(bar, text="MA", variable=self.show_ma_var,
+                        command=self._redraw_from_cache).pack(side=tk.RIGHT, padx=2)
+        ttk.Checkbutton(bar, text="訊號標記", variable=self.show_signals_var,
+                        command=self._redraw_from_cache).pack(side=tk.RIGHT, padx=2)
+        # 週期切換（日K／週K；60 分 disabled 佔位）
+        ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.RIGHT, padx=6, fill=tk.Y, pady=8)
+        ttk.Radiobutton(bar, text="60分", value="60分", variable=self.timeframe_var,
+                        state='disabled').pack(side=tk.RIGHT, padx=2)
+        ttk.Radiobutton(bar, text="週K", value="週K", variable=self.timeframe_var,
+                        command=self._redraw_from_cache).pack(side=tk.RIGHT, padx=2)
+        ttk.Radiobutton(bar, text="日K", value="日K", variable=self.timeframe_var,
+                        command=self._redraw_from_cache).pack(side=tk.RIGHT, padx=2)
+
+    # ── 任務 5.3：指標副圖控制列（單窗切換 KD／MACD／RSI）──────────────
+    def _build_indicator_controls(self, parent):
+        _th = getattr(self, '_theme', None)
+        C_BG  = self._dash('DASH_BG', "#14161b")
+        C_T3  = self._dash('DASH_TEXT_3', "#6b6f78")
+        f_lbl = _th.ui_font(_th.SIZE_SMALL) if _th else ("TkDefaultFont", 11)
+
+        strip = tk.Frame(parent, bg=C_BG)
+        strip.pack(fill=tk.X, pady=(4, 0))
+        tk.Label(strip, text="副圖", bg=C_BG, fg=C_T3, font=f_lbl).pack(side=tk.LEFT, padx=(4, 6))
+        for name in ("RSI", "KD", "MACD"):
+            ttk.Radiobutton(strip, text=name, value=name, variable=self.indicator_var,
+                            command=self.update_indicator).pack(side=tk.LEFT, padx=2)
+        ttk.Separator(strip, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=8, fill=tk.Y, pady=4)
+        ttk.Checkbutton(strip, text="成交量", variable=self.show_vol_var,
+                        command=self._redraw_from_cache).pack(side=tk.LEFT, padx=2)
+
+    # ── 任務 5.4：底部狀態帶（三段以分隔線隔開）──────────────────────
+    def _build_status_band(self, parent):
+        _th = getattr(self, '_theme', None)
+        C_BG   = self._dash('DASH_BG', "#14161b")
+        C_PANEL= self._dash('DASH_PANEL', "#1a1d24")
+        C_T2   = self._dash('DASH_TEXT_2', "#9aa0ab")
+        C_T3   = self._dash('DASH_TEXT_3', "#6b6f78")
+        f_lbl  = _th.ui_font(_th.SIZE_SMALL) if _th else ("TkDefaultFont", 11)
+
+        band = tk.Frame(parent, bg=C_PANEL, height=34)
+        band.pack(fill=tk.X, pady=(4, 0))
+        band.pack_propagate(False)
+
+        def _seg(caption):
+            box = tk.Frame(band, bg=C_PANEL)
+            box.pack(side=tk.LEFT, padx=10, pady=4)
+            tk.Label(box, text=caption, bg=C_PANEL, fg=C_T3, font=f_lbl).pack(side=tk.LEFT, padx=(0, 6))
+            val = tk.Label(box, text="—", bg=C_PANEL, fg=C_T2, font=f_lbl)
+            val.pack(side=tk.LEFT)
+            return val
+
+        self._sbnd_scores = _seg("三層分數")
+        ttk.Separator(band, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, pady=6)
+        self._sbnd_rplan = _seg("R 單計畫")
+        ttk.Separator(band, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, pady=6)
+        self._sbnd_chip = _seg("籌碼最近日")
+
+    def _redraw_from_cache(self):
+        """疊加開關/週期切換 → 用快取 df 重繪（不重新抓資料，主執行緒）。"""
+        if getattr(self, 'df', None) is None:
+            return
+        try:
+            self._render_chart()
+            self.update_indicator()
+        except Exception as _e:
+            print(f"[重繪] 略過: {_e}")
+
     def plot_chart(self):
-        """繪製股票圖表"""
+        """抓取資料（yfinance / 即時），更新標題列與狀態帶，再委派 _render_chart 繪圖。
+        build_prompt_13：抓取與繪圖分離 → resize/疊加切換只重繪、不重抓。"""
         symbol = self.symbol_entry.get().strip()
         if not symbol:
             return
-        
+
         market = self.market_var.get()
         period = self.period_var.get()
-        
         name = symbol
-        
+
         if market == "台股":
-            # 先嘗試上市 (.TW)
             ticker_symbol = f"{symbol}.TW"
             if symbol.isdigit():
                 try:
                     name = f"{symbol} {twstock.codes[symbol].name}"
-                except:
+                except Exception:
                     name = symbol
         else:
             ticker_symbol = symbol
-        
+
         try:
             stock = yf.Ticker(ticker_symbol)
             self.df = stock.history(period=period)
-            
-            # 如果上市沒數據，嘗試上櫃 (.TWO)
             if self.df.empty and market == "台股":
                 ticker_symbol = f"{symbol}.TWO"
                 stock = yf.Ticker(ticker_symbol)
                 self.df = stock.history(period=period)
-            
             if self.df.empty:
                 messagebox.showerror("錯誤", "無法取得股票資料，請確認代碼是否正確")
                 return
-            
+
             self.current_symbol = symbol
-            
-            # 清除舊圖表
-            for widget in self.main_chart_frame.winfo_children():
-                widget.destroy()
-            
-            # v4.3 新增：嘗試爬取即時股價
+
+            # 即時股價
             realtime_data = None
             if market == "台股":
                 realtime_data = RealtimePriceFetcher.get_realtime_price(symbol, market)
-            
-            # 取得昨收價（日期對齊；與分析報告共用同一邏輯確保漲跌幅一致）
+
             prev_close = QuickAnalyzer.aligned_prev_close(self.df)
             if prev_close is None:
                 prev_close = self.df['Close'].iloc[-1]
 
-            # 使用即時股價或 yfinance 數據
             if realtime_data and realtime_data.get('price'):
                 current_price = realtime_data['price']
-                # 即時報價若提供同源昨收則優先用（與分析報告一致）
                 _rt_prev = realtime_data.get('prev_close')
                 if _rt_prev and _rt_prev > 0:
                     prev_close = _rt_prev
-                price_change = current_price - prev_close
-                price_change_pct = (price_change / prev_close * 100) if prev_close != 0 else 0
                 update_time = f"即時 {realtime_data.get('time', '')}"
-                price_source = 'yahoo_scrape'
             else:
-                # Fallback 到 yfinance 數據
                 current_price = self.df['Close'].iloc[-1]
-                price_change = current_price - prev_close
-                price_change_pct = (price_change / prev_close * 100) if prev_close != 0 else 0
                 update_time = self.df.index[-1].strftime('%Y-%m-%d %H:%M')
-                price_source = 'yfinance'
-            
-            # v4.1 新增：在圖表上方顯示股價資訊
-            price_info_frame = ttk.Frame(self.main_chart_frame)
-            price_info_frame.pack(fill=tk.X, pady=(0, 5))
-            
-            # 股票名稱和代碼（優先使用 twstock 名稱）
-            ttk.Label(price_info_frame, text=f"📈 {name}", 
-                     font=("SimHei", 14, "bold")).pack(side=tk.LEFT, padx=5)
-            
-            # 當前價格（標註來源）
-            source_icon = "⚡" if price_source == 'yahoo_scrape' else "📊"
-            ttk.Label(price_info_frame, text=f"{source_icon} 現價: ${current_price:.2f}", 
-                     font=("SimHei", 12, "bold")).pack(side=tk.LEFT, padx=10)
-            
-            # 漲跌幅（台股紅漲綠跌，走 theme token）
-            _th = getattr(self, '_theme', None)
-            _UP   = _th.UP   if _th else "red"
-            _DOWN = _th.DOWN if _th else "green"
-            _FLAT = _th.FLAT if _th else "gray"
-            if price_change > 0:
-                change_text = f"▲ {price_change:.2f} (+{price_change_pct:.2f}%)"
-                change_color = _UP
-            elif price_change < 0:
-                change_text = f"▼ {abs(price_change):.2f} ({price_change_pct:.2f}%)"
-                change_color = _DOWN
-            else:
-                change_text = f"－ 0.00 (0.00%)"
-                change_color = _FLAT
-            
-            change_label = ttk.Label(price_info_frame, text=change_text, 
-                                    font=("SimHei", 12, "bold"), foreground=change_color)
-            change_label.pack(side=tk.LEFT, padx=5)
-            
-            # 昨收價
-            ttk.Label(price_info_frame, text=f"昨收: ${prev_close:.2f}", 
-                     font=("SimHei", 10)).pack(side=tk.LEFT, padx=10)
-            
-            # 更新時間
-            ttk.Label(price_info_frame, text=f"更新: {update_time}", 
-                     font=("SimHei", 9), foreground="gray").pack(side=tk.RIGHT, padx=5)
-            
-            # 設定均線
-            mav = ()
-            if self.show_ma_var.get():
-                mav = (5, 20, 60)
-            
-            # 設定樣式（暗色面板 + 紅漲綠跌；走 theme，失敗則退回原淺色樣式）
-            if getattr(self, '_theme', None) is not None:
-                try:
-                    mc, s = self._theme.mpf_market_style()
-                except Exception:
-                    mc = mpf.make_marketcolors(up='red', down='green', edge='black', wick='black', volume='inherit')
-                    s = mpf.make_mpf_style(marketcolors=mc, gridcolor='lightgray', gridstyle='--',
-                        rc={'font.sans-serif': ['SimHei', 'Microsoft JhengHei', 'PingFang SC', 'Heiti TC', 'Arial Unicode MS']})
-            else:
-                mc = mpf.make_marketcolors(up='red', down='green', edge='black', wick='black', volume='inherit')
-                s = mpf.make_mpf_style(marketcolors=mc, gridcolor='lightgray', gridstyle='--',
-                    rc={'font.sans-serif': ['SimHei', 'Microsoft JhengHei', 'PingFang SC', 'Heiti TC', 'Arial Unicode MS']})
-            
-            # 繪製蠟燭圖
-            add_plots = []
 
-            # 訊號標記/布林通道顏色（走 theme token，與紅漲綠跌 K 棒區隔）
-            _th = getattr(self, '_theme', None)
-            _boll_c = _th.BOLL_COLOR if _th else 'purple'
-            _buy_c  = _th.SIGNAL_BUY_COLOR if _th else 'lime'
-            _sell_c = _th.SIGNAL_SELL_COLOR if _th else 'red'
+            price_change = current_price - prev_close
+            price_change_pct = (price_change / prev_close * 100) if prev_close != 0 else 0
 
-            if self.show_bb_var.get():
-                sma, upper, lower = calculate_bollinger_bands(self.df['Close'])
-                add_plots.append(mpf.make_addplot(upper, color=_boll_c, linestyle='--'))
-                add_plots.append(mpf.make_addplot(lower, color=_boll_c, linestyle='--'))
-
-            # ============================================================
-            # v4.4.3 新增：買賣點視覺化 (Signal Visualization)
-            # ============================================================
-            try:
-                buy_signals, sell_signals = self._detect_signals_for_chart(self.df)
-
-                # 買進訊號：K 棒下方向上三角（琥珀，中性、不與紅綠 K 棒衝突）
-                if buy_signals is not None and buy_signals.notna().any():
-                    add_plots.append(mpf.make_addplot(
-                        buy_signals,
-                        type='scatter',
-                        markersize=100,
-                        marker='^',
-                        color=_buy_c
-                    ))
-
-                # 賣出訊號：K 棒上方向下三角（藍）
-                if sell_signals is not None and sell_signals.notna().any():
-                    add_plots.append(mpf.make_addplot(
-                        sell_signals,
-                        type='scatter',
-                        markersize=100,
-                        marker='v',
-                        color=_sell_c
-                    ))
-            except Exception as e:
-                print(f"買賣點視覺化錯誤: {e}")
-            
-            # 構建繪圖參數（避免 addplot=None 錯誤）
-            plot_kwargs = {
-                'type': 'candle',
-                'style': s,
-                'title': f'{name} K線圖',
-                'mav': mav,
-                'volume': self.show_vol_var.get(),
-                'figsize': (10, 6),
-                'returnfig': True
+            # 快取繪圖 metadata（供 resize/疊加切換重繪，不重抓）
+            self._chart_meta = {
+                'name': name, 'current_price': current_price, 'prev_close': prev_close,
+                'price_change': price_change, 'price_change_pct': price_change_pct,
+                'update_time': update_time,
             }
-            
-            # 只有在有附加圖形時才加入 addplot 參數
-            if add_plots:
-                plot_kwargs['addplot'] = add_plots
-            
-            fig, axes = mpf.plot(self.df, **plot_kwargs)
-            
-            canvas = FigureCanvasTkAgg(fig, master=self.main_chart_frame)
-            canvas.draw()
-            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-            plt.close(fig)
-            
-            # 更新副圖
-            self.update_indicator()
-            
+
+            self._update_stock_title_bar()
+            self._render_chart()
+            self._update_status_band(symbol)
         except Exception as e:
             messagebox.showerror("錯誤", f"繪製圖表失敗：{str(e)}")
-    
+
+    def _prepare_plot_df(self):
+        """依週期切換回傳要繪的 DataFrame（週K 由日K resample，不另抓）。"""
+        df = self.df
+        if getattr(self, 'timeframe_var', None) and self.timeframe_var.get() == "週K":
+            try:
+                agg = {'Open': 'first', 'High': 'max', 'Low': 'min',
+                       'Close': 'last', 'Volume': 'sum'}
+                cols = {k: v for k, v in agg.items() if k in df.columns}
+                df = df.resample('W').agg(cols).dropna(how='any')
+            except Exception as _e:
+                print(f"[週K] resample 略過: {_e}")
+                df = self.df
+        return df
+
+    def _indicator_addplots(self, df, panel_idx):
+        """任務 5.3：把選定副圖指標（KD/MACD/RSI）做成同窗 addplot（panel=panel_idx）。
+        指標值一律取自現有 calculate_* 計算，不另寫第二套公式。"""
+        import pandas as _pd
+        _th = getattr(self, '_theme', None)
+        C_A    = self._dash('DASH_A', "#efc042")
+        C_B    = self._dash('DASH_B', "#6db3f2")
+        C_GOLD = self._dash('DASH_R_GOLD', "#d8c66a")
+        C_SELL = self._dash('DASH_SELL', "#e05c5c")
+        C_UP   = self._dash('DASH_UP', "#e05c5c")
+        C_DOWN = self._dash('DASH_DOWN', "#4fb286")
+        indicator = self.indicator_var.get() if getattr(self, 'indicator_var', None) else "RSI"
+        aps = []
+        idx = df.index
+
+        def _const(v):
+            return _pd.Series(v, index=idx)
+
+        try:
+            if indicator == "RSI":
+                rsi = calculate_rsi(df['Close'])
+                cur = rsi.dropna().iloc[-1] if rsi.notna().any() else float('nan')
+                aps.append(mpf.make_addplot(rsi, panel=panel_idx, color="#a06cd5",
+                                            width=1.3, ylabel="RSI",
+                                            label=f"RSI {cur:.0f}" if cur == cur else "RSI"))
+                # 參考線 25（金，R 觸發線）與 85（暗紅，安全閥）；92 豁免線不畫
+                aps.append(mpf.make_addplot(_const(25), panel=panel_idx, color=C_GOLD,
+                                            width=0.8, linestyle='--'))
+                aps.append(mpf.make_addplot(_const(85), panel=panel_idx, color="#8a2b2b",
+                                            width=0.8, linestyle='--'))
+            elif indicator == "KD":
+                k, d = calculate_kd(df)
+                aps.append(mpf.make_addplot(k, panel=panel_idx, color=C_B, width=1.2,
+                                            ylabel="KD", label="K"))
+                aps.append(mpf.make_addplot(d, panel=panel_idx, color=C_A, width=1.2, label="D"))
+                aps.append(mpf.make_addplot(_const(80), panel=panel_idx, color=C_SELL,
+                                            width=0.8, linestyle='--'))
+                aps.append(mpf.make_addplot(_const(20), panel=panel_idx, color=C_DOWN,
+                                            width=0.8, linestyle='--'))
+            elif indicator == "MACD":
+                macd_line, signal_line, hist = calculate_macd(df['Close'])
+                hist_pos = hist.where(hist >= 0)
+                hist_neg = hist.where(hist < 0)
+                aps.append(mpf.make_addplot(hist_pos, panel=panel_idx, type='bar',
+                                            color=C_UP, alpha=0.5, ylabel="MACD"))
+                aps.append(mpf.make_addplot(hist_neg, panel=panel_idx, type='bar',
+                                            color=C_DOWN, alpha=0.5))
+                aps.append(mpf.make_addplot(macd_line, panel=panel_idx, color=C_B,
+                                            width=1.2, label="DIF"))
+                aps.append(mpf.make_addplot(signal_line, panel=panel_idx, color=C_A,
+                                            width=1.2, label="DEA"))
+                aps.append(mpf.make_addplot(_const(0), panel=panel_idx, color="#5a5f68",
+                                            width=0.8))
+        except Exception as _e:
+            print(f"[副圖] {indicator} 計算略過: {_e}")
+        return aps
+
+    def _render_chart(self):
+        """任務 5.2/5.3：單窗繪製 K 線＋量＋副圖（panel_ratios=(6,1.5,2.5)）。
+        用快取 self.df，不重抓資料；mplfinance 重繪固定在主執行緒。"""
+        if getattr(self, 'df', None) is None:
+            return
+        meta = getattr(self, '_chart_meta', {}) or {}
+        name = meta.get('name', self.current_symbol or '')
+        df = self._prepare_plot_df()
+        if df is None or len(df) < 2:
+            return
+
+        # 清除舊圖表
+        for widget in self.main_chart_frame.winfo_children():
+            widget.destroy()
+
+        _th = getattr(self, '_theme', None)
+        # 儀表板 mpf 樣式（紅漲綠跌 DASH 色）
+        try:
+            mc, s = self._theme.mpf_market_style_dash()
+        except Exception:
+            mc = mpf.make_marketcolors(up='red', down='green', edge='black', wick='black', volume='inherit')
+            s = mpf.make_mpf_style(marketcolors=mc, gridcolor='lightgray', gridstyle='--',
+                rc={'font.sans-serif': ['SimHei', 'Microsoft JhengHei', 'PingFang SC', 'Heiti TC', 'Arial Unicode MS']})
+
+        C_BOLL = self._dash('DASH_TEXT_3', "#6b6f78")
+        C_BUY  = self._dash('DASH_A', "#efc042")
+        C_SELL = self._dash('DASH_B', "#6db3f2")
+        C_RGOLD = self._dash('DASH_R_GOLD', "#d8c66a")
+
+        mav = (20, 60) if self.show_ma_var.get() else ()
+        show_vol = bool(self.show_vol_var.get())
+        # 面板配置：main(0) | volume(1, 若開) | 副圖(最後)
+        indicator_panel = 2 if show_vol else 1
+        panel_ratios = (6, 1.5, 2.5) if show_vol else (6, 2.5)
+
+        add_plots = []
+        # 布林通道（灰虛線）
+        if self.show_bb_var.get():
+            try:
+                sma, upper, lower = calculate_bollinger_bands(df['Close'])
+                add_plots.append(mpf.make_addplot(upper, color=C_BOLL, linestyle='--', width=0.9))
+                add_plots.append(mpf.make_addplot(lower, color=C_BOLL, linestyle='--', width=0.9))
+            except Exception as _e:
+                print(f"[布林] 略過: {_e}")
+
+        # 訊號證據疊加（動能 ▲/▽ + R 觸發 ◆），可由「訊號標記」開關關閉
+        if self.show_signals_var.get():
+            try:
+                buy_signals, sell_signals = self._detect_signals_for_chart(df)
+                if buy_signals is not None and buy_signals.notna().any():
+                    add_plots.append(mpf.make_addplot(buy_signals, type='scatter',
+                                                      markersize=90, marker='^', color=C_BUY))
+                if sell_signals is not None and sell_signals.notna().any():
+                    add_plots.append(mpf.make_addplot(sell_signals, type='scatter',
+                                                      markersize=90, marker='v', color=C_SELL))
+            except Exception as e:
+                print(f"買賣點視覺化錯誤: {e}")
+            # R 觸發證據（◆ 金色），資料不足時優雅略過
+            try:
+                r_ap = self._r_evidence_addplots(df)
+                add_plots.extend(r_ap)
+            except Exception as _re:
+                print(f"[R證據] 略過: {_re}")
+
+        # 副圖指標（同窗，panel=indicator_panel）
+        add_plots.extend(self._indicator_addplots(df, indicator_panel))
+
+        plot_kwargs = {
+            'type': 'candle', 'style': s, 'mav': mav, 'volume': show_vol,
+            'panel_ratios': panel_ratios, 'figscale': 1.0, 'returnfig': True,
+            'datetime_format': '%m/%d', 'xrotation': 0, 'tight_layout': True,
+        }
+        if add_plots:
+            plot_kwargs['addplot'] = add_plots
+
+        try:
+            fig, axes = mpf.plot(df, **plot_kwargs)
+        except Exception as e:
+            print(f"[K線] 繪製失敗，退回精簡模式: {e}")
+            fig, axes = mpf.plot(df, type='candle', style=s, volume=show_vol, returnfig=True)
+
+        canvas = FigureCanvasTkAgg(fig, master=self.main_chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        plt.close(fig)
+
+    def _r_evidence_addplots(self, df):
+        """R 軌證據疊加（◆ 金色 scatter 標 R 觸發、金虛線標時間出場日）。
+        僅在 last_analysis_result 對應目前個股且含 R 資料時繪製；缺資料優雅回 []。"""
+        import pandas as _pd
+        res = getattr(self, 'last_analysis_result', None)
+        if not res or res.get('symbol') != self.current_symbol:
+            return []
+        r = res.get('r_track') if isinstance(res, dict) else None
+        if not isinstance(r, dict) or not r.get('r_signal'):
+            return []
+        C_RGOLD = self._dash('DASH_R_GOLD', "#d8c66a")
+        aps = []
+        # R 觸發日 ◆：以觸發日期對齊 df，找不到則標最後一根
+        trig = _pd.Series(index=df.index, dtype=float)
+        try:
+            tdate = r.get('trigger_date')
+            if tdate is not None:
+                td = _pd.to_datetime(tdate)
+                # 對齊到最近交易日
+                pos = df.index.get_indexer([td], method='nearest')[0]
+                if pos >= 0:
+                    trig.iloc[pos] = df['Low'].iloc[pos] * 0.97
+        except Exception:
+            pass
+        if trig.notna().any():
+            aps.append(mpf.make_addplot(trig, type='scatter', markersize=140,
+                                        marker='D', color=C_RGOLD))
+        return aps
+
+    def _update_stock_title_bar(self):
+        """更新個股標題列（名稱/現價/漲跌 紅漲綠跌 + 裁決/R 膠囊）。"""
+        meta = getattr(self, '_chart_meta', {}) or {}
+        C_UP   = self._dash('DASH_UP', "#e05c5c")
+        C_DOWN = self._dash('DASH_DOWN', "#4fb286")
+        C_T2   = self._dash('DASH_TEXT_2', "#9aa0ab")
+        C_GOLD = self._dash('DASH_R_GOLD', "#d8c66a")
+        C_C    = self._dash('DASH_C', "#8b8f98")
+        chg = meta.get('price_change', 0) or 0
+        pct = meta.get('price_change_pct', 0) or 0
+        col = C_UP if chg > 0 else C_DOWN if chg < 0 else C_T2
+        arrow = "▲" if chg > 0 else "▼" if chg < 0 else "－"
+        try:
+            self._tb_name.config(text=meta.get('name', self.current_symbol or '選擇個股'))
+            self._tb_price.config(text=f"{meta.get('current_price', 0):.2f}", fg=col)
+            self._tb_change.config(text=f"{arrow} {abs(chg):.2f} ({pct:+.2f}%)", fg=col)
+        except Exception:
+            pass
+        # M 軌裁決膠囊（若有分析結果）
+        try:
+            res = getattr(self, 'last_analysis_result', None)
+            verdict = ''
+            if res and res.get('symbol') == self.current_symbol:
+                rec = res.get('recommendation', {})
+                if isinstance(rec, dict):
+                    verdict = rec.get('overall', '')
+            self._tb_verdict.config(text=(f" M {verdict} " if verdict else ""),
+                                    fg=(C_GOLD if verdict else C_C))
+        except Exception:
+            pass
+        # R 軌膠囊（取自 r_signal 對照）
+        try:
+            rmap = load_r_signal_map(self.db.db_name)
+            rs = rmap.get(self.current_symbol)
+            if rs == 'R-TRADE':
+                self._tb_rpill.config(text=" ◆R-TRADE ", fg=C_GOLD)
+            elif rs == 'R-WATCH':
+                self._tb_rpill.config(text=" ◇r ", fg=C_C)
+            else:
+                self._tb_rpill.config(text="")
+        except Exception:
+            pass
+
+    def _update_status_band(self, symbol):
+        """底部狀態帶：三層分數 / R 單計畫 / 籌碼最近日。缺資料優雅顯示「—」。"""
+        C_T2 = self._dash('DASH_TEXT_2', "#9aa0ab")
+        res = getattr(self, 'last_analysis_result', None)
+        has = bool(res and res.get('symbol') == symbol)
+        # 三層分數（方向/位置/時機）
+        scores_txt = "—"
+        try:
+            if has:
+                dm = res.get('decision_matrix', {})
+                if isinstance(dm, dict) and dm.get('available'):
+                    dv = dm.get('direction_score'); pv = dm.get('position_score'); tv = dm.get('timing_score')
+                    parts = []
+                    if dv is not None: parts.append(f"方向 {dv:.0f}")
+                    if pv is not None: parts.append(f"位置 {pv:.0f}")
+                    if tv is not None: parts.append(f"時機 {tv:.0f}")
+                    if not parts and dm.get('score') is not None:
+                        parts.append(f"綜合 {dm.get('score'):.0f}")
+                    scores_txt = " · ".join(parts) if parts else "—"
+        except Exception:
+            scores_txt = "—"
+        # R 單計畫（倉位·出場日）
+        rplan_txt = "—"
+        try:
+            if has:
+                r = res.get('r_track', {})
+                if isinstance(r, dict) and r.get('r_signal'):
+                    pos = r.get('position_pct') or r.get('size_pct')
+                    exitd = r.get('exit_date') or '—'
+                    rplan_txt = f"{r.get('r_signal')}｜倉位 {pos}%｜出場 {exitd}" if pos else f"{r.get('r_signal')}｜出場 {exitd}"
+        except Exception:
+            rplan_txt = "—"
+        # 籌碼最近日（外資/投信淨額＋連買天數）
+        chip_txt = "—"
+        try:
+            if has:
+                cf = res.get('chip_flow', {})
+                if isinstance(cf, dict) and cf.get('available'):
+                    fn = cf.get('foreign_net'); tn = cf.get('trust_net'); days = cf.get('foreign_buy_days')
+                    seg = []
+                    if fn is not None: seg.append(f"外資 {fn:+.0f}")
+                    if tn is not None: seg.append(f"投信 {tn:+.0f}")
+                    if days: seg.append(f"連買 {days}日")
+                    chip_txt = "｜".join(seg) if seg else "—"
+        except Exception:
+            chip_txt = "—"
+        try:
+            self._sbnd_scores.config(text=scores_txt)
+            self._sbnd_rplan.config(text=rplan_txt)
+            self._sbnd_chip.config(text=chip_txt)
+        except Exception:
+            pass
+
     def _detect_signals_for_chart(self, df):
         """
         v4.5.15 效能優化：完全向量化訊號偵測
@@ -6654,60 +6960,12 @@ class StockAnalysisApp(tk.Tk):
             return None, None
     
     def update_indicator(self):
-        """更新副圖指標"""
-        if self.df is None:
+        """切換副圖指標（KD／MACD／RSI）。build_prompt_13：副圖已整併進 K 線單窗，
+        故此處委派 _render_chart 用快取 df 重繪整張圖（主執行緒、不重抓資料）。"""
+        if getattr(self, 'df', None) is None:
             return
-        
-        # 清除舊圖表
-        for widget in self.lower_chart_frame.winfo_children():
-            widget.destroy()
-        
-        indicator = self.indicator_var.get()
-        
-        fig_indicator, ax_indicator = plt.subplots(figsize=(10, 2.5))
-        
-        if indicator == "KD":
-            k, d = calculate_kd(self.df)
-            ax_indicator.plot(k.index, k, label="K", color='blue', linewidth=1.5)
-            ax_indicator.plot(d.index, d, label="D", color='orange', linewidth=1.5)
-            ax_indicator.set_title("KD 隨機指標", fontproperties=zh_font, fontsize=11, fontweight='bold')
-            ax_indicator.axhline(80, color='red', linestyle='--', alpha=0.7)
-            ax_indicator.axhline(20, color='green', linestyle='--', alpha=0.7)
-            ax_indicator.set_ylim(0, 100)
-            ax_indicator.legend(loc='upper left')
-            ax_indicator.grid(True, alpha=0.3)
-            
-        elif indicator == "MACD":
-            macd_line, signal_line, hist = calculate_macd(self.df['Close'])
-            hist_colors = ['red' if v >= 0 else 'green' for v in hist]
-            ax_indicator.plot(macd_line.index, macd_line, label="MACD", linewidth=1.5)
-            ax_indicator.plot(signal_line.index, signal_line, label="Signal", linewidth=1.5)
-            ax_indicator.bar(hist.index, hist, label="Histogram", color=hist_colors, alpha=0.6)
-            ax_indicator.set_title("MACD 指標", fontproperties=zh_font, fontsize=11, fontweight='bold')
-            ax_indicator.legend(loc='upper left')
-            ax_indicator.grid(True, alpha=0.3)
-            ax_indicator.axhline(0, color='black', linewidth=0.8)
-            
-        elif indicator == "RSI":
-            rsi = calculate_rsi(self.df['Close'])
-            ax_indicator.plot(rsi.index, rsi, label="RSI(14)", linewidth=1.5, color='purple')
-            ax_indicator.axhline(70, color='red', linestyle='--', alpha=0.7)
-            ax_indicator.axhline(30, color='green', linestyle='--', alpha=0.7)
-            ax_indicator.set_ylim(0, 100)
-            ax_indicator.set_title("RSI 指標", fontproperties=zh_font, fontsize=11, fontweight='bold')
-            ax_indicator.legend(loc='upper left')
-            ax_indicator.grid(True, alpha=0.3)
-        
-        ax_indicator.xaxis.set_major_locator(mdates.AutoDateLocator())
-        ax_indicator.tick_params(axis='x', rotation=30)
-        
-        fig_indicator.tight_layout()
-        
-        canvas = FigureCanvasTkAgg(fig_indicator, master=self.lower_chart_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        plt.close(fig_indicator)
-    
+        self._render_chart()
+
     def run_backtest(self):
         """執行策略回測"""
         if self.df is None or self.current_symbol is None:
@@ -7192,10 +7450,14 @@ class StockAnalysisApp(tk.Tk):
         thread.start()
     
     def _update_progress(self, text):
-        """更新進度標籤"""
+        """更新進度標籤（頂欄 Scan 旁）。清空時＝掃描結束 → 記錄上次掃描時間。"""
         try:
             if hasattr(self, 'watchlist_progress_label') and self.watchlist_progress_label.winfo_exists():
                 self.watchlist_progress_label.config(text=text)
+            # 掃描結束（text 清空）→ 更新頂欄「上次掃描」時間
+            if not text and hasattr(self, '_tb_last_scan'):
+                import datetime as _dt
+                self._tb_last_scan.config(text=f"上次掃描 {_dt.datetime.now().strftime('%H:%M')}")
         except tk.TclError:
             pass
     
@@ -7473,259 +7735,214 @@ class StockAnalysisApp(tk.Tk):
             messagebox.showinfo("成功", f"已移除 {symbol}")
             self.refresh_watchlist()
     
+    def _classify_stock(self, stock_data, rmap):
+        """解析單檔自選股 → 分類（供清單列/計數/過濾共用，純呈現、不改任何計算）。
+        回傳 dict：symbol,name,quant_score,bias_20,grade,is_sell,r_signal,
+                    signal,scen_name,short_act。"""
+        symbol = stock_data[0] if len(stock_data) > 0 else ''
+        name = stock_data[1] if len(stock_data) > 1 else ''
+        recommendation = stock_data[5] if len(stock_data) > 5 else ''
+        quant_score = stock_data[8] if len(stock_data) > 8 else 0
+        bias_20 = stock_data[11] if len(stock_data) > 11 else 0
+
+        signal = "待分析"; scen_name = ''; short_act = ''
+        if recommendation and '|' in recommendation:
+            parts = recommendation.split('|')
+            signal = parts[0] if len(parts) > 0 else '待分析'
+            scen_name = parts[1] if len(parts) > 1 else ''
+            short_act = parts[2] if len(parts) > 2 else ''
+        elif recommendation:
+            signal = recommendation
+
+        grade = next((g for g in ('A', 'B', 'C')
+                      if scen_name.startswith(g) or signal.startswith(g)), '')
+        is_sell = any(x in signal for x in ("賣", "空", "減碼", "撤退", "停損", "出場", "避開", "暫緩", "不建議"))
+        r_signal = rmap.get(symbol)
+        return {'symbol': symbol, 'name': name, 'quant_score': quant_score,
+                'bias_20': bias_20, 'grade': grade, 'is_sell': is_sell,
+                'r_signal': r_signal, 'signal': signal,
+                'scen_name': scen_name, 'short_act': short_act}
+
+    def _row_matches(self, cls):
+        """套用搜尋框 + 訊號過濾（chips/摘要卡）→ 該列是否顯示。"""
+        # 搜尋（代碼/名稱）
+        q = getattr(self, '_search_text', '') or ''
+        if q:
+            if q.lower() not in f"{cls['symbol']} {cls['name']}".lower():
+                return False
+        # 訊號過濾
+        f = getattr(self, '_active_filter', 'all')
+        if f == 'all':
+            return True
+        if f == 'A':
+            return cls['grade'] == 'A'
+        if f == 'B':
+            return cls['grade'] == 'B'
+        if f == 'R':
+            return cls['r_signal'] == 'R-TRADE'
+        if f == 'SELL':
+            return cls['is_sell']
+        return True
+
+    def _row_visuals(self, cls):
+        """由分類產生列的 tags、分數字串、等級徽章、R 徽章、建議短文（含省略號）。"""
+        grade = cls['grade']; signal = cls['signal']; short_act = cls['short_act']
+        tags = []
+        if grade:
+            tags.append({'A': 'grade_A', 'B': 'grade_B', 'C': 'grade_C'}[grade])
+        else:
+            _gtag = self._theme.grade_tag(cls['scen_name'] or signal) if getattr(self, '_theme', None) else None
+            if _gtag:
+                tags.append(_gtag)
+            elif any(x in signal for x in ["買", "多", "進場", "看好"]):
+                tags.append("buy")
+            elif cls['is_sell']:
+                tags.append("sell")
+            elif any(x in signal for x in ["持有", "續抱"]):
+                tags.append("hold")
+            else:
+                tags.append("wait")
+        b = cls['bias_20']
+        if b and b > 10:
+            tags.append("hot")
+        elif b and b < -10:
+            tags.append("cold")
+
+        score_str = f"{cls['quant_score']:.0f}" if cls['quant_score'] else "-"
+        grade_badge = grade if grade else ("賣" if cls['is_sell'] else "")
+        r_badge = '◆R' if cls['r_signal'] == 'R-TRADE' else ('◇r' if cls['r_signal'] == 'R-WATCH' else '')
+        # 建議短文（吃剩餘欄寬＋省略號）
+        adv = (short_act or signal).replace("建議", "").strip()
+        if len(adv) > 22:
+            adv = adv[:21] + '…'
+        return tuple(tags), score_str, grade_badge, r_badge, adv
+
     def refresh_watchlist(self):
-        """刷新自選股列表（v4.5.18 標準金融字型版）"""
-        # 清空舊資料
+        """build_prompt_13：刷新自選股清單（5 欄固定寬＋搜尋/訊號過濾＋摘要卡連動）。
+        既有排序/R 徽章/grade 顏色邏輯保留；純呈現層。"""
         for item in self.watchlist_tree.get_children():
             self.watchlist_tree.delete(item)
-        
-        # 取得排序選項
+
         order_by = getattr(self, 'watchlist_sort_var', None)
-        if order_by:
-            order_by = order_by.get()
-        else:
-            order_by = 'industry'  # 預設按族群排序
-        
+        order_by = order_by.get() if order_by else 'industry'
         stocks = self.db.get_all_stocks(order_by=order_by)
 
-        # build_prompt_12 Task5：R 軌徽章對照（獨立欄位，不影響動能建議/等級/顏色）。
-        # 徽章以文字前綴呈現，保留原有 grade/action 顏色 tag：
-        #   ◆R = R-TRADE（盤整限定，可交易）；◇r = R-WATCH（僅參考，不建議交易）
         try:
             _rmap = load_r_signal_map(self.db.db_name)
         except Exception as _rme:
             print(f"[R軌] r_signal 對照讀取略過: {_rme}")
             _rmap = {}
 
-        def _r_badge(sym):
-            rs = _rmap.get(sym)
-            if rs == 'R-TRADE':
-                return '◆R '
-            if rs == 'R-WATCH':
-                return '◇r '
-            return ''
-
-        # ========================================
-        # v4.5.18 標準金融終端機風格
-        # ========================================
-        # 標準金融字型：Consolas (數字等寬)、Segoe UI (中文)
-        FONT_FAMILY = "Consolas"
-        FONT_SIZE = 9
-        
-        # UI 改造：Treeview 樣式統一由 theme.style_treeview 管理（在建立時已套用），
-        # 不再於每次刷新重設 ttk.Style（避免覆蓋主題、且省去重複設定）。
-        # tag 顏色一律走 theme token。
+        # Treeview tag 樣式（建立時已套用；後備補上）
         if getattr(self, '_theme', None) is not None:
             self._theme.style_treeview(self.watchlist_tree)
         else:
-            # 後備：主題未載入時維持可讀的深色 tag
-            self.watchlist_tree.tag_configure("group", background="#1a1a2e", foreground="#ffffff")
-            # fix_07 任務6：動作語意色（買=橘 / 賣=綠 / 中性=灰）
             import theme as _thm
-            self.watchlist_tree.tag_configure("buy", foreground=_thm.ACTION_BUY)
-            self.watchlist_tree.tag_configure("hold", foreground=_thm.ACTION_NEUTRAL)
-            self.watchlist_tree.tag_configure("sell", foreground=_thm.ACTION_SELL)
-            self.watchlist_tree.tag_configure("wait", foreground=_thm.ACTION_NEUTRAL)
+            self.watchlist_tree.tag_configure("group", background="#1a1a2e", foreground="#ffffff")
+            for _t, _c in (("buy", _thm.ACTION_BUY), ("hold", _thm.ACTION_NEUTRAL),
+                           ("sell", _thm.ACTION_SELL), ("wait", _thm.ACTION_NEUTRAL)):
+                self.watchlist_tree.tag_configure(_t, foreground=_c)
             self.watchlist_tree.tag_configure("hot", background="#3a1a1a")
             self.watchlist_tree.tag_configure("cold", background="#1a3a1a")
 
-        # 判斷是否使用分組模式
+        # 先分類全部（供計數，計數不受過濾影響）
+        classified = [self._classify_stock(sd, _rmap) for sd in stocks]
+        counts = {'all': len(classified),
+                  'A': sum(1 for c in classified if c['grade'] == 'A'),
+                  'B': sum(1 for c in classified if c['grade'] == 'B'),
+                  'R': sum(1 for c in classified if c['r_signal'] == 'R-TRADE'),
+                  'SELL': sum(1 for c in classified if c['is_sell'])}
+        self._filter_counts = counts
+
         use_grouping = (order_by == 'industry')
-        
+        shown = 0
+
         if use_grouping:
-            # ========================================
-            # 分組模式：族群 -> 個股
-            # ========================================
-            grouped_data = {}
-            for stock_data in stocks:
-                # 安全讀取
-                if len(stock_data) < 7:
-                    stock_data = list(stock_data) + ['未分類'] * (7 - len(stock_data))
-                
-                industry = stock_data[6] or "未分類"
-                
-                if industry not in grouped_data:
-                    grouped_data[industry] = []
-                grouped_data[industry].append(stock_data)
-            
-            total_count = 0
-            
-            # 遍歷每個族群
-            for industry, items in grouped_data.items():
-                # 計算族群統計（安全讀取評分）
-                scores = []
-                for s in items:
-                    if len(s) > 8 and s[8]:
-                        scores.append(s[8])
+            grouped = {}
+            for sd, cls in zip(stocks, classified):
+                if not self._row_matches(cls):
+                    continue
+                industry = (sd[6] if len(sd) > 6 else None) or "未分類"
+                grouped.setdefault(industry, []).append(cls)
+            for industry, items in grouped.items():
+                scores = [c['quant_score'] for c in items if c['quant_score']]
                 avg_score = sum(scores) / len(scores) if scores else 0
-                
-                # 建立族群父節點（不使用表情符號）
                 group_text = f"[{industry}] ({len(items)})"
                 if avg_score > 0:
-                    group_text += f" Avg:{avg_score:.0f}"
-                
-                group_id = self.watchlist_tree.insert("", "end", 
-                    text=group_text, 
-                    values=("", "", ""),
-                    open=True, 
-                    tags=('group',)
-                )
-                
-                # 插入個股子節點
-                for item in items:
-                    symbol = item[0] if len(item) > 0 else ''
-                    name = item[1] if len(item) > 1 else ''
-                    recommendation = item[5] if len(item) > 5 else ''
-                    quant_score = item[8] if len(item) > 8 else 0
-                    bias_20 = item[11] if len(item) > 11 else 0
-                    
-                    # 解析建議字串："overall|scenario_name|short_action|timing"（同源 build_verdict）
-                    signal = "待分析"
-                    _scen_name = ''
-                    _short_act = ''
-                    if recommendation and '|' in recommendation:
-                        parts = recommendation.split('|')
-                        signal = parts[0] if len(parts) > 0 else '待分析'
-                        _scen_name = parts[1] if len(parts) > 1 else ''
-                        _short_act = parts[2] if len(parts) > 2 else ''
-                    elif recommendation:
-                        signal = recommendation
+                    group_text += f" 均{avg_score:.0f}"
+                gid = self.watchlist_tree.insert("", "end", text=group_text,
+                                                 values=("", "", "", "", ""),
+                                                 open=True, tags=('group',))
+                for cls in items:
+                    tags, score_str, grade_badge, r_badge, adv = self._row_visuals(cls)
+                    self.watchlist_tree.insert(gid, "end", text=cls['symbol'],
+                        values=(cls['name'], score_str, grade_badge, r_badge, adv),
+                        tags=tags)
+                    shown += 1
+        else:
+            for cls in classified:
+                if not self._row_matches(cls):
+                    continue
+                tags, score_str, grade_badge, r_badge, adv = self._row_visuals(cls)
+                self.watchlist_tree.insert("", "end",
+                    text=f"{cls['symbol']} {cls['name']}",
+                    values=(cls['name'], score_str, grade_badge, r_badge, adv),
+                    tags=tags)
+                shown += 1
 
-                    # build_prompt_06 任務3：等級取自 scenario_name 首碼（A/B/C），
-                    # tag 以 grade 為主、grade_tag 字串比對降為 fallback。
-                    _grade = next((g for g in ('A', 'B', 'C')
-                                   if _scen_name.startswith(g) or signal.startswith(g)), '')
-                    tags = []
-                    if _grade:
-                        tags.append({'A': 'grade_A', 'B': 'grade_B', 'C': 'grade_C'}[_grade])
-                    else:
-                        _gtag = self._theme.grade_tag(_scen_name or signal) if getattr(self, '_theme', None) else None
-                        if _gtag:
-                            tags.append(_gtag)
-                        elif any(x in signal for x in ["買", "多", "進場", "看好"]):
-                            tags.append("buy")
-                        elif any(x in signal for x in ["賣", "空", "減碼", "撤退", "停損"]):
-                            tags.append("sell")
-                        elif any(x in signal for x in ["持有", "續抱"]):
-                            tags.append("hold")
-                        else:
-                            tags.append("wait")
-
-                    # 過熱/超跌背景
-                    if bias_20 and bias_20 > 10:
-                        tags.append("hot")
-                    elif bias_20 and bias_20 < -10:
-                        tags.append("cold")
-
-                    # 評分顯示
-                    score_str = f"{quant_score:.0f}" if quant_score else "-"
-
-                    # build_prompt_06 任務3：欄位格式 {等級} {簡短action}，超長截斷（tooltip 由既有機制）
-                    if _grade:
-                        _act = (_short_act or signal).replace("建議", "").strip()
-                        display_signal = f"{_grade} {_act}"[:20]
-                    else:
-                        display_signal = signal.replace("建議", "")[:20]
-                    # build_prompt_12 Task5：R 軌徽章前綴（獨立於動能建議）
-                    display_signal = (_r_badge(symbol) + display_signal)[:24]
-
-                    self.watchlist_tree.insert(group_id, "end",
-                        text=symbol, 
-                        values=(name, score_str, display_signal),
-                        tags=tuple(tags)
-                    )
-                    total_count += 1
-            
-            # v4.5.18：檢查數據新舊，顯示提示
-            oldest_date = None
-            for stock_data in stocks:
-                if len(stock_data) > 12 and stock_data[12]:  # last_analyzed
-                    try:
-                        analyzed_date = stock_data[12].split()[0]  # 取日期部分
-                        if oldest_date is None or analyzed_date < oldest_date:
-                            oldest_date = analyzed_date
-                    except:
-                        pass
-            
-            # 更新計數標籤
-            status_text = f"{total_count} / {len(grouped_data)} Groups"
+        # 底部狀態：總檔數／已顯示（過濾後）／最舊分析日提示
+        oldest_date = None
+        for sd in stocks:
+            if len(sd) > 12 and sd[12]:
+                try:
+                    d = sd[12].split()[0]
+                    if oldest_date is None or d < oldest_date:
+                        oldest_date = d
+                except Exception:
+                    pass
+        try:
+            total = len(stocks)
+            ftxt = "" if getattr(self, '_active_filter', 'all') == 'all' and not getattr(self, '_search_text', '') else f"（顯示 {shown}）"
+            self.watchlist_count_label.config(text=f"{total} 檔{ftxt}")
+            scanned_txt = ""
             if oldest_date:
                 today = datetime.datetime.now().strftime("%Y-%m-%d")
-                if oldest_date < today:
-                    status_text += f" [!{oldest_date}]"  # 提示數據已過期
-                    self.watchlist_count_label.config(foreground="#ff8800")  # 橙色警告
-                else:
-                    self.watchlist_count_label.config(foreground="#00aaff")
-            self.watchlist_count_label.config(text=status_text)
-        
-        else:
-            # ========================================
-            # 平面模式：原有顯示方式
-            # ========================================
-            for stock_data in stocks:
-                # 安全讀取
-                if len(stock_data) < 6:
-                    stock_data = list(stock_data) + [''] * (6 - len(stock_data))
-                
-                symbol = stock_data[0]
-                name = stock_data[1]
-                recommendation = stock_data[5] if len(stock_data) > 5 else ''
-                quant_score = stock_data[8] if len(stock_data) > 8 else 0
-                
-                display_text = f"{symbol} {name if name else ''}"
-                
-                # 解析建議
-                signal = "待分析"
-                _scen_name = ''
-                _short_act = ''
-                if recommendation and '|' in recommendation:
-                    parts = recommendation.split('|')
-                    signal = parts[0]
-                    _scen_name = parts[1] if len(parts) > 1 else ''
-                    _short_act = parts[2] if len(parts) > 2 else ''
-                elif recommendation:
-                    signal = recommendation
+                scanned_txt = (f"分析日 {oldest_date}" if oldest_date >= today
+                               else f"⚠ 最舊 {oldest_date}")
+            self.watchlist_scanned_label.config(text=scanned_txt)
+        except Exception:
+            pass
 
-                # build_prompt_06 任務3：tag 以 grade 為主，grade_tag 字串比對為 fallback
-                _grade = next((g for g in ('A', 'B', 'C')
-                               if _scen_name.startswith(g) or signal.startswith(g)), '')
-                if _grade:
-                    tag = {'A': 'grade_A', 'B': 'grade_B', 'C': 'grade_C'}[_grade]
-                else:
-                    tag = (self._theme.grade_tag(_scen_name or signal) if getattr(self, '_theme', None) else None)
-                    if not tag:
-                        if any(x in signal for x in ["買", "多"]):
-                            tag = "buy"
-                        elif any(x in signal for x in ["賣", "減碼"]):
-                            tag = "sell"
-                        elif "持有" in signal:
-                            tag = "hold"
-                        else:
-                            tag = "wait"
+        # 更新訊號 chips + 摘要卡 + 過濾外觀（雙向同步）
+        self._update_summary_cards(counts, classified)
+        self._sync_filter_visuals()
 
-                score_str = f"{quant_score:.0f}" if quant_score else "-"
-                if _grade:
-                    _act = (_short_act or signal).replace("建議", "").strip()
-                    display_signal = f"{_grade} {_act}"[:20]
-                else:
-                    display_signal = signal.replace("建議", "")[:20]
-                # build_prompt_12 Task5：R 軌徽章前綴（獨立於動能建議）
-                display_signal = (_r_badge(symbol) + display_signal)[:24]
-
-                self.watchlist_tree.insert("", "end",
-                    text=display_text,
-                    values=(name, score_str, display_signal),
-                    tags=(tag,)
-                )
-            
-            count = len(stocks)
-            self.watchlist_count_label.config(text=f"{count}/100")
-            
-            if count >= 100:
-                self.watchlist_count_label.config(foreground="red")
+    def _update_summary_cards(self, counts, classified):
+        """更新五張摘要卡數字；◆R 卡在 >0 時邊框轉金；R 持倉倒數缺資料顯示「—」。"""
+        cards = getattr(self, '_card_widgets', {})
+        mapping = {'A': counts.get('A', 0), 'B': counts.get('B', 0),
+                   'R': counts.get('R', 0), 'SELL': counts.get('SELL', 0)}
+        for key, val in mapping.items():
+            card = cards.get(key)
+            if not card:
+                continue
+            try:
+                card['value'].config(text=str(val))
+            except Exception:
+                pass
+            # ◆R 卡在數量 >0 時邊框轉金色提示
+            if key == 'R':
+                card['accent_on'] = (val > 0)
+        # R 持倉倒數（暫以 r_signal 推算；無持倉表→缺資料顯示「—」）
+        rcard = cards.get('RCOUNT')
+        if rcard:
+            holders = [c for c in classified if c.get('r_signal') == 'R-TRADE']
+            if holders:
+                nm = holders[0].get('name') or holders[0].get('symbol')
+                rcard['value'].config(text=f"{nm} 第 —/10 天")
             else:
-                self.watchlist_count_label.config(foreground="#00aaff")
-    
+                rcard['value'].config(text="—")
+
     # ========================================================================
     # v4.4.7 新增：自選股排序功能
     # ========================================================================
@@ -7846,16 +8063,14 @@ class StockAnalysisApp(tk.Tk):
         
         item = self.watchlist_tree.item(selection[0])
         symbol_text = item['text']
-        
-        # 檢查是否為族群節點（以 📂 開頭）
-        if symbol_text.startswith('📂'):
-            # 雙擊族群節點：展開/收起
-            if self.watchlist_tree.item(selection[0], 'open'):
-                self.watchlist_tree.item(selection[0], open=False)
-            else:
-                self.watchlist_tree.item(selection[0], open=True)
+
+        # 族群節點：有子節點或標題以 '[' 開頭 → 展開/收起，不當作個股
+        is_group = bool(self.watchlist_tree.get_children(selection[0])) or symbol_text.startswith('[')
+        if is_group:
+            self.watchlist_tree.item(selection[0],
+                                     open=not self.watchlist_tree.item(selection[0], 'open'))
             return
-        
+
         # 個股節點：取得代碼並查詢
         symbol = symbol_text.split()[0]
         
