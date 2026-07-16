@@ -392,6 +392,51 @@ def apply_matplotlib_dark():
     })
 
 
+# ============================================================================
+# (g) build_prompt_13：主儀表板專用色票（**新增** token，不改上方任何既有值）
+#     凍結的 v4.5 報告視窗仍用既有 BG_APP/UP/DOWN/ACCENT…，須維持像素一致，
+#     故此處以 DASH_ 前綴另立一組儀表板色，僅供改版後的主視窗使用。
+# ============================================================================
+DASH_BG          = "#14161b"   # 視窗最底
+DASH_PANEL       = "#1a1d24"   # 面板/卡片
+DASH_BORDER      = "#2a2d35"   # 邊框/分隔線
+DASH_TEXT        = "#e8e6e1"   # 主要文字
+DASH_TEXT_2      = "#9aa0ab"   # 次要文字
+DASH_TEXT_3      = "#6b6f78"   # 弱文字/註記
+DASH_A           = "#efc042"   # A 級主攻（金）
+DASH_B           = "#6db3f2"   # B 級追蹤（藍）
+DASH_C           = "#8b8f98"   # C 級觀察（灰）
+DASH_SELL        = "#e05c5c"   # 賣訊出場（紅）
+DASH_R_GOLD      = "#d8c66a"   # R 軌 / Scan 主按鈕（暗金）
+DASH_UP          = "#e05c5c"   # 台股 紅漲（K 線/量/漲跌幅/籌碼＋）
+DASH_DOWN        = "#4fb286"   # 台股 綠跌
+DASH_REGIME_BASE = "#2b2e1f"   # regime 盤整膠囊底
+
+
+def mpf_market_style_dash():
+    """build_prompt_13：儀表板 K 線 mplfinance 樣式（紅漲綠跌，用 DASH_ 色）。
+    僅供繪圖，不影響任何指標/訊號計算；與凍結報告視窗的 mpf_market_style() 分離。
+    回傳 (marketcolors, style)。"""
+    import mplfinance as mpf
+    mc = mpf.make_marketcolors(up=DASH_UP, down=DASH_DOWN, edge="inherit",
+                               wick={"up": DASH_UP, "down": DASH_DOWN},
+                               volume={"up": "#7a3336", "down": "#2f5f4e"})
+    style = mpf.make_mpf_style(
+        base_mpf_style="nightclouds",
+        marketcolors=mc,
+        facecolor=DASH_PANEL,
+        figcolor=DASH_PANEL,
+        edgecolor=DASH_BORDER,
+        gridcolor=DASH_BORDER,
+        gridstyle="-",
+        mavcolors=[DASH_A, DASH_C, DASH_B],
+        rc={"axes.grid.axis": "y", "grid.alpha": 0.10,
+            "font.sans-serif": ["PingFang TC", "Microsoft JhengHei",
+                                "Heiti TC", "Arial Unicode MS"]},
+    )
+    return mc, style
+
+
 # 均線色（收斂成 token 配色）：短均=琥珀、中均=藍、長均=灰
 MAV_COLORS = [ACCENT, GRADE_B, TEXT_3]
 # 買賣訊號標記色（與紅漲綠跌 K 棒區隔，用中性色）

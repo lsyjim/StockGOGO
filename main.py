@@ -5552,61 +5552,153 @@ class StockAnalysisApp(tk.Tk):
             messagebox.showerror("錯誤", f"開啟自動交易失敗: {e}")
     
     def _create_widgets(self):
-        """建立UI元件"""
-        # 頂部行情/狀態列（純呈現層）
-        self._build_status_bar()
+        """build_prompt_13：響應式儀表板骨架（頂欄 + 水平 PanedWindow）。
 
-        main_container = ttk.Frame(self)
-        main_container.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        彈性權重＋最小值保護：
+          - 左清單：tk.PanedWindow 分隔線可拖，minsize 380、預設 440。
+          - 右工作區：pane stretch='always'，吃掉所有多餘寬度。
+          - K 線區為雙向擴張的唯一受益者（pack fill=BOTH expand）。
+        純 UI；所有既有變數/handler 一律保留。"""
+        # 儀表板下限尺寸：低於此鎖定不再縮
+        self.minsize(1200, 760)
 
-        left_panel = ttk.Frame(main_container, width=440)
-        left_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 8))
-        left_panel.pack_propagate(False)
+        # 清單過濾狀態（訊號 chips / 摘要卡雙向同步）與計數
+        self._active_filter = 'all'
+        self._filter_counts = {'all': 0, 'A': 0, 'B': 0, 'R': 0, 'SELL': 0}
+        self._resize_after_id = None
+        self._last_win_size = (0, 0)
 
-        right_panel = ttk.Frame(main_container)
-        right_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # 頂欄（高度固定，寬度撐滿；中段彈性空白）
+        self._build_top_bar()
+
+        # 主分隔：水平 PanedWindow（左清單 vs 右工作區）
+        # 用 tk.PanedWindow（非 ttk）以取得原生 minsize 保護與可拖曳 sash。
+        _th = getattr(self, '_theme', None)
+        _bg = _th.DASH_BG if _th else "#14161b"
+        self.main_paned = tk.PanedWindow(
+            self, orient=tk.HORIZONTAL, bg=_bg, bd=0,
+            sashwidth=6, sashrelief=tk.FLAT, sashpad=0,
+            opaqueresize=False)
+        self.main_paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=(4, 8))
+
+        left_panel = ttk.Frame(self.main_paned)
+        right_panel = ttk.Frame(self.main_paned)
+        # 左清單：預設 440、下限 380、拖曳可調；右工作區吃多餘寬度
+        self.main_paned.add(left_panel, minsize=380, width=440, stretch='never')
+        self.main_paned.add(right_panel, minsize=560, stretch='always')
 
         self._create_left_panel(left_panel)
         self._create_right_panel(right_panel)
 
-    # ── 頂部行情/狀態列 ──────────────────────────────────────────────
-    def _build_status_bar(self):
-        """頂部行情/狀態列：加權、櫃買（紅綠）、盤別、即時時鐘、最後更新。
-        純呈現層；指數資料用既有 yf 路徑延遲填入，失敗則維持佔位。"""
-        bar = ttk.Frame(self)
-        bar.pack(fill=tk.X, side=tk.TOP, padx=8, pady=6)
+        # 視窗 <Configure> debounce：拖曳過程僅縮放 canvas，放手 250ms 後才重繪 figure
+        self.bind('<Configure>', self._on_root_configure)
 
+    def _on_root_configure(self, event):
+        """根視窗尺寸變動 debounce（after(250) 取消前次），避免 mplfinance 重繪抖動。"""
+        if event.widget is not self:
+            return
+        size = (self.winfo_width(), self.winfo_height())
+        if size == self._last_win_size:
+            return
+        self._last_win_size = size
+        if self._resize_after_id is not None:
+            try:
+                self.after_cancel(self._resize_after_id)
+            except Exception:
+                pass
+        self._resize_after_id = self.after(250, self._on_resize_settled)
+
+    def _on_resize_settled(self):
+        """尺寸穩定後重繪圖表（用快取 df，不重新抓資料）。"""
+        self._resize_after_id = None
+        if getattr(self, 'df', None) is None:
+            return
+        try:
+            self._render_chart()
+            self.update_indicator()
+        except Exception as _re:
+            print(f"[Resize] 重繪略過: {_re}")
+
+    # ── 頂欄（build_prompt_13 任務 2）────────────────────────────────
+    def _dash(self, name, fallback):
+        """取儀表板色 token（主題缺失時回 fallback）。"""
         _th = getattr(self, '_theme', None)
-        f_label = _th.ui_font(_th.SIZE_SMALL) if _th else ("TkDefaultFont", 11)
-        f_num   = _th.num_font(_th.SIZE_SMALL, bold=True) if _th else ("TkFixedFont", 11, "bold")
+        return getattr(_th, name, fallback) if _th else fallback
 
-        def _cell(parent, caption):
-            box = ttk.Frame(parent); box.pack(side=tk.LEFT, padx=(0, 16))
-            ttk.Label(box, text=caption, font=f_label,
-                      foreground=(_th.TEXT_3 if _th else "gray")).pack(side=tk.LEFT, padx=(0, 4))
-            val = ttk.Label(box, text="—", font=f_num,
-                            foreground=(_th.TEXT if _th else "black"))
-            val.pack(side=tk.LEFT)
-            return val
+    def _build_top_bar(self):
+        """頂欄：App 名稱＋版號｜regime 膠囊＋ADX｜加權指數｜彈性空白｜
+        籌碼新鮮度圓點｜上次掃描｜Scan 主按鈕。高度固定 56、寬度撐滿。"""
+        _th = getattr(self, '_theme', None)
+        C_BG   = self._dash('DASH_BG', "#14161b")
+        C_PANEL= self._dash('DASH_PANEL', "#1a1d24")
+        C_TEXT = self._dash('DASH_TEXT', "#e8e6e1")
+        C_T2   = self._dash('DASH_TEXT_2', "#9aa0ab")
+        C_T3   = self._dash('DASH_TEXT_3', "#6b6f78")
+        C_GOLD = self._dash('DASH_R_GOLD', "#d8c66a")
+        f_lbl  = _th.ui_font(_th.SIZE_SMALL) if _th else ("TkDefaultFont", 11)
+        f_num  = _th.num_font(_th.SIZE_SMALL, bold=True) if _th else ("TkFixedFont", 11, "bold")
+        f_title= _th.ui_font(_th.SIZE_TITLE, bold=True) if _th else ("TkDefaultFont", 15, "bold")
 
-        self._sb_taiex = _cell(bar, "加權")
-        self._sb_tpex  = _cell(bar, "櫃買")
+        bar = tk.Frame(self, bg=C_BG, height=56)
+        bar.pack(fill=tk.X, side=tk.TOP, padx=8, pady=(6, 0))
+        bar.pack_propagate(False)
 
-        # 右側：最後更新、盤別、即時時鐘
-        self._sb_clock = ttk.Label(bar, text="--:--:--", font=f_num,
-                                   foreground=(_th.TEXT if _th else "black"))
-        self._sb_clock.pack(side=tk.RIGHT, padx=(8, 0))
-        self._sb_session = ttk.Label(bar, text="", font=f_label,
-                                    foreground=(_th.ACCENT if _th else "orange"))
-        self._sb_session.pack(side=tk.RIGHT, padx=(8, 0))
-        self._sb_update = ttk.Label(bar, text="更新 --:--", font=f_label,
-                                   foreground=(_th.TEXT_2 if _th else "gray"))
-        self._sb_update.pack(side=tk.RIGHT, padx=(8, 0))
+        # App 名稱＋版號
+        tk.Label(bar, text="量化投資儀表板", bg=C_BG, fg=C_TEXT,
+                 font=f_title).pack(side=tk.LEFT, padx=(6, 4))
+        tk.Label(bar, text="v4.6", bg=C_BG, fg=C_T3,
+                 font=f_lbl).pack(side=tk.LEFT, padx=(0, 14))
 
-        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, side=tk.TOP)
+        # 大盤 regime 膠囊（多頭綠 / 盤整黃 / 空頭紅）＋ ADX
+        self._tb_regime = tk.Label(bar, text=" 大盤 — ", bg=self._dash('DASH_REGIME_BASE', "#2b2e1f"),
+                                   fg=C_GOLD, font=f_num, padx=8, pady=2)
+        self._tb_regime.pack(side=tk.LEFT, padx=(0, 6))
+        self._tb_adx = tk.Label(bar, text="ADX —", bg=C_BG, fg=C_T2, font=f_lbl)
+        self._tb_adx.pack(side=tk.LEFT, padx=(0, 14))
+
+        # 加權指數與漲跌
+        tk.Label(bar, text="加權", bg=C_BG, fg=C_T3, font=f_lbl).pack(side=tk.LEFT, padx=(0, 4))
+        self._tb_taiex = tk.Label(bar, text="—", bg=C_BG, fg=C_TEXT, font=f_num)
+        self._tb_taiex.pack(side=tk.LEFT, padx=(0, 4))
+        self._tb_taiex_chg = tk.Label(bar, text="", bg=C_BG, fg=C_T2, font=f_num)
+        self._tb_taiex_chg.pack(side=tk.LEFT)
+
+        # 中段彈性空白（吸收多餘寬度）
+        spacer = tk.Frame(bar, bg=C_BG)
+        spacer.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Scan 主按鈕（金色底、深色字）＋掃描進度
+        self._scan_btn = tk.Button(bar, text="Scan", command=self.refresh_all_watchlist_analysis,
+                                   bg=C_GOLD, fg="#1a1400", activebackground="#c9b75c",
+                                   activeforeground="#1a1400", relief=tk.FLAT, bd=0,
+                                   font=(f_num[0], f_num[1], "bold"), padx=16, pady=4,
+                                   cursor="hand2")
+        self._scan_btn.pack(side=tk.RIGHT, padx=(8, 6))
+        # 掃描進度（沿用既有 _update_progress 目標）
+        self.watchlist_progress_label = tk.Label(bar, text="", bg=C_BG, fg=C_GOLD, font=f_lbl)
+        self.watchlist_progress_label.pack(side=tk.RIGHT, padx=(0, 6))
+
+        # 上次掃描時間
+        self._tb_last_scan = tk.Label(bar, text="上次掃描 —", bg=C_BG, fg=C_T3, font=f_lbl)
+        self._tb_last_scan.pack(side=tk.RIGHT, padx=(0, 14))
+
+        # 籌碼資料新鮮度圓點（最新 chip_daily = 上一交易日→綠，落後→黃）
+        self._tb_chip_dot = tk.Label(bar, text="●", bg=C_BG, fg=C_T3, font=f_num)
+        self._tb_chip_dot.pack(side=tk.RIGHT, padx=(0, 3))
+        tk.Label(bar, text="籌碼", bg=C_BG, fg=C_T3, font=f_lbl).pack(side=tk.RIGHT, padx=(0, 4))
+
+        # 即時時鐘（沿用 _tick_status_clock）
+        self._sb_clock = tk.Label(bar, text="--:--:--", bg=C_BG, fg=C_T2, font=f_num)
+        self._sb_clock.pack(side=tk.RIGHT, padx=(0, 14))
+        self._sb_session = tk.Label(bar, text="", bg=C_BG, fg=C_GOLD, font=f_lbl)
+        self._sb_session.pack(side=tk.RIGHT, padx=(0, 6))
+
+        ttk.Separator(self, orient=tk.HORIZONTAL).pack(fill=tk.X, side=tk.TOP, padx=8)
 
         self._tick_status_clock()
-        self.after(1500, self._refresh_status_indices)
+        self.after(1500, self._refresh_top_indices)
+        self.after(1800, self._refresh_top_regime)
+        self.after(2200, self._refresh_chip_freshness)
 
     def _tick_status_clock(self):
         """每秒更新時鐘與盤別（純時間判斷，不抓資料）。"""
@@ -5614,9 +5706,8 @@ class StockAnalysisApp(tk.Tk):
         now = _dt.datetime.now()
         try:
             self._sb_clock.config(text=now.strftime("%H:%M:%S"))
-            # 台股盤別（一般交易時段 09:00–13:30）
             hm = now.hour * 60 + now.minute
-            wd = now.weekday()  # 5,6 = 週末
+            wd = now.weekday()
             if wd >= 5:
                 sess = "休市"
             elif hm < 9 * 60:
@@ -5630,133 +5721,223 @@ class StockAnalysisApp(tk.Tk):
             return
         self.after(1000, self._tick_status_clock)
 
-    def _refresh_status_indices(self):
-        """延遲填入加權/櫃買指數漲跌（用既有 yf 路徑，純呈現、失敗即略過）。"""
+    def _refresh_top_indices(self):
+        """頂欄加權指數漲跌（背景 yf，純呈現、失敗即略過）。"""
         _th = getattr(self, '_theme', None)
 
-        def _fmt(label_widget, pct):
-            if pct is None:
-                return
-            try:
-                color = _th.trend_color(pct) if _th else ("red" if pct > 0 else "green" if pct < 0 else "gray")
-                txt = (f"{pct:+.2f}%")
-                label_widget.config(text=txt, foreground=color)
-            except Exception:
-                pass
-
-        def _idx_pct(symbol):
+        def _idx(symbol):
             try:
                 import yfinance as yf
                 h = yf.Ticker(symbol).history(period="5d")
                 if h is None or len(h) < 2:
-                    return None
+                    return None, None
                 c = h['Close'].dropna()
-                return (c.iloc[-1] / c.iloc[-2] - 1) * 100
+                return c.iloc[-1], (c.iloc[-1] / c.iloc[-2] - 1) * 100
             except Exception:
-                return None
+                return None, None
 
-        import threading, datetime as _dt
+        import threading
         def _work():
-            taiex = _idx_pct("^TWII")
-            tpex  = _idx_pct("^TWOII")
+            price, pct = _idx("^TWII")
             def _apply():
-                _fmt(self._sb_taiex, taiex)
-                _fmt(self._sb_tpex, tpex)
-                self._sb_update.config(text=f"更新 {_dt.datetime.now().strftime('%H:%M')}")
+                if price is None:
+                    return
+                up = self._dash('DASH_UP', "#e05c5c"); dn = self._dash('DASH_DOWN', "#4fb286")
+                col = up if (pct or 0) > 0 else dn if (pct or 0) < 0 else self._dash('DASH_TEXT_2', "#9aa0ab")
+                try:
+                    self._tb_taiex.config(text=f"{price:,.0f}")
+                    self._tb_taiex_chg.config(text=f"{pct:+.2f}%", fg=col)
+                except Exception:
+                    pass
             try:
                 self.after(0, _apply)
             except Exception:
                 pass
         threading.Thread(target=_work, daemon=True).start()
-    
+
+    def _refresh_top_regime(self):
+        """頂欄大盤 regime 膠囊＋ADX（取自 MarketRegimeAnalyzer 現有判定，背景執行）。"""
+        import threading
+        def _work():
+            reg = None
+            try:
+                reg = MarketRegimeAnalyzer.get_market_regime("台股")
+            except Exception as _e:
+                print(f"[頂欄] regime 讀取略過: {_e}")
+            def _apply():
+                if not reg or not reg.get('available'):
+                    return
+                td = reg.get('trend_direction', '盤整')
+                adx = reg.get('adx')
+                # 多頭綠 / 空頭紅 / 盤整黃（盤整用專屬暗金底）
+                if td == '多頭':
+                    bg = "#1f2b22"; fg = self._dash('DASH_DOWN', "#4fb286")
+                elif td == '空頭':
+                    bg = "#2b1f1f"; fg = self._dash('DASH_SELL', "#e05c5c")
+                else:
+                    bg = self._dash('DASH_REGIME_BASE', "#2b2e1f"); fg = self._dash('DASH_R_GOLD', "#d8c66a")
+                try:
+                    self._tb_regime.config(text=f" 大盤 {td} ", bg=bg, fg=fg)
+                    if adx is not None:
+                        self._tb_adx.config(text=f"ADX {adx:.0f}")
+                except Exception:
+                    pass
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _refresh_chip_freshness(self):
+        """籌碼新鮮度圓點：最新 chip_daily 日 == 上一交易日→綠，落後→黃，無資料→灰。"""
+        import threading
+        def _work():
+            latest_chip = None; latest_cal = None
+            try:
+                import sqlite3
+                conn = sqlite3.connect(self.db.db_name)
+                row = conn.execute(
+                    "SELECT MAX(date) FROM chip_daily WHERE foreign_net IS NOT NULL").fetchone()
+                latest_chip = row[0] if row else None
+                conn.close()
+                from chip_data_manager import get_chip_manager
+                latest_cal = get_chip_manager(self.db.db_name).get_latest_trading_day()
+            except Exception as _e:
+                print(f"[頂欄] 籌碼新鮮度略過: {_e}")
+            def _apply():
+                green = self._dash('DASH_DOWN', "#4fb286")
+                yellow = self._dash('DASH_R_GOLD', "#d8c66a")
+                grey = self._dash('DASH_TEXT_3', "#6b6f78")
+                try:
+                    if not latest_chip:
+                        self._tb_chip_dot.config(fg=grey)
+                    elif latest_cal and latest_chip >= latest_cal:
+                        self._tb_chip_dot.config(fg=green)
+                    else:
+                        self._tb_chip_dot.config(fg=yellow)
+                except Exception:
+                    pass
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
+        threading.Thread(target=_work, daemon=True).start()
+
     def _create_left_panel(self, parent):
-        """建立左側控制面板 (v4.5.18 標準金融字型版)"""
+        """build_prompt_13 任務 3：左清單重構。
+        上半 = Analysis / Sectors 功能分頁（保留全部既有變數與 handler）；
+        下半 = 自選股清單（搜尋框＋圖示鈕＋排序 segmented＋訊號 chips＋固定欄寬）。"""
+        _th = getattr(self, '_theme', None)
+        C_PANEL = self._dash('DASH_PANEL', "#1a1d24")
+        C_TEXT  = self._dash('DASH_TEXT', "#e8e6e1")
+        C_T2    = self._dash('DASH_TEXT_2', "#9aa0ab")
+        C_T3    = self._dash('DASH_TEXT_3', "#6b6f78")
+        f_lbl   = _th.ui_font(_th.SIZE_SMALL) if _th else ("TkDefaultFont", 11)
+
         # 使用 PanedWindow 讓上下區域可調整高度
         paned = ttk.PanedWindow(parent, orient=tk.VERTICAL)
         paned.pack(fill=tk.BOTH, expand=True)
-        
-        # === 上半部：功能分頁區 ===
+
+        # === 上半部：功能分頁區（不動：symbol_entry/market_var/period_var 等由此建立）===
         top_frame = ttk.Frame(paned)
-        paned.add(top_frame, weight=2)  # 權重2
-        
-        # 建立分頁（不使用表情符號）
+        paned.add(top_frame, weight=2)
+
         self.left_notebook = ttk.Notebook(top_frame)
         self.left_notebook.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
-        
-        # [分頁1] 個股分析
+
         stock_tab = ttk.Frame(self.left_notebook, padding=5)
         self.left_notebook.add(stock_tab, text="Analysis")
         self._build_stock_analysis_ui(stock_tab)
-        
-        # [分頁2] 熱門題材 (Trend Scanner)
+
         trend_tab = ttk.Frame(self.left_notebook, padding=5)
         self.left_notebook.add(trend_tab, text="Sectors")
         self._build_trend_scanner_ui(trend_tab)
 
-        # === 下半部：自選股清單 (升級版，不使用表情符號) ===
-        watchlist_frame = ttk.LabelFrame(paned, text="[Watchlist] by Industry", padding=5)
-        paned.add(watchlist_frame, weight=3)  # 權重3，給予更多空間
-        
-        # 工具列（使用文字按鈕，不用表情符號）
-        tool_frame = ttk.Frame(watchlist_frame)
-        tool_frame.pack(fill=tk.X, pady=(0, 5))
-        
-        ttk.Button(tool_frame, text="+Add", command=self.add_to_watchlist, width=5).pack(side=tk.LEFT, padx=2)
-        ttk.Button(tool_frame, text="-Del", command=self.remove_from_watchlist, width=5).pack(side=tk.LEFT, padx=2)
-        ttk.Button(tool_frame, text="Scan", command=self.refresh_all_watchlist_analysis, width=5).pack(side=tk.LEFT, padx=2)
-        
-        # 排序按鈕
-        ttk.Separator(tool_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=5, fill=tk.Y)
-        ttk.Button(tool_frame, text="Up", command=self.move_watchlist_up, width=3).pack(side=tk.LEFT)
-        ttk.Button(tool_frame, text="Dn", command=self.move_watchlist_down, width=3).pack(side=tk.LEFT)
-        ttk.Button(tool_frame, text="Top", command=self.move_watchlist_to_top, width=3).pack(side=tk.LEFT, padx=1)
-        ttk.Button(tool_frame, text="Bot", command=self.move_watchlist_to_bottom, width=3).pack(side=tk.LEFT, padx=1)
-        
-        # 刷新進度標籤
-        self.watchlist_progress_label = ttk.Label(tool_frame, text="", foreground="gray")
-        self.watchlist_progress_label.pack(side=tk.RIGHT, padx=5)
-        
-        self.watchlist_count_label = ttk.Label(tool_frame, text="0/100", foreground="blue")
-        self.watchlist_count_label.pack(side=tk.RIGHT, padx=5)
+        # === 下半部：自選股清單 ===
+        watchlist_frame = ttk.LabelFrame(paned, text="[Watchlist] 自選清單", padding=5)
+        paned.add(watchlist_frame, weight=3)
 
-        # 排序選項
+        # 工具列：搜尋框 + 圖示鈕（＋/－/⇅）
+        tool_frame = ttk.Frame(watchlist_frame)
+        tool_frame.pack(fill=tk.X, pady=(0, 4))
+
+        self.watchlist_search_var = tk.StringVar(value="")
+        self._search_text = ""
+        search_entry = ttk.Entry(tool_frame, textvariable=self.watchlist_search_var, width=14)
+        search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        try:
+            search_entry.configure(font=(_th.num_font()[0] if _th else "TkFixedFont", 11))
+        except Exception:
+            pass
+        # 佔位提示
+        def _on_search(*_a):
+            self._search_text = self.watchlist_search_var.get().strip()
+            self.refresh_watchlist()
+        self.watchlist_search_var.trace_add('write', _on_search)
+
+        ttk.Button(tool_frame, text="＋", command=self.add_to_watchlist, width=3).pack(side=tk.LEFT, padx=1)
+        ttk.Button(tool_frame, text="－", command=self.remove_from_watchlist, width=3).pack(side=tk.LEFT, padx=1)
+        # ⇅ 排序：把 Up/Dn/Top/Bot 收進下拉選單
+        sort_menu_btn = ttk.Menubutton(tool_frame, text="⇅", width=3)
+        _sort_menu = tk.Menu(sort_menu_btn, tearoff=0)
+        _sort_menu.add_command(label="上移", command=self.move_watchlist_up)
+        _sort_menu.add_command(label="下移", command=self.move_watchlist_down)
+        _sort_menu.add_command(label="移到頂端", command=self.move_watchlist_to_top)
+        _sort_menu.add_command(label="移到底端", command=self.move_watchlist_to_bottom)
+        sort_menu_btn['menu'] = _sort_menu
+        sort_menu_btn.pack(side=tk.LEFT, padx=1)
+
+        # 排序 segmented（reskin，既有 radio 邏輯不變）
         sort_frame = ttk.Frame(watchlist_frame)
         sort_frame.pack(fill=tk.X, pady=(0, 3))
-        
-        ttk.Label(sort_frame, text="排序：").pack(side=tk.LEFT)
-        self.watchlist_sort_var = tk.StringVar(value='industry')  # 預設按族群
-        sort_options = [
-            ('族群', 'industry'),
-            ('自訂', 'sort_order'),
-            ('代碼', 'symbol'),
-            ('建議', 'recommendation')
-        ]
+        ttk.Label(sort_frame, text="排序", foreground=C_T3, font=f_lbl).pack(side=tk.LEFT, padx=(0, 4))
+        self.watchlist_sort_var = tk.StringVar(value='industry')
+        sort_options = [('族群', 'industry'), ('自訂', 'sort_order'),
+                        ('代碼', 'symbol'), ('建議', 'recommendation')]
         for text, value in sort_options:
-            ttk.Radiobutton(sort_frame, text=text, variable=self.watchlist_sort_var, 
-                           value=value, command=self.refresh_watchlist).pack(side=tk.LEFT, padx=3)
+            ttk.Radiobutton(sort_frame, text=text, variable=self.watchlist_sort_var,
+                            value=value, command=self.refresh_watchlist).pack(side=tk.LEFT, padx=2)
+
+        # 訊號篩選 chips（全部 / A / B / ◆R / 賣訊；點擊過濾、掃描後即時更新數字）
+        self._chip_widgets = {}
+        chips_frame = tk.Frame(watchlist_frame, bg=C_PANEL)
+        chips_frame.pack(fill=tk.X, pady=(0, 4))
+        chip_specs = [('all', '全部', C_T2), ('A', 'A', self._dash('DASH_A', "#efc042")),
+                      ('B', 'B', self._dash('DASH_B', "#6db3f2")),
+                      ('R', '◆R', self._dash('DASH_R_GOLD', "#d8c66a")),
+                      ('SELL', '賣訊', self._dash('DASH_SELL', "#e05c5c"))]
+        for key, label, col in chip_specs:
+            b = tk.Label(chips_frame, text=f"{label} 0", bg=self._dash('DASH_BORDER', "#2a2d35"),
+                         fg=col, font=f_lbl, padx=7, pady=2, cursor="hand2")
+            b.pack(side=tk.LEFT, padx=(0, 4))
+            b.bind('<Button-1>', lambda e, k=key: self._set_filter(k))
+            self._chip_widgets[key] = (b, label, col)
 
         # ★ 樹狀列表 (支援族群分組)
         tree_frame = ttk.Frame(watchlist_frame)
         tree_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         self.watchlist_tree = ttk.Treeview(
-            tree_frame, 
-            columns=("name", "score", "signal"), 
-            show="tree headings", 
+            tree_frame,
+            columns=("name", "score", "grade", "r", "signal"),
+            show="tree headings",
             height=10
         )
-        
-        # 定義欄位 (第一欄 #0 為樹狀結構)
-        self.watchlist_tree.heading("#0", text="族群 / 代碼", anchor="w")
+
+        # 固定欄寬防截斷：代碼+名稱 / 分數右對齊 / 等級徽章 / ◆R / 建議吃剩餘＋ellipsis
+        self.watchlist_tree.heading("#0", text="代碼 / 族群", anchor="w")
         self.watchlist_tree.heading("name", text="名稱", anchor="w")
-        self.watchlist_tree.heading("score", text="評分", anchor="center")
-        self.watchlist_tree.heading("signal", text="量化建議", anchor="center")
-        
-        # stretch=False：欄位不自動撐滿視窗，總寬可溢出 → 橫向卷軸才拉得動
-        self.watchlist_tree.column("#0", width=120, minwidth=90, stretch=False)
+        self.watchlist_tree.heading("score", text="分", anchor="center")
+        self.watchlist_tree.heading("grade", text="級", anchor="center")
+        self.watchlist_tree.heading("r", text="R", anchor="center")
+        self.watchlist_tree.heading("signal", text="建議", anchor="w")
+
+        self.watchlist_tree.column("#0", width=110, minwidth=86, stretch=False)
         self.watchlist_tree.column("name", width=66, minwidth=50, stretch=False)
-        self.watchlist_tree.column("score", width=50, minwidth=40, anchor="e", stretch=False)     # 數字右對齊
-        self.watchlist_tree.column("signal", width=240, minwidth=140, anchor="w", stretch=False)  # 加寬，建議看得完整
+        self.watchlist_tree.column("score", width=34, minwidth=30, anchor="e", stretch=False)
+        self.watchlist_tree.column("grade", width=42, minwidth=36, anchor="center", stretch=False)
+        self.watchlist_tree.column("r", width=30, minwidth=26, anchor="center", stretch=False)
+        self.watchlist_tree.column("signal", width=180, minwidth=110, anchor="w", stretch=True)  # 吃剩餘寬
         
         # 設定顏色：建立時即套用主題（深色終端 + 紅漲綠跌 token）
         if getattr(self, '_theme', None) is not None:
@@ -5784,16 +5965,52 @@ class StockAnalysisApp(tk.Tk):
         tree_frame.grid_columnconfigure(0, weight=1)
         
         self.watchlist_tree.bind('<Double-1>', self.on_watchlist_double_click)
-        
+
         # 用於記錄排序方向
         self._watchlist_sort_reverse = {}
-        
-        # 版本資訊（標準金融字型）
+
+        # 底部狀態列：總檔數、已掃描數
         info_frame = ttk.Frame(watchlist_frame)
-        info_frame.pack(fill=tk.X)
-        ttk.Label(info_frame, text="v4.5.18 | Industry Groups | Quant Score", 
-                 font=("Consolas", 8), foreground="#666666").pack()
-    
+        info_frame.pack(fill=tk.X, pady=(3, 0))
+        self.watchlist_count_label = ttk.Label(info_frame, text="0 檔",
+                                                font=f_lbl, foreground=C_T2)
+        self.watchlist_count_label.pack(side=tk.LEFT)
+        self.watchlist_scanned_label = ttk.Label(info_frame, text="",
+                                                  font=f_lbl, foreground=C_T3)
+        self.watchlist_scanned_label.pack(side=tk.RIGHT)
+
+    def _set_filter(self, key):
+        """訊號 chips / 摘要卡點擊 → 套用清單過濾（雙向同步）。
+        再點一次目前已選的非-全部過濾 → 回到全部（toggle）。"""
+        cur = getattr(self, '_active_filter', 'all')
+        self._active_filter = 'all' if (key == cur and key != 'all') else key
+        self.refresh_watchlist()
+
+    def _sync_filter_visuals(self):
+        """依 self._active_filter 更新 chips 與摘要卡的選中外觀。"""
+        active = getattr(self, '_active_filter', 'all')
+        sel_bg = self._dash('DASH_PANEL', "#1a1d24")
+        off_bg = self._dash('DASH_BORDER', "#2a2d35")
+        on_bg = self._dash('DASH_TEXT_3', "#3a3d45")
+        for key, (widget, label, col) in getattr(self, '_chip_widgets', {}).items():
+            cnt = self._filter_counts.get(key, 0)
+            try:
+                widget.config(text=f"{label} {cnt}",
+                              bg=(on_bg if key == active else off_bg))
+            except Exception:
+                pass
+        # 摘要卡選中邊框
+        for key, card in getattr(self, '_card_widgets', {}).items():
+            try:
+                frame = card['frame']
+                base = card.get('accent') if card.get('accent_on') else self._dash('DASH_BORDER', "#2a2d35")
+                frame.config(highlightbackground=(self._dash('DASH_A', "#efc042")
+                                                  if key == active else base),
+                             highlightcolor=(self._dash('DASH_A', "#efc042")
+                                             if key == active else base))
+            except Exception:
+                pass
+
     def _build_stock_analysis_ui(self, parent):
         """建立個股分析的 UI 內容（v4.5.18 標準金融字型版）"""
         # 標題區（含功能按鈕，不使用表情符號）
