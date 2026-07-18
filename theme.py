@@ -407,10 +407,45 @@ DASH_A           = "#efc042"   # A 級主攻（金）
 DASH_B           = "#6db3f2"   # B 級追蹤（藍）
 DASH_C           = "#8b8f98"   # C 級觀察（灰）
 DASH_SELL        = "#e05c5c"   # 賣訊出場（紅）
-DASH_R_GOLD      = "#d8c66a"   # R 軌 / Scan 主按鈕（暗金）
+DASH_R_GOLD      = "#d8c66a"   # Scan 主按鈕（暗金）
 DASH_UP          = "#e05c5c"   # 台股 紅漲（K 線/量/漲跌幅/籌碼＋）
 DASH_DOWN        = "#4fb286"   # 台股 綠跌
 DASH_REGIME_BASE = "#2b2e1f"   # regime 盤整膠囊底
+
+# fix_13b 新增 token（P0-2 / P1-3 / P2-9）：
+#   P1-3：◆R（R-TRADE）＝金 #efc042、◇r（R-WATCH）＝灰 #6b6f78，
+#         清單 / 個股標題膠囊 / 摘要卡三處一律引用這兩個常數。
+#   P0-2：SKIP 專屬灰徽章色（絕不與賣訊共用）。
+#   P2-9：賣訊語意色一律紅（警示優先於漲跌配色）＝ DASH_SELL。
+DASH_R_TRADE     = "#efc042"   # ◆R  R-TRADE（金）
+DASH_R_WATCH     = "#6b6f78"   # ◇r  R-WATCH（灰）
+DASH_SKIP        = "#8b8f98"   # 「跳」SKIP 徽章（灰）
+DASH_SKIP_BG     = "#2f3238"   # 「跳」SKIP 徽章底（灰底）
+DASH_DISABLED    = "#5a5f68"   # disabled 控制項（灰字不可點）
+DASH_ON_ALERT    = "#ffffff"   # 警示紅底上的高對比文字（今日出場卡）
+
+
+def style_treeview_dash(tree, zebra=True):
+    """fix_13b：儀表板自選股清單專用 Treeview 樣式。
+
+    先套用共用 style_treeview()，再以 DASH_ token 覆寫儀表板語意色：
+      - sell / grade_sell → 紅（P2-9：賣訊全域統一紅）
+      - skip             → 灰（P0-2：SKIP 獨立徽章，不與賣訊混用）
+      - grade_A/B/C      → DASH_A/B/C
+      - r_trade / r_watch→ ◆R 金 / ◇r 灰（P1-3）
+    只改顏色，不影響任何計算。
+    """
+    style_treeview(tree, zebra=zebra)
+    tree.tag_configure("sell",       foreground=DASH_SELL)
+    tree.tag_configure("grade_sell", foreground=DASH_SELL)
+    tree.tag_configure("skip",       foreground=DASH_SKIP)
+    tree.tag_configure("grade_A", foreground=DASH_A, font=num_font(SIZE_BASE, bold=True))
+    tree.tag_configure("grade_B", foreground=DASH_B)
+    tree.tag_configure("grade_C", foreground=DASH_C)
+    tree.tag_configure("wait",  foreground=DASH_TEXT_2)
+    tree.tag_configure("hold",  foreground=DASH_TEXT_2)
+    tree.tag_configure("buy",   foreground=DASH_UP)
+    return tree
 
 
 def mpf_market_style_dash():

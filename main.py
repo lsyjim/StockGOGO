@@ -581,6 +581,7 @@ plt.rcParams["axes.unicode_minus"] = False
 
 import sys
 import os
+import json
 
 # ============================================================================
 # 字體設定
@@ -676,6 +677,129 @@ def persist_r_signal(db_path, symbol, r_signal):
         conn.commit()
     finally:
         conn.close()
+
+
+# ============================================================================
+# fix_13b P1-4：R 持倉登記（r_positions.json，本次唯一新增檔案）
+#   格式：[{"symbol": "3481", "entry_date": "2026-07-16"}]
+#   讀寫全程容錯：檔案不存在＝無登記；格式錯誤＝忽略並回報訊息（不丟例外）。
+#   出場日＝進場日起算第 R_HOLD_DAYS(10) 個交易日（trading_calendar 為準，
+#   日曆未涵蓋的未來日以「週一～週五」外推為預估值）。
+# ============================================================================
+R_POSITIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'r_positions.json')
+
+
+def load_r_positions(path=None):
+    """讀取 R 持倉登記。回傳 (positions, error_msg)。
+
+    容錯規則：檔案不存在 → ([], None)；JSON 壞掉/結構不對 → ([], '訊息')；
+    個別項目缺 symbol/entry_date 或日期格式錯 → 跳過該筆，其餘照用。
+    任何情況都不丟例外（呼叫端是 UI）。"""
+    p = path or R_POSITIONS_FILE
+    if not os.path.exists(p):
+        return [], None
+    try:
+        with open(p, 'r', encoding='utf-8') as f:
+            raw = json.load(f)
+    except Exception as e:
+        return [], f"r_positions.json 格式錯誤，已忽略（{e}）"
+    if not isinstance(raw, list):
+        return [], "r_positions.json 格式錯誤（應為 list），已忽略"
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        sym = str(item.get('symbol', '') or '').strip()
+        ent = str(item.get('entry_date', '') or '').strip()
+        if not sym or not ent:
+            continue
+        try:
+            datetime.datetime.strptime(ent, '%Y-%m-%d')
+        except ValueError:
+            continue
+        out.append({'symbol': sym, 'entry_date': ent})
+    return out, None
+
+
+def save_r_positions(positions, path=None):
+    """寫回 R 持倉登記。回傳 error_msg（成功為 None）。"""
+    p = path or R_POSITIONS_FILE
+    clean = []
+    for item in (positions or []):
+        sym = str((item or {}).get('symbol', '') or '').strip()
+        ent = str((item or {}).get('entry_date', '') or '').strip()
+        if sym and ent:
+            clean.append({'symbol': sym, 'entry_date': ent})
+    try:
+        with open(p, 'w', encoding='utf-8') as f:
+            json.dump(clean, f, ensure_ascii=False, indent=2)
+        return None
+    except Exception as e:
+        return f"r_positions.json 寫入失敗：{e}"
+
+
+def _weekday_walk(start_str, n):
+    """從 start_str（不含）往後數 n 個週一～週五。日曆缺未來日時的預估退路。"""
+    d = datetime.datetime.strptime(start_str, '%Y-%m-%d').date()
+    cnt = 0
+    while cnt < n:
+        d += datetime.timedelta(days=1)
+        if d.weekday() < 5:
+            cnt += 1
+    return d.strftime('%Y-%m-%d')
+
+
+def r_position_progress(entry_date, trading_days=None, today=None, hold_days=10):
+    """回傳 (day_n, hold_days, exit_date, estimated)。
+
+    day_n＝進場日算第 1 天起、到今天為止的交易日數（>hold_days 表示已過期）。
+    exit_date＝進場日之後第 hold_days 個交易日（時間出場，R 軌無停損）。
+    trading_calendar 未涵蓋到的未來日 → 以週間日外推，estimated=True。"""
+    today = today or datetime.datetime.now().strftime('%Y-%m-%d')
+    cal = sorted(set(trading_days or []))
+    # 第 N 天（含進場日）
+    if cal:
+        spans = [d for d in cal if entry_date <= d <= today]
+        day_n = len(spans) if spans else 1
+    else:
+        day_n = 1
+    # 出場日
+    future = [d for d in cal if d > entry_date]
+    estimated = False
+    if len(future) >= hold_days:
+        exit_date = future[hold_days - 1]
+    else:
+        base = future[-1] if future else entry_date
+        remain = hold_days - len(future)
+        exit_date = _weekday_walk(base, remain)
+        estimated = True
+    return day_n, hold_days, exit_date, estimated
+
+
+def _compose_recommendation(overall, scen_name, short_action, timing, result=None):
+    """fix_13b P0-2：組出 watchlist 的 recommendation 欄位字串。
+
+    格式 `overall|scen_name|short_act|timing|verdict`（第 5 段為 fix_13b 新增）。
+    verdict＝result['decision_matrix']['scenario']，也就是完整報告
+    report_formatter.build_verdict() 拿去當 grade 的**同一個值**，
+    因此清單徽章與報告裁決保證同源、不再靠文案關鍵字反推。
+
+    - 純字串組裝，不改任何引擎計算，也不動 DB schema（沿用既有 TEXT 欄位）。
+    - 舊資料只有 4 段 → _classify_stock 會退回文字對照，向下相容。
+    - 取不到 scenario（引擎不可用/例外）→ 省略第 5 段，行為同舊版。
+    """
+    verdict = ''
+    try:
+        if isinstance(result, dict):
+            verdict = str((result.get('decision_matrix') or {}).get('scenario', '') or '')
+    except Exception:
+        verdict = ''
+    # 防呆：欄位本身以 '|' 分段，內容不得再含 '|'
+    parts = [str(x or '').replace('|', '／') for x in (overall, scen_name, short_action, timing)]
+    if verdict:
+        parts.append(verdict.replace('|', ''))
+    return '|'.join(parts)
 
 
 def load_r_signal_map(db_path):
@@ -4663,13 +4787,15 @@ class RecommendationDialog:
         self._build_block_08_risk()           # 08 風險與警示＋免責
         self._build_block_09_r_track()        # 09 R 軌（超跌反彈獨立軌，僅在觸發時顯示）
 
-        # 關閉按鈕 - 使用深色背景
+        # 關閉按鈕
+        # fix_13b P1-8：底部「白底空白按鈕」的真相 —— 這顆是唯一的關閉鈕，功能正常。
+        # 問題出在 macOS(aqua)：tk.Button 的 bg 不吃（原生按鈕面維持淺色/白底），
+        # 但 fg='white' 仍生效 → 白字畫在白面上＝看起來是「白底無字按鈕」。
+        # 修法：改用跨平台會正確著色的 ttk.Button（與其他關閉鈕一致），文字恢復可見。
         btn_frame = tk.Frame(self.dialog, bg=DarkTheme.BG_MAIN)
         btn_frame.pack(fill=tk.X, pady=10)
-        tk.Button(btn_frame, text="關閉視窗", command=self._on_close,
-                 font=("Arial", 12, "bold"), bg="#424242", fg="white",
-                 activebackground="#616161", activeforeground="white",
-                 width=15, height=1, relief=tk.RAISED, cursor="hand2").pack()
+        ttk.Button(btn_frame, text="關閉視窗", command=self._on_close,
+                   width=15, cursor="hand2").pack()
         
         # 視窗關閉時清理綁定
         self.dialog.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -5019,7 +5145,31 @@ class RecommendationDialog:
         # 軌跡表
         tk.Label(body, text="裁決軌跡", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
                  bg=DarkTheme.BG_MAIN).pack(anchor="w", pady=(8, 2))
-        for step in (self.verdict.get('adjustments') or []):
+        adjustments = self.verdict.get('adjustments') or []
+        # fix_13b P2-14：SKIP／WAIT 等否決情境沒有 adjustment_trail，原本整段留白。
+        # 至少補一行「{層} 分否決（{分} < 40）」，說明卡在哪一層、幾分。
+        if not adjustments:
+            grade = self.verdict.get('grade')
+            _fallback = None
+            if grade == 'SKIP':
+                dv = sc.get('direction')
+                _fallback = (f"方向分否決（{self._fmtnum(dv, 0)} < 40）"
+                             if isinstance(dv, (int, float)) else "方向分否決（< 40）")
+            elif grade == 'WAIT':
+                pv = sc.get('position')
+                _fallback = (f"位置分否決（{self._fmtnum(pv, 0)} < 40）"
+                             if isinstance(pv, (int, float)) else "位置分否決（< 40）")
+            if _fallback:
+                fr = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+                fr.pack(fill=tk.X, pady=1)
+                tk.Label(fr, text="否決", font=("Arial", 10), fg=DarkTheme.TEXT_PRIMARY,
+                         bg=DarkTheme.BG_MAIN, width=10, anchor="w").pack(side=tk.LEFT, padx=(4, 0))
+                tk.Label(fr, text=_fallback, font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+                         bg=DarkTheme.BG_MAIN, anchor="w").pack(side=tk.LEFT)
+            else:
+                tk.Label(body, text="無裁決調整（單層通過）", font=("Arial", 10),
+                         fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_MAIN).pack(anchor="w")
+        for step in adjustments:
             downgrade = step.get('to') is not None and step.get('from') is not None
             rbg = self._WARN_BG if downgrade else DarkTheme.BG_MAIN
             r = tk.Frame(body, bg=rbg)
@@ -5625,6 +5775,46 @@ class StockAnalysisApp(tk.Tk):
         _th = getattr(self, '_theme', None)
         return getattr(_th, name, fallback) if _th else fallback
 
+    # ── fix_13b：輕量 tooltip（純顯示層，色票一律取 DASH_ token）──────────
+    def _tip(self, widget, text):
+        """滑鼠停留顯示提示。text 可為字串或 callable（動態內容）。"""
+        if widget is None or not text:
+            return
+
+        def _enter(_e=None):
+            try:
+                self._tip_hide()
+                msg = text() if callable(text) else text
+                if not msg:
+                    return
+                tw = tk.Toplevel(widget)
+                tw.wm_overrideredirect(True)
+                x = widget.winfo_rootx() + 12
+                y = widget.winfo_rooty() + widget.winfo_height() + 4
+                tw.wm_geometry(f"+{x}+{y}")
+                tk.Label(tw, text=msg, justify='left',
+                         bg=self._dash('DASH_PANEL', "#1a1d24"),
+                         fg=self._dash('DASH_TEXT', "#e8e6e1"),
+                         highlightbackground=self._dash('DASH_BORDER', "#2a2d35"),
+                         highlightthickness=1, padx=6, pady=3,
+                         font=("TkDefaultFont", 10)).pack()
+                self._tip_win = tw
+            except Exception:
+                pass
+
+        widget.bind('<Enter>', _enter, add='+')
+        widget.bind('<Leave>', lambda e: self._tip_hide(), add='+')
+
+    def _tip_hide(self, _e=None):
+        self._tip_row = None
+        tw = getattr(self, '_tip_win', None)
+        if tw is not None:
+            try:
+                tw.destroy()
+            except Exception:
+                pass
+            self._tip_win = None
+
     def _build_top_bar(self):
         """頂欄：App 名稱＋版號｜regime 膠囊＋ADX｜加權指數｜彈性空白｜
         籌碼新鮮度圓點｜上次掃描｜Scan 主按鈕。高度固定 56、寬度撐滿。"""
@@ -5940,8 +6130,9 @@ class StockAnalysisApp(tk.Tk):
         self.watchlist_tree.column("signal", width=180, minwidth=110, anchor="w", stretch=True)  # 吃剩餘寬
         
         # 設定顏色：建立時即套用主題（深色終端 + 紅漲綠跌 token）
+        # fix_13b：用 style_treeview_dash（含 skip 灰 / sell 紅 / grade DASH 色）
         if getattr(self, '_theme', None) is not None:
-            self._theme.style_treeview(self.watchlist_tree)
+            self._theme.style_treeview_dash(self.watchlist_tree)
         else:
             self.watchlist_tree.tag_configure("group", background="#E0E0E0", foreground="#2C3E50", font=("Arial", 10, "bold"))
             # fix_07 任務6：動作語意色（買=橘 ACTION_BUY / 賣=綠 ACTION_SELL / 中性=灰）
@@ -5965,6 +6156,11 @@ class StockAnalysisApp(tk.Tk):
         tree_frame.grid_columnconfigure(0, weight=1)
         
         self.watchlist_tree.bind('<Double-1>', self.on_watchlist_double_click)
+        # fix_13b P0-1：選股事件 → 載入個股並同步更新底部狀態帶三段
+        self.watchlist_tree.bind('<<TreeviewSelect>>', self.on_watchlist_select)
+        # fix_13b P1-5：R 欄 tooltip（strong／moderate 全稱）
+        self.watchlist_tree.bind('<Motion>', self._on_watchlist_motion, add='+')
+        self.watchlist_tree.bind('<Leave>', lambda e: self._tip_hide(), add='+')
 
         # 用於記錄排序方向
         self._watchlist_sort_reverse = {}
@@ -6089,7 +6285,8 @@ class StockAnalysisApp(tk.Tk):
         btn_frame.pack(fill=tk.X, pady=5)
         ttk.Button(btn_frame, text="Backtest", command=self.run_backtest, width=8,
                    style="Accent.TButton").pack(side=tk.LEFT, padx=2)
-        ttk.Button(btn_frame, text="Report", command=self.show_analysis_report, width=8).pack(side=tk.LEFT, padx=2)
+        # fix_13b P1-7：左側「Report」與圖表區「完整報告」呼叫同一個
+        # show_analysis_report（完全同功能），依裁決移除重複鈕，只留圖表區那顆。
         
         # 歷史分析日期（不使用表情符號）
         date_frame = ttk.Frame(strategy_frame)
@@ -6324,6 +6521,8 @@ class StockAnalysisApp(tk.Tk):
         # (4) 主圖表區域（K 線＋量＋副圖同窗；雙向擴張的唯一受益者）
         self.main_chart_frame = ttk.Frame(parent)
         self.main_chart_frame.pack(fill=tk.BOTH, expand=True)
+        # fix_13b P2-12：未選股時的空狀態提示
+        self._show_chart_empty_state()
 
         # (5) 底部狀態帶（三段以分隔線隔開）
         self._build_status_band(parent)
@@ -6346,12 +6545,13 @@ class StockAnalysisApp(tk.Tk):
         row.pack(fill=tk.X, pady=(0, 6))
 
         self._card_widgets = {}
+        # fix_13b P1-3：◆R 相關一律用 DASH_R_TRADE（金 #efc042），與清單／標題膠囊同色
         specs = [
             ('A',    'A 級主攻',  self._dash('DASH_A', "#efc042"), True),
             ('B',    'B 級追蹤',  self._dash('DASH_B', "#6db3f2"), True),
-            ('R',    '◆R 可交易', self._dash('DASH_R_GOLD', "#d8c66a"), True),
+            ('R',    '◆R 可交易', self._dash('DASH_R_TRADE', "#efc042"), True),
             ('SELL', '賣訊出場',  self._dash('DASH_SELL', "#e05c5c"), True),
-            ('RCOUNT', 'R 持倉倒數', self._dash('DASH_R_GOLD', "#d8c66a"), False),
+            ('RCOUNT', 'R 持倉倒數', self._dash('DASH_R_TRADE', "#efc042"), False),
         ]
         for i, (key, caption, col, clickable) in enumerate(specs):
             card = tk.Frame(row, bg=C_PANEL, highlightbackground=C_BORD,
@@ -6369,13 +6569,21 @@ class StockAnalysisApp(tk.Tk):
             val.pack(fill=tk.X, padx=10, pady=(0, 8))
 
             self._card_widgets[key] = {'frame': card, 'value': val, 'accent': col,
-                                       'accent_on': False}
+                                       'accent_on': False, 'caption': card.winfo_children()[0],
+                                       'base_bg': C_PANEL}
             if clickable:
                 card.configure(cursor="hand2")
                 for w in (card, val):
                     w.bind('<Button-1>', lambda e, k=key: self._set_filter(k))
                 # caption label 亦可點
                 card.winfo_children()[0].bind('<Button-1>', lambda e, k=key: self._set_filter(k))
+            elif key == 'RCOUNT':
+                # fix_13b P1-4：點卡片 → R 持倉登記對話框（r_positions.json）
+                card.configure(cursor="hand2")
+                for w in (card, val, card.winfo_children()[0]):
+                    w.bind('<Button-1>', lambda e: self._show_r_positions_dialog())
+                self._tip(card, "點擊登記/移除 R 持倉（r_positions.json）")
+                self._tip(val, "點擊登記/移除 R 持倉（r_positions.json）")
 
     # ── 任務 5.1：個股標題列 ─────────────────────────────────────────
     def _build_stock_title_bar(self, parent):
@@ -6423,8 +6631,11 @@ class StockAnalysisApp(tk.Tk):
                         command=self._redraw_from_cache).pack(side=tk.RIGHT, padx=2)
         # 週期切換（日K／週K；60 分 disabled 佔位）
         ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.RIGHT, padx=6, fill=tk.Y, pady=8)
-        ttk.Radiobutton(bar, text="60分", value="60分", variable=self.timeframe_var,
-                        state='disabled').pack(side=tk.RIGHT, padx=2)
+        # fix_13b P2-11：60分＝disabled（灰字不可點）＋ tooltip 說明待接入盤中資料
+        _tf60 = ttk.Radiobutton(bar, text="60分", value="60分", variable=self.timeframe_var,
+                                state='disabled')
+        _tf60.pack(side=tk.RIGHT, padx=2)
+        self._tip(_tf60, "待接入盤中資料")
         ttk.Radiobutton(bar, text="週K", value="週K", variable=self.timeframe_var,
                         command=self._redraw_from_cache).pack(side=tk.RIGHT, padx=2)
         ttk.Radiobutton(bar, text="日K", value="日K", variable=self.timeframe_var,
@@ -6550,8 +6761,68 @@ class StockAnalysisApp(tk.Tk):
             self._update_stock_title_bar()
             self._render_chart()
             self._update_status_band(symbol)
+            # fix_13b P0-1：狀態帶三段（三層分數／R 單計畫／籌碼最近日）需要引擎結果。
+            # 在背景執行緒跑 scan_mode 分析，回主執行緒（after）再更新，
+            # 不阻塞 UI、也不碰 mplfinance（繪圖仍固定主執行緒）。
+            self._refresh_band_async(symbol, market)
         except Exception as e:
             messagebox.showerror("錯誤", f"繪製圖表失敗：{str(e)}")
+
+    def _refresh_band_async(self, symbol, market):
+        """背景取得引擎裁決結果 → 更新底部狀態帶 + 標題列膠囊。
+
+        用 scan_mode=True（與掃描同一條熱路徑，籌碼只讀 DB、不打 API）。
+        結果存 self._band_result，**不覆寫 last_analysis_result**（完整報告/
+        下單視窗仍用它們自己的完整分析，零迴歸）。"""
+        token = getattr(self, '_band_token', 0) + 1
+        self._band_token = token
+
+        def _work():
+            try:
+                res = QuickAnalyzer.analyze_stock(symbol, market, scan_mode=True)
+                if res:
+                    res['symbol'] = symbol
+                    # 籌碼最近日明細（與完整報告 06 區同源，只讀 DB）
+                    try:
+                        from chip_data_manager import get_chip_manager
+                        _d = get_chip_manager(self.db.db_name).get_daily_detail(symbol, days=1)
+                        res['_chip_latest'] = _d[0] if _d else None
+                    except Exception as _ce:
+                        print(f"[狀態帶] {symbol} 籌碼明細略過: {_ce}")
+            except Exception as e:
+                print(f"[狀態帶] {symbol} 分析略過: {e}")
+                res = None
+
+            def _apply():
+                # 過期結果（使用者已切換個股）→ 丟棄
+                if token != getattr(self, '_band_token', 0):
+                    return
+                if res:
+                    self._band_result = res
+                    try:
+                        from r_track import evaluate_r_track
+                        _as_of = datetime.datetime.now().strftime('%Y-%m-%d')
+                        _rt = evaluate_r_track(res, _as_of, self._trading_calendar_days())
+                        res['r_track'] = _rt
+                        # 快取本檔 R 強度 → 下次清單刷新可顯示 ◆R+（無 DB schema 變更）
+                        if _rt.get('r_strength'):
+                            if not hasattr(self, '_r_strength_map'):
+                                self._r_strength_map = {}
+                            self._r_strength_map[symbol] = _rt['r_strength']
+                    except Exception as _re:
+                        print(f"[狀態帶] {symbol} R 軌略過: {_re}")
+                try:
+                    self._update_status_band(symbol)
+                    self._update_stock_title_bar()
+                except Exception as _ue:
+                    print(f"[狀態帶] 更新略過: {_ue}")
+
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _prepare_plot_df(self):
         """依週期切換回傳要繪的 DataFrame（週K 由日K resample，不另抓）。"""
@@ -6569,7 +6840,13 @@ class StockAnalysisApp(tk.Tk):
 
     def _indicator_addplots(self, df, panel_idx):
         """任務 5.3：把選定副圖指標（KD/MACD/RSI）做成同窗 addplot（panel=panel_idx）。
-        指標值一律取自現有 calculate_* 計算，不另寫第二套公式。"""
+        指標值一律取自現有 calculate_* 計算，不另寫第二套公式。
+
+        fix_13b P1-6：所有副圖 addplot 一律 secondary_y=False。
+        mplfinance 預設 secondary_y='auto'，常數參考線（如 RSI 25）值域極窄，
+        會被判給**次要 y 軸**並自動縮放成 24~26 → 線畫在面板中央（看起來像 60），
+        右側還多出 24/25/26 殘留座標軸。釘死在主軸並鎖 RSI/KD ylim=(0,100)
+        後，25／85 就落在真正的刻度位置。"""
         import pandas as _pd
         _th = getattr(self, '_theme', None)
         C_A    = self._dash('DASH_A', "#efc042")
@@ -6589,40 +6866,64 @@ class StockAnalysisApp(tk.Tk):
             if indicator == "RSI":
                 rsi = calculate_rsi(df['Close'])
                 cur = rsi.dropna().iloc[-1] if rsi.notna().any() else float('nan')
+                _YL = (0, 100)
                 aps.append(mpf.make_addplot(rsi, panel=panel_idx, color="#a06cd5",
-                                            width=1.3, ylabel="RSI",
+                                            width=1.3, ylabel="RSI", secondary_y=False,
+                                            ylim=_YL,
                                             label=f"RSI {cur:.0f}" if cur == cur else "RSI"))
                 # 參考線 25（金，R 觸發線）與 85（暗紅，安全閥）；92 豁免線不畫
                 aps.append(mpf.make_addplot(_const(25), panel=panel_idx, color=C_GOLD,
-                                            width=0.8, linestyle='--'))
+                                            width=0.8, linestyle='--',
+                                            secondary_y=False, ylim=_YL))
                 aps.append(mpf.make_addplot(_const(85), panel=panel_idx, color="#8a2b2b",
-                                            width=0.8, linestyle='--'))
+                                            width=0.8, linestyle='--',
+                                            secondary_y=False, ylim=_YL))
             elif indicator == "KD":
                 k, d = calculate_kd(df)
+                _YL = (0, 100)
                 aps.append(mpf.make_addplot(k, panel=panel_idx, color=C_B, width=1.2,
-                                            ylabel="KD", label="K"))
-                aps.append(mpf.make_addplot(d, panel=panel_idx, color=C_A, width=1.2, label="D"))
+                                            ylabel="KD", label="K",
+                                            secondary_y=False, ylim=_YL))
+                aps.append(mpf.make_addplot(d, panel=panel_idx, color=C_A, width=1.2,
+                                            label="D", secondary_y=False, ylim=_YL))
                 aps.append(mpf.make_addplot(_const(80), panel=panel_idx, color=C_SELL,
-                                            width=0.8, linestyle='--'))
+                                            width=0.8, linestyle='--',
+                                            secondary_y=False, ylim=_YL))
                 aps.append(mpf.make_addplot(_const(20), panel=panel_idx, color=C_DOWN,
-                                            width=0.8, linestyle='--'))
+                                            width=0.8, linestyle='--',
+                                            secondary_y=False, ylim=_YL))
             elif indicator == "MACD":
                 macd_line, signal_line, hist = calculate_macd(df['Close'])
                 hist_pos = hist.where(hist >= 0)
                 hist_neg = hist.where(hist < 0)
                 aps.append(mpf.make_addplot(hist_pos, panel=panel_idx, type='bar',
-                                            color=C_UP, alpha=0.5, ylabel="MACD"))
+                                            color=C_UP, alpha=0.5, ylabel="MACD",
+                                            secondary_y=False))
                 aps.append(mpf.make_addplot(hist_neg, panel=panel_idx, type='bar',
-                                            color=C_DOWN, alpha=0.5))
+                                            color=C_DOWN, alpha=0.5, secondary_y=False))
                 aps.append(mpf.make_addplot(macd_line, panel=panel_idx, color=C_B,
-                                            width=1.2, label="DIF"))
+                                            width=1.2, label="DIF", secondary_y=False))
                 aps.append(mpf.make_addplot(signal_line, panel=panel_idx, color=C_A,
-                                            width=1.2, label="DEA"))
+                                            width=1.2, label="DEA", secondary_y=False))
                 aps.append(mpf.make_addplot(_const(0), panel=panel_idx, color="#5a5f68",
-                                            width=0.8))
+                                            width=0.8, secondary_y=False))
         except Exception as _e:
             print(f"[副圖] {indicator} 計算略過: {_e}")
         return aps
+
+    def _show_chart_empty_state(self):
+        """fix_13b P2-12：未選股時圖表區顯示空狀態提示。"""
+        frame = getattr(self, 'main_chart_frame', None)
+        if frame is None:
+            return
+        for w in frame.winfo_children():
+            w.destroy()
+        C_BG = self._dash('DASH_PANEL', "#1a1d24")
+        C_T3 = self._dash('DASH_TEXT_3', "#6b6f78")
+        holder = tk.Frame(frame, bg=C_BG)
+        holder.pack(fill=tk.BOTH, expand=True)
+        tk.Label(holder, text="← 點選左側清單載入個股",
+                 bg=C_BG, fg=C_T3, font=("TkDefaultFont", 15)).place(relx=0.5, rely=0.5, anchor='center')
 
     def _render_chart(self):
         """任務 5.2/5.3：單窗繪製 K 線＋量＋副圖（panel_ratios=(6,1.5,2.5)）。
@@ -6735,8 +7036,9 @@ class StockAnalysisApp(tk.Tk):
         except Exception:
             pass
         if trig.notna().any():
+            # fix_13b P1-6：釘在主圖價格軸，避免被判給次要 y 軸而錯位
             aps.append(mpf.make_addplot(trig, type='scatter', markersize=140,
-                                        marker='D', color=C_RGOLD))
+                                        marker='D', color=C_RGOLD, secondary_y=False))
         return aps
 
     def _update_stock_title_bar(self):
@@ -6757,76 +7059,137 @@ class StockAnalysisApp(tk.Tk):
             self._tb_change.config(text=f"{arrow} {abs(chg):.2f} ({pct:+.2f}%)", fg=col)
         except Exception:
             pass
-        # M 軌裁決膠囊（若有分析結果）
+        # fix_13b P2-13：M 軌裁決膠囊 —— SKIP/SELL/WAIT/A/B/C 全部都要顯示。
+        # 舊版顯示 recommendation['overall'] 長句（SKIP 時常常空白/被擠掉），
+        # 改為顯示引擎裁決碼（decision_matrix['scenario']，＝報告 grade 同源），
+        # 沒有分析結果才退回清單快取的 verdict。
         try:
-            res = getattr(self, 'last_analysis_result', None)
+            res = self._band_source(self.current_symbol)
             verdict = ''
-            if res and res.get('symbol') == self.current_symbol:
-                rec = res.get('recommendation', {})
-                if isinstance(rec, dict):
-                    verdict = rec.get('overall', '')
-            self._tb_verdict.config(text=(f" M {verdict} " if verdict else ""),
-                                    fg=(C_GOLD if verdict else C_C))
-        except Exception:
-            pass
-        # R 軌膠囊（取自 r_signal 對照）
+            if res:
+                verdict = str((res.get('decision_matrix') or {}).get('scenario', '') or '')
+            if not verdict:
+                _cls = (getattr(self, '_classified_map', {}) or {}).get(self.current_symbol)
+                verdict = (_cls or {}).get('verdict', '')
+            _vcol = {'A': self._dash('DASH_A', "#efc042"),
+                     'B': self._dash('DASH_B', "#6db3f2"),
+                     'C': self._dash('DASH_C', "#8b8f98"),
+                     'SELL': self._dash('DASH_SELL', "#e05c5c"),
+                     'SKIP': self._dash('DASH_SKIP', "#8b8f98"),
+                     'WAIT': self._dash('DASH_TEXT_2', "#9aa0ab")}
+            if verdict and verdict != 'X':
+                self._tb_verdict.config(text=f" M {verdict} ", fg=_vcol.get(verdict, C_T2))
+            else:
+                self._tb_verdict.config(text=" M — ", fg=C_C)
+        except Exception as e:
+            print(f"[標題列] M 膠囊略過: {e}")
+        # fix_13b P1-3/P1-5：R 軌膠囊 —— ◆R 金 #efc042 / ◇r 灰 #6b6f78，
+        # 並顯示強度（◆R-TRADE strong）。強度優先取分析結果，其次取掃描快取。
         try:
+            C_RT = self._dash('DASH_R_TRADE', "#efc042")
+            C_RW = self._dash('DASH_R_WATCH', "#6b6f78")
             rmap = load_r_signal_map(self.db.db_name)
             rs = rmap.get(self.current_symbol)
+            strength = None
+            _res = self._band_source(self.current_symbol)
+            _rt = (_res or {}).get('r_track') or {}
+            if _rt.get('r_signal'):
+                rs = _rt.get('r_signal')
+                strength = _rt.get('r_strength')
+            if not strength:
+                strength = getattr(self, '_r_strength_map', {}).get(self.current_symbol)
             if rs == 'R-TRADE':
-                self._tb_rpill.config(text=" ◆R-TRADE ", fg=C_GOLD)
+                _txt = " ◆R-TRADE" + (f" {strength} " if strength else " ")
+                self._tb_rpill.config(text=_txt, fg=C_RT)
             elif rs == 'R-WATCH':
-                self._tb_rpill.config(text=" ◇r ", fg=C_C)
+                _txt = " ◇r R-WATCH" + (f" {strength} " if strength else " ")
+                self._tb_rpill.config(text=_txt, fg=C_RW)
             else:
                 self._tb_rpill.config(text="")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[標題列] R 膠囊略過: {e}")
+
+    def _band_source(self, symbol):
+        """狀態帶/標題膠囊的資料來源：優先用完整報告結果（同一檔），
+        否則用 fix_13b P0-1 選股時背景跑出來的 scan_mode 結果。都沒有 → None。"""
+        for attr in ('last_analysis_result', '_band_result'):
+            res = getattr(self, attr, None)
+            if res and res.get('symbol') == symbol:
+                return res
+        return None
 
     def _update_status_band(self, symbol):
-        """底部狀態帶：三層分數 / R 單計畫 / 籌碼最近日。缺資料優雅顯示「—」。"""
-        C_T2 = self._dash('DASH_TEXT_2', "#9aa0ab")
-        res = getattr(self, 'last_analysis_result', None)
-        has = bool(res and res.get('symbol') == symbol)
-        # 三層分數（方向/位置/時機）
+        """底部狀態帶：三層分數 / R 單計畫 / 籌碼最近日。
+
+        fix_13b P0-1：改讀 _band_source()（完整報告結果或選股時背景分析結果），
+        並修正欄位路徑——三層分數在 decision_matrix['three_layer'] 之下，
+        舊版讀 dm['direction_score'] 永遠是 None，才會三段全 '—'。
+        只有真正缺的欄位才顯示「—」。"""
+        res = self._band_source(symbol)
+        has = res is not None
+        # 三層分數（方向/位置/時機）— 與完整報告 04 區同源
         scores_txt = "—"
         try:
             if has:
-                dm = res.get('decision_matrix', {})
+                dm = res.get('decision_matrix', {}) or {}
                 if isinstance(dm, dict) and dm.get('available'):
-                    dv = dm.get('direction_score'); pv = dm.get('position_score'); tv = dm.get('timing_score')
+                    tl = dm.get('three_layer', {}) or {}
                     parts = []
-                    if dv is not None: parts.append(f"方向 {dv:.0f}")
-                    if pv is not None: parts.append(f"位置 {pv:.0f}")
-                    if tv is not None: parts.append(f"時機 {tv:.0f}")
-                    if not parts and dm.get('score') is not None:
+                    for key, label in (('direction', '方向'), ('position', '位置')):
+                        layer = tl.get(key) or {}
+                        v = layer.get('score')
+                        if v is not None:
+                            parts.append(f"{label} {v:.0f}")
+                    tv = (tl.get('timing') or {}).get('grade') or dm.get('scenario')
+                    if tv:
+                        parts.append(f"時機 {tv}")
+                    if dm.get('score') is not None:
                         parts.append(f"綜合 {dm.get('score'):.0f}")
                     scores_txt = " · ".join(parts) if parts else "—"
-        except Exception:
+        except Exception as e:
+            print(f"[狀態帶] 三層分數略過: {e}")
             scores_txt = "—"
-        # R 單計畫（倉位·出場日）
+        # R 單計畫（訊號·強度·出場日）
         rplan_txt = "—"
         try:
             if has:
-                r = res.get('r_track', {})
+                r = res.get('r_track', {}) or {}
                 if isinstance(r, dict) and r.get('r_signal'):
-                    pos = r.get('position_pct') or r.get('size_pct')
-                    exitd = r.get('exit_date') or '—'
-                    rplan_txt = f"{r.get('r_signal')}｜倉位 {pos}%｜出場 {exitd}" if pos else f"{r.get('r_signal')}｜出場 {exitd}"
-        except Exception:
+                    seg = [str(r.get('r_signal'))]
+                    if r.get('r_strength'):
+                        seg.append(str(r.get('r_strength')))
+                    seg.append(f"出場 {r.get('r_exit_date') or r.get('exit_date') or '—'}")
+                    rplan_txt = "｜".join(seg)
+                else:
+                    rplan_txt = "無 R 訊號"
+        except Exception as e:
+            print(f"[狀態帶] R 單計畫略過: {e}")
             rplan_txt = "—"
-        # 籌碼最近日（外資/投信淨額＋連買天數）
+        # 籌碼最近日（外資/投信連買天數＋資料日）
         chip_txt = "—"
         try:
             if has:
-                cf = res.get('chip_flow', {})
+                cf = res.get('chip_flow', {}) or {}
                 if isinstance(cf, dict) and cf.get('available'):
-                    fn = cf.get('foreign_net'); tn = cf.get('trust_net'); days = cf.get('foreign_buy_days')
                     seg = []
-                    if fn is not None: seg.append(f"外資 {fn:+.0f}")
-                    if tn is not None: seg.append(f"投信 {tn:+.0f}")
-                    if days: seg.append(f"連買 {days}日")
+                    latest = res.get('_chip_latest') or {}
+                    if latest.get('date') and not latest.get('is_missing'):
+                        seg.append(str(latest['date']))
+                    # chip_flow 的 net 單位已是「張」（chip_data_manager 定義），不再換算
+                    if cf.get('foreign_net') is not None:
+                        seg.append(f"外資 {cf['foreign_net']:+,.0f} 張")
+                    if cf.get('trust_net') is not None:
+                        seg.append(f"投信 {cf['trust_net']:+,.0f} 張")
+                    fd = cf.get('foreign_consecutive_days')
+                    if fd:
+                        seg.append(f"外資{'連買' if fd > 0 else '連賣'} {abs(fd)}日")
+                    if cf.get('data_reliable') is False:
+                        seg.append("⚠ 資料不完整")
                     chip_txt = "｜".join(seg) if seg else "—"
-        except Exception:
+                elif isinstance(cf, dict):
+                    chip_txt = "無籌碼資料"
+        except Exception as e:
+            print(f"[狀態帶] 籌碼略過: {e}")
             chip_txt = "—"
         try:
             self._sbnd_scores.config(text=scores_txt)
@@ -7061,7 +7424,8 @@ class StockAnalysisApp(tk.Tk):
                             short_term = rec.get('short_term', {})
                             short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
                             timing = rec.get('action_timing', '')
-                            recommendation_str = f"{overall}|{scenario}|{short_action}|{timing}"
+                            recommendation_str = _compose_recommendation(
+                                overall, scenario, short_action, timing, result)
                         else:
                             recommendation_str = str(rec)
                         
@@ -7356,7 +7720,8 @@ class StockAnalysisApp(tk.Tk):
                             short_term = rec.get('short_term', {})
                             short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
                             timing = rec.get('action_timing', '')
-                            recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
+                            recommendation = _compose_recommendation(
+                                overall, scenario, short_action, timing, result)
                         else:
                             overall = str(rec); recommendation = str(rec)
                         # build_prompt_12 Task5：R 軌獨立評估（紅線：不碰 grade/action_code/
@@ -7547,7 +7912,8 @@ class StockAnalysisApp(tk.Tk):
                                 overall = rec.get('overall', action_zh)
                             else:
                                 short_action = action_zh; timing = '觀望中'; overall = action_zh
-                            recommendation = f"{overall}|{scenario_name}|{short_action}|{timing}"
+                            recommendation = _compose_recommendation(
+                                overall, scenario_name, short_action, timing, result)
                         except Exception as dm_error:
                             print(f"DecisionMatrix 計算錯誤 {symbol}: {dm_error}")
                             rec = result['recommendation']
@@ -7557,7 +7923,8 @@ class StockAnalysisApp(tk.Tk):
                                 short_term = rec.get('short_term', {})
                                 short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
                                 timing = rec.get('action_timing', '')
-                                recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
+                                recommendation = _compose_recommendation(
+                                    overall, scenario, short_action, timing, result)
                             else:
                                 recommendation = str(rec)
                         return {'symbol': symbol, 'recommendation': recommendation,
@@ -7678,8 +8045,9 @@ class StockAnalysisApp(tk.Tk):
                             short_action = action_zh
                             timing = '觀望中'
                             overall = action_zh
-                        
-                        recommendation = f"{overall}|{scenario_name}|{short_action}|{timing}"
+
+                        recommendation = _compose_recommendation(
+                            overall, scenario_name, short_action, timing, result)
                     except Exception as dm_error:
                         print(f"DecisionMatrix 計算錯誤 {symbol}: {dm_error}")
                         # 回退到舊方法
@@ -7690,7 +8058,8 @@ class StockAnalysisApp(tk.Tk):
                             short_term = rec.get('short_term', {})
                             short_action = short_term.get('action', '') if isinstance(short_term, dict) else ''
                             timing = rec.get('action_timing', '')
-                            recommendation = f"{overall}|{scenario}|{short_action}|{timing}"
+                            recommendation = _compose_recommendation(
+                                overall, scenario, short_action, timing, result)
                         else:
                             recommendation = str(rec)
                     
@@ -7737,31 +8106,82 @@ class StockAnalysisApp(tk.Tk):
     
     def _classify_stock(self, stock_data, rmap):
         """解析單檔自選股 → 分類（供清單列/計數/過濾共用，純呈現、不改任何計算）。
-        回傳 dict：symbol,name,quant_score,bias_20,grade,is_sell,r_signal,
-                    signal,scen_name,short_act。"""
+
+        fix_13b P0-2：等級不再靠「建議文案關鍵字」猜測。
+        recommendation 欄位格式為 `overall|scen_name|short_act|timing[|verdict]`，
+        第 5 段 verdict 由掃描端直接寫入引擎的 decision_matrix['scenario']
+        （＝完整報告 build_verdict() 的 grade 同一個值），存在時一律以它為準，
+        清單徽章因此保證 == 報告裁決。舊資料（4 段）退回文字對照，且
+        **SKIP 先判、絕不落入賣訊**（'不建議關注' / '不參與' / '方向不對'）。
+
+        回傳 dict：symbol,name,quant_score,bias_20,verdict,grade,is_skip,is_sell,
+                    r_signal,r_strength,signal,scen_name,short_act。"""
         symbol = stock_data[0] if len(stock_data) > 0 else ''
         name = stock_data[1] if len(stock_data) > 1 else ''
         recommendation = stock_data[5] if len(stock_data) > 5 else ''
         quant_score = stock_data[8] if len(stock_data) > 8 else 0
         bias_20 = stock_data[11] if len(stock_data) > 11 else 0
 
-        signal = "待分析"; scen_name = ''; short_act = ''
+        signal = "待分析"; scen_name = ''; short_act = ''; verdict = ''
         if recommendation and '|' in recommendation:
             parts = recommendation.split('|')
             signal = parts[0] if len(parts) > 0 else '待分析'
             scen_name = parts[1] if len(parts) > 1 else ''
             short_act = parts[2] if len(parts) > 2 else ''
+            verdict = (parts[4].strip() if len(parts) > 4 else '')
         elif recommendation:
             signal = recommendation
 
-        grade = next((g for g in ('A', 'B', 'C')
-                      if scen_name.startswith(g) or signal.startswith(g)), '')
-        is_sell = any(x in signal for x in ("賣", "空", "減碼", "撤退", "停損", "出場", "避開", "暫緩", "不建議"))
-        r_signal = rmap.get(symbol)
+        if verdict not in ('A', 'B', 'C', 'SKIP', 'WAIT', 'SELL', 'X'):
+            verdict = self._verdict_from_text(signal, scen_name, short_act)
+
+        grade = verdict if verdict in ('A', 'B', 'C') else ''
+        is_skip = (verdict == 'SKIP')
+        is_sell = (verdict == 'SELL')
+        _r = rmap.get(symbol)
+        if isinstance(_r, (tuple, list)):
+            r_signal, r_strength = (list(_r) + [None, None])[:2]
+        else:
+            r_signal, r_strength = _r, None
+        if not r_strength:
+            r_strength = getattr(self, '_r_strength_map', {}).get(symbol)
         return {'symbol': symbol, 'name': name, 'quant_score': quant_score,
-                'bias_20': bias_20, 'grade': grade, 'is_sell': is_sell,
-                'r_signal': r_signal, 'signal': signal,
+                'bias_20': bias_20, 'verdict': verdict, 'grade': grade,
+                'is_skip': is_skip, 'is_sell': is_sell,
+                'r_signal': r_signal, 'r_strength': r_strength, 'signal': signal,
                 'scen_name': scen_name, 'short_act': short_act}
+
+    @staticmethod
+    def _verdict_from_text(signal, scen_name='', short_act=''):
+        """舊格式（無第 5 段）退路：由建議文字反推引擎裁決碼。
+
+        對照的是 decision_engine 產出的固定字串（_build_skip_output /
+        _build_wait_output / _build_buy_output）與 v43 形態覆蓋後的 overall。
+        判斷順序：SKIP → WAIT → 等級 A/B/C → SELL → X，
+        SKIP 永遠先於賣訊（'不建議關注' 內含「不建議」，舊版誤判為賣）。
+        """
+        s = str(signal or ''); sc = str(scen_name or ''); sa = str(short_act or '')
+        # 1) SKIP（方向否決）：引擎 recommendation='不建議關注'、short_term='不參與'、
+        #    scenario_name='方向不對'。三者任一命中即為 SKIP，不得再落入賣訊。
+        if ('不建議關注' in s) or ('方向不對' in sc) or (sa in ('不參與', '跳過')):
+            return 'SKIP'
+        # 2) WAIT（位置否決 / 形態確立但暫緩買進）
+        if ('等待拉回' in s) or ('位置不佳' in sc) or ('暫緩' in s):
+            return 'WAIT'
+        # 3) 等級（含形態覆蓋後的「強烈建議買進（X確立）」）
+        for g in ('A', 'B', 'C'):
+            if s.startswith(g) or sc.startswith(g):
+                return g
+        if ('主攻' in s) or ('強烈建議買進' in s):
+            return 'A'
+        if ('追蹤' in s) or ('建議買進' in s) or ('分批佈局' in s):
+            return 'B'
+        if ('觀察' in s):
+            return 'C'
+        # 4) 真賣訊（賣出 / 出場 / 停損 / 減碼 / 停利），SKIP 已在上面攔掉
+        if any(k in s for k in ('賣出', '賣訊', '出場', '停損', '減碼', '撤退', '停利')):
+            return 'SELL'
+        return 'X'
 
     def _row_matches(self, cls):
         """套用搜尋框 + 訊號過濾（chips/摘要卡）→ 該列是否顯示。"""
@@ -7781,27 +8201,29 @@ class StockAnalysisApp(tk.Tk):
         if f == 'R':
             return cls['r_signal'] == 'R-TRADE'
         if f == 'SELL':
-            return cls['is_sell']
+            # fix_13b P0-2：賣訊過濾只收真賣訊，SKIP 一律排除
+            return cls['is_sell'] and not cls['is_skip']
         return True
 
     def _row_visuals(self, cls):
-        """由分類產生列的 tags、分數字串、等級徽章、R 徽章、建議短文（含省略號）。"""
+        """由分類產生列的 tags、分數字串、等級徽章、R 徽章、建議短文（含省略號）。
+
+        fix_13b P0-2：徽章由 verdict 決定（A/B/C／跳／賣），不再由文案關鍵字猜；
+        SKIP → 灰「跳」徽章 + skip tag，永遠不會出現賣徽章。"""
         grade = cls['grade']; signal = cls['signal']; short_act = cls['short_act']
         tags = []
         if grade:
             tags.append({'A': 'grade_A', 'B': 'grade_B', 'C': 'grade_C'}[grade])
+        elif cls['is_skip']:
+            tags.append("skip")
+        elif cls['is_sell']:
+            tags.append("sell")
+        elif any(x in signal for x in ["買", "多", "進場", "看好"]):
+            tags.append("buy")
+        elif any(x in signal for x in ["持有", "續抱"]):
+            tags.append("hold")
         else:
-            _gtag = self._theme.grade_tag(cls['scen_name'] or signal) if getattr(self, '_theme', None) else None
-            if _gtag:
-                tags.append(_gtag)
-            elif any(x in signal for x in ["買", "多", "進場", "看好"]):
-                tags.append("buy")
-            elif cls['is_sell']:
-                tags.append("sell")
-            elif any(x in signal for x in ["持有", "續抱"]):
-                tags.append("hold")
-            else:
-                tags.append("wait")
+            tags.append("wait")
         b = cls['bias_20']
         if b and b > 10:
             tags.append("hot")
@@ -7809,13 +8231,35 @@ class StockAnalysisApp(tk.Tk):
             tags.append("cold")
 
         score_str = f"{cls['quant_score']:.0f}" if cls['quant_score'] else "-"
-        grade_badge = grade if grade else ("賣" if cls['is_sell'] else "")
-        r_badge = '◆R' if cls['r_signal'] == 'R-TRADE' else ('◇r' if cls['r_signal'] == 'R-WATCH' else '')
+        # fix_13b P0-2：SKIP 有獨立「跳」徽章，只有真賣訊才是「賣」
+        if grade:
+            grade_badge = grade
+        elif cls['is_skip']:
+            grade_badge = "跳"
+        elif cls['is_sell']:
+            grade_badge = "賣"
+        else:
+            grade_badge = ""
+        # fix_13b P1-5：R 強度上清單（strong → ◆R+，moderate → ◆R）
+        r_badge = self._r_badge_text(cls['r_signal'], cls['r_strength'])
         # 建議短文（吃剩餘欄寬＋省略號）
         adv = (short_act or signal).replace("建議", "").strip()
+        # fix_13b P2-10：◆R 成立但動能建議「不參與」→ 追加短註，消除並排矛盾
+        if cls['r_signal'] == 'R-TRADE' and cls['is_skip']:
+            adv = f"{adv}·R反彈可交易"
         if len(adv) > 22:
             adv = adv[:21] + '…'
         return tuple(tags), score_str, grade_badge, r_badge, adv
+
+    @staticmethod
+    def _r_badge_text(r_signal, r_strength=None):
+        """fix_13b P1-5：R 徽章文字。R-TRADE strong → ◆R+、moderate/未知 → ◆R；
+        R-WATCH → ◇r；無訊號 → ''。純顯示層，不改 r_track 任何計算。"""
+        if r_signal == 'R-TRADE':
+            return '◆R+' if r_strength == 'strong' else '◆R'
+        if r_signal == 'R-WATCH':
+            return '◇r'
+        return ''
 
     def refresh_watchlist(self):
         """build_prompt_13：刷新自選股清單（5 欄固定寬＋搜尋/訊號過濾＋摘要卡連動）。
@@ -7835,23 +8279,27 @@ class StockAnalysisApp(tk.Tk):
 
         # Treeview tag 樣式（建立時已套用；後備補上）
         if getattr(self, '_theme', None) is not None:
-            self._theme.style_treeview(self.watchlist_tree)
+            self._theme.style_treeview_dash(self.watchlist_tree)
         else:
             import theme as _thm
             self.watchlist_tree.tag_configure("group", background="#1a1a2e", foreground="#ffffff")
-            for _t, _c in (("buy", _thm.ACTION_BUY), ("hold", _thm.ACTION_NEUTRAL),
-                           ("sell", _thm.ACTION_SELL), ("wait", _thm.ACTION_NEUTRAL)):
+            for _t, _c in (("buy", _thm.DASH_UP), ("hold", _thm.DASH_TEXT_2),
+                           ("sell", _thm.DASH_SELL), ("skip", _thm.DASH_SKIP),
+                           ("wait", _thm.DASH_TEXT_2)):
                 self.watchlist_tree.tag_configure(_t, foreground=_c)
             self.watchlist_tree.tag_configure("hot", background="#3a1a1a")
             self.watchlist_tree.tag_configure("cold", background="#1a3a1a")
 
         # 先分類全部（供計數，計數不受過濾影響）
         classified = [self._classify_stock(sd, _rmap) for sd in stocks]
+        # 供 R 欄 tooltip / 狀態帶 / 標題膠囊查表用
+        self._classified_map = {c['symbol']: c for c in classified}
         counts = {'all': len(classified),
                   'A': sum(1 for c in classified if c['grade'] == 'A'),
                   'B': sum(1 for c in classified if c['grade'] == 'B'),
                   'R': sum(1 for c in classified if c['r_signal'] == 'R-TRADE'),
-                  'SELL': sum(1 for c in classified if c['is_sell'])}
+                  # fix_13b P0-2：賣訊計數只算真賣訊，SKIP 不算
+                  'SELL': sum(1 for c in classified if c['is_sell'] and not c['is_skip'])}
         self._filter_counts = counts
 
         use_grouping = (order_by == 'industry')
@@ -7933,15 +8381,155 @@ class StockAnalysisApp(tk.Tk):
             # ◆R 卡在數量 >0 時邊框轉金色提示
             if key == 'R':
                 card['accent_on'] = (val > 0)
-        # R 持倉倒數（暫以 r_signal 推算；無持倉表→缺資料顯示「—」）
+        # fix_13b P1-4：R 持倉倒數改讀 r_positions.json 的「真登記」，
+        # 不再拿最新 r_signal 冒充持倉（原本會把未持有的股票顯示成持倉）。
+        self._update_r_position_card(classified)
+
+    def _trading_calendar_days(self, limit=400):
+        """讀交易日曆（由舊到新）。讀不到 → []（呼叫端退回週間日預估）。"""
+        try:
+            from chip_data_manager import get_chip_manager
+            return sorted(get_chip_manager(self.db.db_name).get_trading_days_desc(limit=limit))
+        except Exception as e:
+            print(f"[R持倉] 交易日曆讀取略過: {e}")
+            return []
+
+    def _update_r_position_card(self, classified=None):
+        """R 持倉倒數卡：
+        - 有登記 → 「{名稱} 第 N/10 天」（最多並列 2 筆），到期日當天轉紅底「今日出場」。
+        - 無登記 → 顯示最新 R-TRADE 訊號並明確標注「最新訊號（未登記持倉）」。
+        - r_positions.json 壞掉 → 視同無登記並在卡片標註（不丟例外）。"""
+        cards = getattr(self, '_card_widgets', {})
         rcard = cards.get('RCOUNT')
-        if rcard:
-            holders = [c for c in classified if c.get('r_signal') == 'R-TRADE']
+        if not rcard:
+            return
+        C_PANEL = self._dash('DASH_PANEL', "#1a1d24")
+        C_GOLD  = self._dash('DASH_R_TRADE', "#efc042")
+        C_T3    = self._dash('DASH_TEXT_3', "#6b6f78")
+        C_SELL  = self._dash('DASH_SELL', "#e05c5c")
+        positions, err = load_r_positions()
+        self._r_pos_error = err
+        cmap = getattr(self, '_classified_map', {}) or {}
+        cal = self._trading_calendar_days()
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+
+        def _name(sym):
+            c = cmap.get(sym) or {}
+            return c.get('name') or sym
+
+        cap = rcard.get('caption')
+        bg = C_PANEL
+        fg = C_GOLD
+        if positions:
+            segs = []
+            due_today = False
+            for p in positions[:2]:          # 上限 2 筆並列
+                n, hold, exit_d, est = r_position_progress(p['entry_date'], cal, today)
+                if exit_d == today:
+                    due_today = True
+                segs.append(f"{_name(p['symbol'])} 第 {n}/{hold} 天")
+            text = "｜".join(segs)
+            if len(positions) > 2:
+                text += f"（+{len(positions) - 2}）"
+            caption = "R 持倉倒數"
+            if due_today:
+                text = "今日出場：" + text
+                bg = C_SELL
+                fg = self._dash('DASH_ON_ALERT', "#ffffff")
+                caption = "R 持倉倒數 ⚠"
+        else:
+            holders = [c for c in (classified or []) if c.get('r_signal') == 'R-TRADE']
             if holders:
-                nm = holders[0].get('name') or holders[0].get('symbol')
-                rcard['value'].config(text=f"{nm} 第 —/10 天")
+                text = f"{holders[0].get('name') or holders[0].get('symbol')}"
+                caption = "最新訊號（未登記持倉）"
             else:
-                rcard['value'].config(text="—")
+                text = "—"
+                caption = "R 持倉倒數（未登記）"
+            fg = C_T3 if not holders else C_GOLD
+        if err:
+            caption = "R 持倉倒數（登記檔格式錯誤）"
+        try:
+            rcard['value'].config(text=text, fg=fg, bg=bg)
+            rcard['frame'].config(bg=bg)
+            if cap is not None:
+                cap.config(text=caption, bg=bg)
+        except Exception:
+            pass
+
+    def _show_r_positions_dialog(self):
+        """fix_13b P1-4：R 持倉登記小對話框（新增/移除；寫 r_positions.json）。"""
+        positions, err = load_r_positions()
+        if err:
+            messagebox.showwarning("R 持倉登記", f"{err}\n將以「無登記」開始。")
+            positions = []
+        cal = self._trading_calendar_days()
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+
+        dlg = tk.Toplevel(self)
+        dlg.title("R 持倉登記")
+        dlg.geometry("460x300")
+        dlg.transient(self)
+        C_BG = self._dash('DASH_BG', "#14161b")
+        dlg.configure(bg=C_BG)
+
+        lst = ttk.Treeview(dlg, columns=("entry", "day", "exit"), show="tree headings", height=7)
+        lst.heading("#0", text="代碼"); lst.heading("entry", text="進場日")
+        lst.heading("day", text="第 N/10 天"); lst.heading("exit", text="出場日")
+        lst.column("#0", width=90); lst.column("entry", width=100)
+        lst.column("day", width=90, anchor='center'); lst.column("exit", width=120)
+        lst.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        def _reload():
+            for i in lst.get_children():
+                lst.delete(i)
+            for p in positions:
+                n, hold, exit_d, est = r_position_progress(p['entry_date'], cal, today)
+                lst.insert("", "end", text=p['symbol'],
+                           values=(p['entry_date'], f"{n}/{hold}",
+                                   f"{exit_d}{'（預估）' if est else ''}"))
+
+        form = ttk.Frame(dlg); form.pack(fill=tk.X, padx=8)
+        ttk.Label(form, text="代碼").pack(side=tk.LEFT)
+        sym_var = tk.StringVar(value=(self.current_symbol or ''))
+        ttk.Entry(form, textvariable=sym_var, width=8).pack(side=tk.LEFT, padx=4)
+        ttk.Label(form, text="進場日").pack(side=tk.LEFT, padx=(8, 0))
+        date_var = tk.StringVar(value=today)
+        ttk.Entry(form, textvariable=date_var, width=12).pack(side=tk.LEFT, padx=4)
+
+        def _add():
+            sym = sym_var.get().strip()
+            ent = date_var.get().strip()
+            if not sym:
+                messagebox.showwarning("提示", "請輸入代碼", parent=dlg); return
+            try:
+                datetime.datetime.strptime(ent, '%Y-%m-%d')
+            except ValueError:
+                messagebox.showwarning("提示", "進場日格式須為 YYYY-MM-DD", parent=dlg); return
+            positions[:] = [p for p in positions if p['symbol'] != sym]
+            positions.append({'symbol': sym, 'entry_date': ent})
+            _persist()
+
+        def _remove():
+            sel = lst.selection()
+            if not sel:
+                messagebox.showwarning("提示", "請先選擇要移除的登記", parent=dlg); return
+            sym = lst.item(sel[0])['text']
+            positions[:] = [p for p in positions if p['symbol'] != sym]
+            _persist()
+
+        def _persist():
+            e = save_r_positions(positions)
+            if e:
+                messagebox.showerror("錯誤", e, parent=dlg)
+                return
+            _reload()
+            self._update_r_position_card(list((getattr(self, '_classified_map', {}) or {}).values()))
+
+        btns = ttk.Frame(dlg); btns.pack(fill=tk.X, padx=8, pady=8)
+        ttk.Button(btns, text="新增/更新", command=_add).pack(side=tk.LEFT)
+        ttk.Button(btns, text="移除選取", command=_remove).pack(side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="關閉", command=dlg.destroy).pack(side=tk.RIGHT)
+        _reload()
 
     # ========================================================================
     # v4.4.7 新增：自選股排序功能
@@ -8055,6 +8643,81 @@ class StockAnalysisApp(tk.Tk):
         for idx, (item_id, text, values, tags) in enumerate(items):
             self.watchlist_tree.move(item_id, '', idx)
     
+    def _watchlist_symbol_of(self, item_id):
+        """自選股節點 → 代碼；族群節點回 None。"""
+        try:
+            item = self.watchlist_tree.item(item_id)
+        except Exception:
+            return None
+        text = item.get('text', '') or ''
+        if self.watchlist_tree.get_children(item_id) or text.startswith('['):
+            return None
+        parts = text.split()
+        return parts[0] if parts else None
+
+    def on_watchlist_select(self, event=None):
+        """fix_13b P0-1：單擊選股 → 載入 K 線 + 更新標題列/狀態帶。
+
+        以 after() 去抖（200ms），避免鍵盤上下瀏覽時連續觸發抓取；
+        同一檔重複選取不重抓。族群節點忽略。"""
+        sel = self.watchlist_tree.selection()
+        if not sel:
+            return
+        symbol = self._watchlist_symbol_of(sel[0])
+        if not symbol or symbol == getattr(self, 'current_symbol', None):
+            return
+        _job = getattr(self, '_select_job', None)
+        if _job:
+            try:
+                self.after_cancel(_job)
+            except Exception:
+                pass
+        self._select_job = self.after(200, lambda s=symbol: self._load_symbol(s))
+
+    def _load_symbol(self, symbol):
+        """載入個股：帶入市場 + 代碼 → plot_chart（內部會更新標題列與狀態帶）。"""
+        self._select_job = None
+        try:
+            for stock in self.db.get_all_stocks():
+                if stock[0] == symbol:
+                    self.market_var.set(stock[2] if len(stock) > 2 else '台股')
+                    break
+            self.symbol_entry.delete(0, tk.END)
+            self.symbol_entry.insert(0, symbol)
+            self.plot_chart()
+        except Exception as e:
+            print(f"[選股] {symbol} 載入略過: {e}")
+
+    def _on_watchlist_motion(self, event):
+        """R 欄 tooltip：◆R+/◆R/◇r → 顯示 R-TRADE strong / moderate 全稱。"""
+        try:
+            if self.watchlist_tree.identify_region(event.x, event.y) != 'cell':
+                self._tip_hide(); return
+            if self.watchlist_tree.identify_column(event.x) != '#4':   # r 欄
+                self._tip_hide(); return
+            row = self.watchlist_tree.identify_row(event.y)
+            symbol = self._watchlist_symbol_of(row) if row else None
+            cls = (getattr(self, '_classified_map', {}) or {}).get(symbol)
+            if not cls or not cls.get('r_signal'):
+                self._tip_hide(); return
+            if row == getattr(self, '_tip_row', None):
+                return
+            self._tip_row = row
+            self._tip_hide()
+            strength = cls.get('r_strength')
+            msg = f"{cls['r_signal']}" + (f" {strength}" if strength else "（強度未知，需重新掃描）")
+            tw = tk.Toplevel(self.watchlist_tree)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+            tk.Label(tw, text=msg, bg=self._dash('DASH_PANEL', "#1a1d24"),
+                     fg=self._dash('DASH_TEXT', "#e8e6e1"),
+                     highlightbackground=self._dash('DASH_BORDER', "#2a2d35"),
+                     highlightthickness=1, padx=6, pady=3,
+                     font=("TkDefaultFont", 10)).pack()
+            self._tip_win = tw
+        except Exception:
+            pass
+
     def on_watchlist_double_click(self, event):
         """雙擊自選股項目時查詢（v4.5.17 支援族群分組）"""
         selection = self.watchlist_tree.selection()
