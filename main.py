@@ -5537,12 +5537,61 @@ class StockAnalysisApp(tk.Tk):
         # 清理過期緩存
         self.db.clean_old_cache(days=7)
 
+        # 富邦啟動登入（單一登入點）：先問要不要登入，再顯示市場排行
+        self.after(300, self._fubon_startup_login)
+
         # v4.3 新增：開啟程式時顯示市場排行
         self.after(500, self._show_market_ranking)
 
         # build_prompt_03：籌碼資料層啟動初始化 + 每日排程（背景執行，不卡 UI）
         self.after(1500, self._chip_startup_init)
         self._schedule_daily_chip_update()
+
+    # ────────────────────────────────────────────────────────────────────
+    # 富邦單一登入（登入一次 → 行情與下單共用同一個 SDK）
+    # ────────────────────────────────────────────────────────────────────
+    def _fubon_startup_login(self, force=False):
+        """
+        啟動時詢問是否登入富邦。登入成功即把 SDK 交給 DataSourceManager，
+        行情自動改用富邦即時報價；下單視窗共用同一個全域 trader，不需再登入。
+
+        force=True：忽略「不再詢問」偏好（供選單手動登入）。
+        """
+        try:
+            from fubon_trading import startup_login_dialog, FUBON_SDK_AVAILABLE
+        except ImportError:
+            return False
+        if not FUBON_SDK_AVAILABLE:
+            if force:
+                messagebox.showerror("無法登入", "未安裝 fubon_neo SDK")
+            return False
+
+        try:
+            trader = startup_login_dialog(self, force=force)
+        except Exception as e:
+            print(f"[富邦登入] 對話框錯誤: {e}")
+            return False
+
+        if not trader or not getattr(trader, 'is_logged_in', False):
+            return False
+
+        # 登入成功 → 行情切富邦優先（yfinance 降為備援）
+        ok = False
+        try:
+            ok = DataSourceManager.initialize(trader.sdk)
+        except Exception as e:
+            print(f"[富邦登入] 行情源初始化失敗，維持 yfinance: {e}")
+
+        msg = ("已登入富邦，行情改用即時報價" if ok
+               else "已登入富邦（行情源初始化未成功，維持 yfinance）")
+        print(f"[富邦登入] {msg}")
+        try:
+            self._update_progress(msg)
+        except Exception:
+            pass
+        if force:
+            messagebox.showinfo("登入成功", msg)
+        return True
 
     def _chip_startup_init(self):
         """
@@ -6216,12 +6265,16 @@ class StockAnalysisApp(tk.Tk):
         ttk.Label(header_frame, text="Symbol:").pack(side=tk.LEFT)
         
         # 功能按鈕（不使用表情符號）
-        ttk.Button(header_frame, text="Rank", 
+        ttk.Button(header_frame, text="Rank",
                   command=self._show_market_ranking, width=5).pack(side=tk.RIGHT)
-        ttk.Button(header_frame, text="Order", 
+        ttk.Button(header_frame, text="Order",
                   command=self._show_order_dialog, width=5).pack(side=tk.RIGHT, padx=2)
-        ttk.Button(header_frame, text="Auto", 
+        ttk.Button(header_frame, text="Auto",
                   command=self._show_auto_trader, width=5).pack(side=tk.RIGHT, padx=2)
+        # 富邦手動登入（勾了「不再詢問」後的入口；已登入則顯示狀態）
+        ttk.Button(header_frame, text="Fubon",
+                  command=lambda: self._fubon_startup_login(force=True),
+                  width=6).pack(side=tk.RIGHT, padx=2)
         
         # 輸入框
         input_frame = ttk.Frame(parent)

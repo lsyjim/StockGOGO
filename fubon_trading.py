@@ -14,6 +14,7 @@ fubon_trading.py - 富邦證券 API 交易模組 (修正版)
 3. 申請憑證: https://www.fbs.com.tw/Certificate/Management
 """
 
+import os
 import json
 import threading
 import time
@@ -79,12 +80,12 @@ class FubonTrader:
                 'accounts': []
             }
         
-        # Debug 輸出
+        # Debug 輸出（資安：一律不印密碼明文，只印長度供排錯）
         print(f"[FubonTrader.login] 接收到的參數:")
         print(f"  user_id: {user_id}")
-        print(f"  password: '{password}'")
+        print(f"  password: ***（長度 {len(password or '')}）")
         print(f"  cert_path: {cert_path}")
-        print(f"  cert_password: '{cert_password}'")
+        print(f"  cert_password: ***（長度 {len(cert_password or '')}）")
         
         try:
             self.sdk = FubonSDK()
@@ -808,12 +809,12 @@ def create_order_dialog(parent, symbol='', trader=None):
             messagebox.showerror("錯誤", "請填寫所有登入資訊")
             return
         
-        # Debug
+        # Debug（資安：不印密碼明文，只印長度）
         print(f"[DEBUG] ====== 登入參數 ======")
         print(f"[DEBUG] 身分證: {user_id}")
-        print(f"[DEBUG] 密碼: '{password}' (長度:{len(password)})")
+        print(f"[DEBUG] 密碼: *** (長度:{len(password)})")
         print(f"[DEBUG] 憑證路徑: {cert_path}")
-        print(f"[DEBUG] 憑證密碼: '{cert_pwd}' (長度:{len(cert_pwd)})")
+        print(f"[DEBUG] 憑證密碼: *** (長度:{len(cert_pwd)})")
         print(f"[DEBUG] ====================")
         
         status_var.set("🔄 登入中...")
@@ -1432,3 +1433,163 @@ def get_trader():
     if _global_trader is None:
         _global_trader = FubonTrader()
     return _global_trader
+
+
+# ============================================================================
+# 啟動登入（單一登入點：登入一次，行情與下單共用同一個 SDK）
+# ============================================================================
+# 偏好設定只存「帳號 / 憑證路徑 / 是否不再詢問」——
+# **密碼與憑證密碼一律不落地**，每次啟動手動輸入。
+LOGIN_PREFS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                'fubon_login_prefs.json')
+
+
+def load_login_prefs():
+    """讀取登入偏好（無密碼）。"""
+    try:
+        with open(LOGIN_PREFS_FILE, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        return {
+            'user_id': d.get('user_id', ''),
+            'cert_path': d.get('cert_path', ''),
+            'skip_startup_login': bool(d.get('skip_startup_login', False)),
+        }
+    except Exception:
+        return {'user_id': '', 'cert_path': '', 'skip_startup_login': False}
+
+
+def save_login_prefs(user_id='', cert_path='', skip_startup_login=False):
+    """儲存登入偏好。嚴禁寫入任何密碼欄位。"""
+    try:
+        with open(LOGIN_PREFS_FILE, 'w', encoding='utf-8') as f:
+            json.dump({'user_id': user_id, 'cert_path': cert_path,
+                       'skip_startup_login': bool(skip_startup_login)},
+                      f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[富邦登入] 偏好儲存失敗: {e}")
+
+
+def startup_login_dialog(parent, force=False):
+    """
+    啟動時的富邦登入對話框。
+
+    Args:
+        parent: 父視窗
+        force:  True＝忽略「不再詢問」偏好（供選單手動登入用）
+
+    Returns:
+        FubonTrader: 已登入的全域 trader；使用者選擇跳過或失敗則回 None
+    """
+    import tkinter as tk
+    from tkinter import ttk, messagebox, filedialog
+
+    if not FUBON_SDK_AVAILABLE:
+        if force:
+            messagebox.showerror("無法登入", "未安裝 fubon_neo SDK")
+        return None
+
+    prefs = load_login_prefs()
+    if prefs['skip_startup_login'] and not force:
+        print("[富邦登入] 依偏好設定跳過啟動登入（可從選單手動登入）")
+        return None
+
+    trader = get_trader()
+    if trader.is_logged_in:
+        return trader   # 已登入就不重複問
+
+    dlg = tk.Toplevel(parent)
+    dlg.title("富邦證券登入")
+    dlg.transient(parent)
+    dlg.grab_set()
+    dlg.resizable(False, False)
+
+    frm = ttk.Frame(dlg, padding=16)
+    frm.pack(fill=tk.BOTH, expand=True)
+
+    ttk.Label(frm, text="登入後行情改用富邦即時報價，下單功能亦無需再次登入。",
+              foreground="#666").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+
+    user_id_var = tk.StringVar(value=prefs['user_id'])
+    pwd_var = tk.StringVar()
+    cert_var = tk.StringVar(value=prefs['cert_path'])
+    cert_pwd_var = tk.StringVar()
+    remember_var = tk.BooleanVar(value=bool(prefs['user_id'] or prefs['cert_path']))
+    dont_ask_var = tk.BooleanVar(value=False)
+
+    rows = [("身分證字號：", user_id_var, False),
+            ("登入密碼：", pwd_var, True),
+            ("憑證路徑：", cert_var, False),
+            ("憑證密碼：", cert_pwd_var, True)]
+    entries = {}
+    for i, (label, var, secret) in enumerate(rows, start=1):
+        ttk.Label(frm, text=label, width=12).grid(row=i, column=0, sticky="w", pady=3)
+        e = ttk.Entry(frm, textvariable=var, width=30, show="*" if secret else "")
+        e.grid(row=i, column=1, sticky="we", pady=3)
+        entries[label] = e
+
+    def browse():
+        p = filedialog.askopenfilename(
+            title="選擇憑證檔",
+            filetypes=[("憑證檔", "*.pfx *.p12"), ("所有檔案", "*.*")])
+        if p:
+            cert_var.set(p)
+    ttk.Button(frm, text="瀏覽", width=6, command=browse).grid(row=3, column=2, padx=(6, 0))
+
+    ttk.Checkbutton(frm, text="記住身分證字號與憑證路徑（不含密碼）",
+                    variable=remember_var).grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    ttk.Checkbutton(frm, text="下次啟動不再詢問（仍可從『交易』選單手動登入）",
+                    variable=dont_ask_var).grid(row=6, column=0, columnspan=3, sticky="w")
+
+    status_var = tk.StringVar(value="")
+    ttk.Label(frm, textvariable=status_var, foreground="#c77").grid(
+        row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+    result = {'trader': None}
+
+    def do_skip():
+        # 「不再詢問」即使跳過也要記住
+        save_login_prefs(user_id_var.get().strip() if remember_var.get() else '',
+                         cert_var.get().strip() if remember_var.get() else '',
+                         dont_ask_var.get())
+        dlg.destroy()
+
+    def do_login_click():
+        uid = user_id_var.get().strip()
+        pwd = pwd_var.get()
+        cert = cert_var.get().strip()
+        cpwd = cert_pwd_var.get()
+        if not all([uid, pwd, cert, cpwd]):
+            status_var.set("請填寫所有欄位")
+            return
+        if not os.path.exists(cert):
+            status_var.set("憑證檔不存在，請確認路徑")
+            return
+        status_var.set("登入中…")
+        dlg.update()
+        res = trader.login(uid, pwd, cert, cpwd)
+        if res.get('success'):
+            save_login_prefs(uid if remember_var.get() else '',
+                             cert if remember_var.get() else '',
+                             dont_ask_var.get())
+            result['trader'] = trader
+            dlg.destroy()
+        else:
+            status_var.set(f"登入失敗：{res.get('message', '未知錯誤')}")
+
+    btns = ttk.Frame(frm)
+    btns.grid(row=8, column=0, columnspan=3, pady=(14, 0), sticky="e")
+    ttk.Button(btns, text="這次跳過", command=do_skip).pack(side=tk.LEFT, padx=4)
+    ttk.Button(btns, text="登入", command=do_login_click).pack(side=tk.LEFT)
+
+    # 焦點放在第一個空欄位
+    (entries["登入密碼："] if prefs['user_id'] else entries["身分證字號："]).focus_set()
+    dlg.bind('<Return>', lambda e: do_login_click())
+    dlg.protocol("WM_DELETE_WINDOW", do_skip)
+
+    dlg.update_idletasks()
+    x = parent.winfo_rootx() + (parent.winfo_width() - dlg.winfo_width()) // 2
+    y = parent.winfo_rooty() + 120
+    dlg.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    parent.wait_window(dlg)
+    return result['trader']

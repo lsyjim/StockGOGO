@@ -54,3 +54,6 @@ image.png
 # B2 #3 基本面快取（執行期資料）
 info_cache.json
 r_positions.json
+
+# 富邦登入偏好（含身分證字號/憑證路徑，不含密碼）
+fubon_login_prefs.json
