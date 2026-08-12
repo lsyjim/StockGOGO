@@ -1532,37 +1532,52 @@ class QuickAnalyzer:
     # build_prompt_08：族群動能（顯示/排序加成，不進 grade）。題材強度當日快取。
     _theme_mgr = None
     _theme_strength_cache = None   # (date_str, strength_dict)
+    # 防「快取踩踏」：平行掃描時 8 個 worker 會同時發現快取為空而各自重算，
+    # 造成 N(題材股) × 8 次請求瞬間打爆行情 API（Fugle 429 → 熔斷）。
+    # 以鎖 + double-checked locking 確保「只有一個執行緒計算，其餘等待後共用」。
+    _theme_lock = threading.Lock()
 
     @classmethod
     def _get_theme_strength(cls):
-        """計算/取當日各題材強度（等權 20 日報酬橫斷面排名）。當日快取。"""
+        """計算/取當日各題材強度（等權 20 日報酬橫斷面排名）。當日快取、執行緒安全。"""
         import datetime as _dt
         today = _dt.date.today().isoformat()
+        # 第一次檢查（無鎖，快路徑）
         if cls._theme_strength_cache and cls._theme_strength_cache[0] == today:
             return cls._theme_strength_cache[1]
-        try:
-            if cls._theme_mgr is None:
-                from theme_momentum import ThemeMomentum
-                cls._theme_mgr = ThemeMomentum()
-            tm = cls._theme_mgr
-            rets = {}
-            for sym in tm.all_symbols():
-                try:
-                    h = DataSourceManager.get_history(sym, '台股', period='6mo')
-                    if h is None or len(h) < 21:
+        with cls._theme_lock:
+            # 第二次檢查（持鎖）：等待期間可能已被其他執行緒算好
+            if cls._theme_strength_cache and cls._theme_strength_cache[0] == today:
+                return cls._theme_strength_cache[1]
+            try:
+                if cls._theme_mgr is None:
+                    from theme_momentum import ThemeMomentum
+                    cls._theme_mgr = ThemeMomentum()
+                tm = cls._theme_mgr
+                syms = tm.all_symbols()
+                print(f"[Theme] 計算題材強度（{len(syms)} 檔，當日僅一次）…")
+                rets = {}
+                for sym in syms:
+                    try:
+                        h = DataSourceManager.get_history(sym, '台股', period='6mo')
+                        if h is None or len(h) < 21:
+                            continue
+                        c = h['Close']
+                        r20 = float(c.iloc[-1] / c.iloc[-21] - 1) * 100
+                        r60 = float(c.iloc[-1] / c.iloc[-61] - 1) * 100 if len(c) >= 61 else None
+                        rets[sym] = {'ret20': r20, 'ret60': r60}
+                    except Exception:
                         continue
-                    c = h['Close']
-                    r20 = float(c.iloc[-1] / c.iloc[-21] - 1) * 100
-                    r60 = float(c.iloc[-1] / c.iloc[-61] - 1) * 100 if len(c) >= 61 else None
-                    rets[sym] = {'ret20': r20, 'ret60': r60}
-                except Exception:
-                    continue
-            strength = tm.compute(rets)
-            cls._theme_strength_cache = (today, strength)
-            return strength
-        except Exception as e:
-            print(f"[Theme] 強度計算略過: {e}")
-            return {}
+                strength = tm.compute(rets)
+                # 即使 rets 不足導致 strength 為空，也要寫入快取，
+                # 否則每檔分析都會重試整批抓取（等同另一種踩踏）。
+                cls._theme_strength_cache = (today, strength)
+                print(f"[Theme] 題材強度完成（{len(strength)} 個題材，本日快取）")
+                return strength
+            except Exception as e:
+                print(f"[Theme] 強度計算略過: {e}")
+                cls._theme_strength_cache = (today, {})   # 失敗也快取，避免反覆重試
+                return {}
 
     @classmethod
     def _get_theme_info(cls, symbol):
@@ -7746,6 +7761,13 @@ class StockAnalysisApp(tk.Tk):
                 except Exception as _ce:
                     print(f'[籌碼] 掃描前 daily_update 略過: {_ce}')
 
+                # 題材強度預熱：在單執行緒階段先算好並寫入當日快取，
+                # 讓後續 8 個 worker 一律走快路徑，杜絕快取踩踏打爆行情 API。
+                try:
+                    QuickAnalyzer._get_theme_strength()
+                except Exception as _te:
+                    print(f'[Theme] 掃描前預熱略過: {_te}')
+
                 # ── 平行掃描（B2 #3）：scan_mode + 批次預抓快取命中 → 可安全併發 ──
                 # worker 只做分析/計算，不碰 DB/UI（執行緒安全）；DB 寫入與 UI 更新
                 # 集中在主迴圈序列化（tkinter 元件非執行緒安全，UI 走 _safe_ui_update）。
@@ -7928,6 +7950,12 @@ class StockAnalysisApp(tk.Tk):
                         DataSourceManager.prefetch_realtime(_tw, '台股')
                 except Exception as _pe:
                     print(f'[B2] 批次預抓略過: {_pe}')
+
+                # 題材強度預熱（同 refresh 流程）：單執行緒先算好，避免 worker 踩踏
+                try:
+                    QuickAnalyzer._get_theme_strength()
+                except Exception as _te:
+                    print(f'[Theme] 掃描前預熱略過: {_te}')
 
                 # ── 平行掃描（B2 #3）：worker 只算、不碰 DB；DB 寫入在主迴圈序列化 ──
                 from concurrent.futures import ThreadPoolExecutor, as_completed
