@@ -436,16 +436,56 @@ class ChipDataManager:
         except Exception:
             return None
 
+    # ── 相容 session：處理 TPEx 憑證鏈不合規（Python 3.14 / OpenSSL 3.5 新嚴格檢查）──
+    # OpenSSL 3.5 起預設套用 VERIFY_X509_STRICT，會因 TPEx 中介憑證缺少
+    # Subject Key Identifier 而拒絕連線（TWSE 不受影響）。此處僅「關閉該旗標」，
+    # 憑證鏈與主機名稱仍完整驗證——絕不使用 verify=False。
+    _relaxed_session = None
+
+    @classmethod
+    def _get_relaxed_session(cls):
+        if cls._relaxed_session is not None:
+            return cls._relaxed_session
+        try:
+            import ssl
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.ssl_ import create_urllib3_context
+
+            strict = getattr(ssl, "VERIFY_X509_STRICT", 0)
+
+            class _RelaxedStrictAdapter(HTTPAdapter):
+                def init_poolmanager(self, *a, **kw):
+                    ctx = create_urllib3_context()
+                    ctx.verify_flags &= ~strict          # 只解除 strict，仍驗證
+                    ctx.check_hostname = True
+                    ctx.verify_mode = ssl.CERT_REQUIRED
+                    kw["ssl_context"] = ctx
+                    return super().init_poolmanager(*a, **kw)
+
+            s = requests.Session()
+            s.mount("https://", _RelaxedStrictAdapter())
+            cls._relaxed_session = s
+        except Exception as e:
+            print(f"[官方備援] 相容 session 建立失敗，改用預設: {e}")
+            cls._relaxed_session = requests
+        return cls._relaxed_session
+
     def _gov_get(self, url, params, label):
-        """官方端點請求禮儀：sleep(1.5~3.0) + UA + timeout=15 + 403/429 指數退避（≤3 次）。"""
+        """官方端點請求禮儀：sleep(1.5~3.0) + UA + timeout=15 + 403/429 指數退避（≤3 次）。
+
+        SSL 憑證驗證失敗時（TPEx 憑證鏈不合規），自動改用相容 session 重試一次。
+        """
         import random
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
         for attempt in range(3):
             try:
                 time.sleep(random.uniform(1.5, 3.0))
-                r = requests.get(
-                    url, params=params, timeout=15,
-                    headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
-                )
+                try:
+                    r = requests.get(url, params=params, timeout=15, headers=headers)
+                except requests.exceptions.SSLError:
+                    # 憑證嚴格檢查失敗 → 以相容 session 重試（仍完整驗證憑證鏈）
+                    r = self._get_relaxed_session().get(
+                        url, params=params, timeout=15, headers=headers)
                 if r.status_code in (403, 429):
                     _w = (2 ** attempt) * 3
                     print(f"[官方備援] {label} HTTP {r.status_code}，退避 {_w}s（第{attempt+1}次）")

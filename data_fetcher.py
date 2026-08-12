@@ -975,6 +975,40 @@ class DataSourceManager:
     _fubon_disabled_until = 0
     _fubon_disable_duration = 300  # 富邦失敗後暫停 5 分鐘
 
+    # 富邦(Fugle)歷史 K 線單次請求上限：「Date range must be less than one year」。
+    # 用 360 天留安全邊際（365 會剛好卡邊界被回 400）。
+    # 超過此天數的請求由 get_history 直接交給 yfinance，且「不計為富邦失敗」，
+    # 以免正常的能力限制觸發 300 秒熔斷、連帶讓可用的即時報價一起停擺。
+    FUBON_MAX_RANGE_DAYS = 360
+
+    @classmethod
+    def _exceeds_fubon_range(cls, start_date, end_date, period) -> bool:
+        """
+        此請求是否「實質」超過富邦單次可服務區間（超過 → 交 yfinance，不算失敗）。
+
+        注意：'1y'(365天) 只比上限多 5 天，_get_history_fubon 會夾成 360 天照走富邦
+        （仍足夠計算 MA240），不視為超限——這是掃描熱路徑，不應整批放棄富邦。
+        只有 2y/5y 這種「夾了會嚴重截斷」的長區間才交給 yfinance。
+        """
+        try:
+            if period:
+                days = {'5d': 5, '1mo': 30, '3mo': 90, '6mo': 180,
+                        '1y': 365, '2y': 730, '5y': 1825}.get(str(period))
+                if days is None:
+                    return False   # 未知 period 交由下游處理
+                return days > 365   # 1y 可夾；2y/5y 不可
+            if start_date and end_date:
+                def _d(x):
+                    if isinstance(x, datetime.datetime):
+                        return x.date()
+                    if isinstance(x, datetime.date):
+                        return x
+                    return datetime.datetime.strptime(str(x)[:10], '%Y-%m-%d').date()
+                return (_d(end_date) - _d(start_date)).days > cls.FUBON_MAX_RANGE_DAYS
+        except Exception:
+            return False
+        return False
+
     # ── B2 #1：批次 history 快取（掃描題材前一次抓完，逐檔 get_history 命中快取）──
     # 結構：{ "{SYMBOL}|{MARKET}": (date_str, DataFrame_long) }
     _batch_hist_cache = {}
@@ -1184,8 +1218,9 @@ class DataSourceManager:
         if _batch is not None and not _batch.empty:
             return _batch
 
-        # 台股優先使用富邦 API
-        if market == "台股" and cls.is_fubon_available():
+        # 台股優先使用富邦 API（超過單次上限的長區間直接交給 yfinance，不計失敗）
+        if market == "台股" and cls.is_fubon_available() and \
+                not cls._exceeds_fubon_range(start_date, end_date, period):
             result = cls._get_history_fubon(symbol, start_date, end_date, period)
             if result is not None and not result.empty:
                 source_used = cls.SOURCE_FUBON
@@ -1221,11 +1256,12 @@ class DataSourceManager:
                 elif period == '6mo':
                     start_dt = end_dt - datetime.timedelta(days=180)
                 elif period == '1y':
-                    start_dt = end_dt - datetime.timedelta(days=365)
-                elif period == '2y':
-                    start_dt = end_dt - datetime.timedelta(days=730)
-                elif period == '5y':
-                    start_dt = end_dt - datetime.timedelta(days=1825)
+                    # Fugle 限制「Date range must be less than one year」，365 天剛好卡邊界 → 400
+                    start_dt = end_dt - datetime.timedelta(days=cls.FUBON_MAX_RANGE_DAYS)
+                elif period in ('2y', '5y'):
+                    # 超過一年：富邦單次請求無法服務（見 get_history 的前置判斷，
+                    # 正常情況不會走到這裡；保底夾成上限避免 400）
+                    start_dt = end_dt - datetime.timedelta(days=cls.FUBON_MAX_RANGE_DAYS)
                 else:
                     start_dt = end_dt - datetime.timedelta(days=180)  # 預設 6 個月
                 
