@@ -2,7 +2,6 @@
 量化投資分析系統 v4.5.17 - 專業量化開發版本
 =====================================
 v4.5.17 高盛級量化系統整合與升級：
-- 新增 MarketTrendManager 市場熱點管理器
 - 新增 VCP Scanner 波動率壓縮偵測
 - 新增 Relative Strength (RS) 相對強度計算
 - 新增 ATR 動態停損計算器
@@ -819,15 +818,9 @@ def load_r_signal_map(db_path):
 
 
 # ============================================================================
-# v4.5.17 新增：熱門題材掃描模組
+# 熱門題材（Sectors）分頁已移除；trend_scanner.py 保留
+# compute_cross_sectional_rs_rank（watchlist 掃描的橫斷面 RS 排名）供 main 使用。
 # ============================================================================
-try:
-    from trend_scanner import SectorMomentumScanner
-    from market_trend_manager import MarketTrendManager, SectorInfo, StockInfo
-    TREND_SCANNER_AVAILABLE = True
-except ImportError:
-    TREND_SCANNER_AVAILABLE = False
-    print("[Main] 提示：未找到 trend_scanner.py，熱門題材功能將停用")
 
 try:
     from advanced_analyzers import VCPScanner, RelativeStrengthCalculator, ATRStopLossCalculator
@@ -6103,10 +6096,6 @@ class StockAnalysisApp(tk.Tk):
         self.left_notebook.add(stock_tab, text="Analysis")
         self._build_stock_analysis_ui(stock_tab)
 
-        trend_tab = ttk.Frame(self.left_notebook, padding=5)
-        self.left_notebook.add(trend_tab, text="Sectors")
-        self._build_trend_scanner_ui(trend_tab)
-
         # === 下半部：自選股清單 ===
         watchlist_frame = ttk.LabelFrame(paned, text="[Watchlist] 自選清單", padding=5)
         paned.add(watchlist_frame, weight=3)
@@ -6374,198 +6363,6 @@ class StockAnalysisApp(tk.Tk):
         self.date_picker_btn = ttk.Button(date_frame, text="...", width=3, 
                                           command=self._show_date_picker, state='disabled')
         self.date_picker_btn.pack(side=tk.LEFT)
-    
-    def _build_trend_scanner_ui(self, parent):
-        """建立熱門題材掃描的 UI（v4.5.18 標準金融字型版）"""
-        # 強勢族群區塊（不使用表情符號）
-        sector_frame = ttk.LabelFrame(parent, text="[Hot Sectors] 5D Momentum", padding=5)
-        sector_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
-        
-        # 族群列表
-        self.sector_tree = ttk.Treeview(sector_frame,
-            columns=("momentum", "category", "leader"),
-            show="tree headings",
-            height=6
-        )
-        self.sector_tree.heading("#0", text="Sector")
-        self.sector_tree.heading("momentum", text="5D%")
-        self.sector_tree.heading("category", text="Type")
-        self.sector_tree.heading("leader", text="Leader")
-        
-        self.sector_tree.column("#0", width=90)
-        self.sector_tree.column("momentum", width=65)
-        self.sector_tree.column("category", width=55)
-        self.sector_tree.column("leader", width=90)
-        
-        # 顏色標籤（套用主題；hot/warm/cool 為動能強弱）
-        if getattr(self, '_theme', None) is not None:
-            self._theme.style_treeview(self.sector_tree)
-            self.sector_tree.tag_configure("hot",  foreground=self._theme.UP)
-            self.sector_tree.tag_configure("warm", foreground=self._theme.ACCENT)
-            self.sector_tree.tag_configure("cool", foreground=self._theme.TEXT_2)
-        else:
-            self.sector_tree.tag_configure("hot", foreground="#FF4444")
-            self.sector_tree.tag_configure("warm", foreground="#FF8800")
-            self.sector_tree.tag_configure("cool", foreground="#4488FF")
-
-        self.sector_tree.pack(fill=tk.BOTH, expand=True)
-        self.sector_tree.bind('<<TreeviewSelect>>', self._on_sector_select)
-        
-        # 領頭羊區塊（不使用表情符號）
-        leader_frame = ttk.LabelFrame(parent, text="[Constituents]", padding=5)
-        leader_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.leader_tree = ttk.Treeview(leader_frame,
-            columns=("price", "change"),
-            show="tree headings",
-            height=5
-        )
-        self.leader_tree.heading("#0", text="Stock")
-        self.leader_tree.heading("price", text="Price")
-        self.leader_tree.heading("change", text="Chg%")
-        
-        self.leader_tree.column("#0", width=110)
-        self.leader_tree.column("price", width=70, anchor="e")    # 數字右對齊
-        self.leader_tree.column("change", width=60, anchor="e")   # 數字右對齊
-        
-        # 套用主題（up/down 紅漲綠跌走 token）
-        if getattr(self, '_theme', None) is not None:
-            self._theme.style_treeview(self.leader_tree)
-        else:
-            self.leader_tree.tag_configure("up", foreground="#FF4444")
-            self.leader_tree.tag_configure("down", foreground="#44FF44")
-
-        self.leader_tree.pack(fill=tk.BOTH, expand=True)
-        self.leader_tree.bind('<Double-1>', self._on_leader_double_click)
-        
-        # 控制按鈕（不使用表情符號）
-        btn_frame = ttk.Frame(parent)
-        btn_frame.pack(fill=tk.X, pady=5)
-        
-        ttk.Button(btn_frame, text="Refresh", 
-                  command=self._refresh_market_trends, width=10).pack(side=tk.LEFT, padx=2)
-        
-        # 狀態標籤
-        self.sector_status_label = ttk.Label(btn_frame, text="點擊「重新整理」載入數據", foreground="gray")
-        self.sector_status_label.pack(side=tk.RIGHT)
-        
-        # 初始化 MarketTrendManager
-        self._market_manager = None
-        if TREND_SCANNER_AVAILABLE:
-            try:
-                self._market_manager = MarketTrendManager()
-            except Exception as e:
-                print(f"[TrendScanner] 初始化失敗: {e}")
-    
-    def _on_sector_select(self, event):
-        """當選擇族群時，載入成分股"""
-        selection = self.sector_tree.selection()
-        if not selection:
-            return
-        
-        sector_id = selection[0]
-        
-        def load_constituents():
-            if self._market_manager:
-                try:
-                    stocks = self._market_manager.get_sector_constituents(sector_id)
-                    self.after(0, lambda: self._update_leader_tree(stocks))
-                except Exception as e:
-                    print(f"[TrendScanner] 載入成分股失敗: {e}")
-        
-        # 在背景線程中載入
-        import threading
-        threading.Thread(target=load_constituents, daemon=True).start()
-    
-    def _on_leader_double_click(self, event):
-        """雙擊領頭羊股票，載入到主圖表"""
-        selection = self.leader_tree.selection()
-        if not selection:
-            return
-        
-        item = self.leader_tree.item(selection[0])
-        stock_text = item['text']  # 格式: "2330 台積電"
-        
-        if stock_text:
-            symbol = stock_text.split()[0]
-            self.symbol_entry.delete(0, tk.END)
-            self.symbol_entry.insert(0, symbol)
-            self.plot_chart()
-    
-    def _refresh_market_trends(self):
-        """重新整理市場熱點數據"""
-        if not self._market_manager:
-            self.sector_status_label.config(text="模組未載入")
-            return
-        
-        self.sector_status_label.config(text="載入中...")
-        
-        def load_sectors():
-            try:
-                sectors = self._market_manager.get_hot_sectors(limit=12, force_refresh=True)
-                self.after(0, lambda: self._update_sector_tree(sectors))
-                self.after(0, lambda: self.sector_status_label.config(
-                    text=f"更新: {datetime.datetime.now().strftime('%H:%M:%S')}"
-                ))
-            except Exception as e:
-                # 修正：先抽出訊息字串，避免 lambda 延遲執行時 except 變數 e 已被刪除
-                _err_text = f"錯誤: {str(e)[:15]}"
-                self.after(0, lambda: self.sector_status_label.config(text=_err_text))
-        
-        import threading
-        threading.Thread(target=load_sectors, daemon=True).start()
-    
-    def _update_sector_tree(self, sectors):
-        """更新族群列表"""
-        # 清空現有項目
-        for item in self.sector_tree.get_children():
-            self.sector_tree.delete(item)
-        
-        # 新增項目
-        for sector in sectors:
-            momentum = getattr(sector, 'momentum_5d', 0) or 0
-            
-            # 決定顏色標籤
-            if momentum >= 5:
-                tag = "hot"
-            elif momentum >= 2:
-                tag = "warm"
-            else:
-                tag = "cool"
-            
-            leader_text = f"{getattr(sector, 'leader_symbol', '')} {getattr(sector, 'leader_name', '')}"
-            
-            self.sector_tree.insert("", "end",
-                iid=getattr(sector, 'sector_id', ''),
-                text=getattr(sector, 'sector_name', ''),
-                values=(
-                    f"{momentum:+.1f}%",
-                    getattr(sector, 'category', ''),
-                    leader_text.strip()
-                ),
-                tags=(tag,)
-            )
-    
-    def _update_leader_tree(self, stocks):
-        """更新領頭羊列表"""
-        # 清空現有項目
-        for item in self.leader_tree.get_children():
-            self.leader_tree.delete(item)
-        
-        # 新增項目
-        for stock in stocks:
-            change_pct = getattr(stock, 'change_pct', 0) or 0
-            tag = "up" if change_pct > 0 else "down" if change_pct < 0 else ""
-            
-            self.leader_tree.insert("", "end",
-                text=f"{getattr(stock, 'symbol', '')} {getattr(stock, 'name', '')}",
-                values=(
-                    f"${getattr(stock, 'price', 0):.2f}",
-                    f"{change_pct:+.2f}%"
-                ),
-                tags=(tag,)
-            )
-    
     def _create_right_panel(self, parent):
         """build_prompt_13 任務 4＋5：右工作區＝摘要卡列＋個股標題列＋K 線區＋
         指標副圖＋底部狀態帶。K 線區為雙向擴張的唯一受益者。"""
