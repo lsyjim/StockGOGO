@@ -5590,8 +5590,16 @@ class StockAnalysisApp(tk.Tk):
         except Exception as e:
             print(f"[富邦登入] 行情源初始化失敗，維持 yfinance: {e}")
 
-        msg = ("已登入富邦，行情改用即時報價" if ok
-               else "已登入富邦（行情源初始化未成功，維持 yfinance）")
+        if ok:
+            msg = "已登入富邦，行情改用即時報價"
+        else:
+            # 把真正的失敗原因帶出來（原本被這句吃掉，無從診斷）
+            try:
+                from data_fetcher import FubonMarketData as _FMD
+                reason = _FMD._last_error or "未知原因"
+            except Exception:
+                reason = "未知原因"
+            msg = f"已登入富邦，但行情源初始化失敗（維持 yfinance）：{reason}"
         print(f"[富邦登入] {msg}")
         try:
             self._update_progress(msg)
@@ -5930,12 +5938,15 @@ class StockAnalysisApp(tk.Tk):
                                    font=(f_num[0], f_num[1], "bold"), padx=16, pady=4,
                                    cursor="hand2")
         self._scan_btn.pack(side=tk.RIGHT, padx=(8, 6))
-        # 訊號驗證（次要按鈕：不搶 Scan 視覺權重）
-        self._recall_btn = tk.Button(bar, text="驗證", command=self._open_signal_recall_window,
-                                     bg=C_BG, fg=C_T2, activebackground="#252B33",
-                                     activeforeground=C_T2, relief=tk.FLAT, bd=0,
-                                     font=f_lbl, padx=10, pady=4, cursor="hand2")
-        self._recall_btn.pack(side=tk.RIGHT, padx=(0, 2))
+        # 訊號驗證（次要按鈕：比 Scan 低一階，但仍需明顯可見——
+        # 用面板底＋主文字色＋細框，避免與工具列同色而「隱形」）
+        self._recall_btn = tk.Button(bar, text="訊號驗證", command=self._open_signal_recall_window,
+                                     bg=C_PANEL, fg=C_TEXT, activebackground="#252B33",
+                                     activeforeground=C_TEXT,
+                                     relief=tk.SOLID, bd=1,
+                                     highlightbackground=C_T3, highlightthickness=0,
+                                     font=f_lbl, padx=12, pady=3, cursor="hand2")
+        self._recall_btn.pack(side=tk.RIGHT, padx=(0, 6))
         # 掃描進度（沿用既有 _update_progress 目標）
         self.watchlist_progress_label = tk.Label(bar, text="", bg=C_BG, fg=C_GOLD, font=f_lbl)
         self.watchlist_progress_label.pack(side=tk.RIGHT, padx=(0, 6))

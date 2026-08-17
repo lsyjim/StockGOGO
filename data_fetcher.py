@@ -691,6 +691,7 @@ class FubonMarketData:
     _sdk = None
     _rest_client = None
     _is_initialized = False
+    _last_error = None      # 最近一次初始化失敗原因（供 UI 顯示，便於診斷）
     _init_lock = threading.Lock()
     _cache = {}
     _cache_ttl = 300  # 快取 5 分鐘
@@ -727,15 +728,45 @@ class FubonMarketData:
                         print("[FubonMarketData] 未安裝 fubon_neo SDK")
                         return False
                 
-                # 初始化行情連線
-                cls._sdk.init_realtime()
+                # 初始化行情連線。
+                # init_realtime 預設 mode=Mode.Speed，需額外行情權限；
+                # 一般帳號常因此失敗 → 依序退回 Normal，並保留最後錯誤供診斷。
+                last_err = None
+                try:
+                    from fubon_neo.sdk import Mode
+                    modes = [('Speed', Mode.Speed), ('Normal', Mode.Normal)]
+                except Exception:
+                    modes = [('預設', None)]
+
+                ok = False
+                for mode_name, mode_val in modes:
+                    try:
+                        if mode_val is None:
+                            cls._sdk.init_realtime()
+                        else:
+                            cls._sdk.init_realtime(mode_val)
+                        print(f"[FubonMarketData] 行情連線建立（mode={mode_name}）")
+                        ok = True
+                        break
+                    except Exception as me:
+                        last_err = me
+                        print(f"[FubonMarketData] mode={mode_name} 失敗: {me}")
+                if not ok:
+                    cls._last_error = f"init_realtime 失敗：{last_err}"
+                    print(f"[FubonMarketData] 初始化失敗（所有模式）: {last_err}")
+                    return False
+
                 cls._rest_client = cls._sdk.marketdata.rest_client.stock
                 cls._is_initialized = True
+                cls._last_error = None
                 print("[FubonMarketData] 富邦行情 API 初始化成功")
                 return True
-                
+
             except Exception as e:
+                cls._last_error = str(e)
                 print(f"[FubonMarketData] 初始化失敗: {e}")
+                import traceback
+                traceback.print_exc()
                 return False
     
     @classmethod
