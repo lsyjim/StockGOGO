@@ -40,6 +40,9 @@ GRADE_B  = "#5FA8E0"   # B 級追蹤（中優先，藍）
 ACTION_BUY     = ACCENT    # 買進族（強烈買進/買進/分批佈局/加碼）= 橘（沿用 A 級琥珀系）
 ACTION_SELL    = DOWN      # 賣出族（賣出/出場/減碼/避開）= 綠
 ACTION_NEUTRAL = TEXT_2    # 觀望/等待/追蹤 = 灰
+# R 軌（逆勢超跌反彈短打，與動量 A/B/C 屬性相反）需可一眼區隔：
+# 不用 A 的琥珀（會混淆）、不用賣出綠、不用價格紅 → 取獨立紫色。
+R_TRACK        = "#A78BD0"
 PRICE_UP       = UP        # 價格上漲數字 = 紅（僅限價格/漲跌幅）
 PRICE_DOWN     = DOWN      # 價格下跌數字 = 綠（僅限價格/漲跌幅）
 NEUTRAL_BLUE   = GRADE_B   # 三層分數條等中性量值 = 藍（綠自此只承載賣出/下跌）

@@ -5727,6 +5727,15 @@ class StockAnalysisApp(tk.Tk):
         except Exception as e:
             print(f"市場排行載入錯誤: {e}")
     
+    def _open_signal_recall_window(self):
+        """訊號驗證視窗（T-4~T-1 樣本外重放）。獨立 Toplevel，不佔主畫面版位。"""
+        try:
+            from signal_recall_ui import open_signal_recall_window
+            open_signal_recall_window(self, self.db.db_name, self.db.get_all_stocks)
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            messagebox.showerror("錯誤", f"無法開啟訊號驗證視窗：{e}")
+
     def _show_order_dialog(self):
         """v4.3.5: 顯示富邦證券下單對話框"""
         try:
@@ -5921,6 +5930,12 @@ class StockAnalysisApp(tk.Tk):
                                    font=(f_num[0], f_num[1], "bold"), padx=16, pady=4,
                                    cursor="hand2")
         self._scan_btn.pack(side=tk.RIGHT, padx=(8, 6))
+        # 訊號驗證（次要按鈕：不搶 Scan 視覺權重）
+        self._recall_btn = tk.Button(bar, text="驗證", command=self._open_signal_recall_window,
+                                     bg=C_BG, fg=C_T2, activebackground="#252B33",
+                                     activeforeground=C_T2, relief=tk.FLAT, bd=0,
+                                     font=f_lbl, padx=10, pady=4, cursor="hand2")
+        self._recall_btn.pack(side=tk.RIGHT, padx=(0, 2))
         # 掃描進度（沿用既有 _update_progress 目標）
         self.watchlist_progress_label = tk.Label(bar, text="", bg=C_BG, fg=C_GOLD, font=f_lbl)
         self.watchlist_progress_label.pack(side=tk.RIGHT, padx=(0, 6))
