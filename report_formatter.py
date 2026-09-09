@@ -222,9 +222,46 @@ def build_verdict(result: dict) -> dict:
         'volume_profile': volume_profile,
         'chip_detail':  chip_detail,
         'chip_summary': chip_summary,
+        # build_prompt_12：籌碼強度四因子（只讀 result，不重算；純顯示不影響裁決）
+        'chip_strength': result.get('chip_strength') or {'available': False},
         'evidence':     evidence,
         'warnings':     warnings,
     }
+
+
+def chip_strength_line(verdict: dict) -> str:
+    """
+    build_prompt_12：籌碼強度摘要列（報告 06 區上方）。
+    缺資料一律顯示 '—'，不報錯、不以 0 充數。
+    法人均價明確標註為近似值（當日收盤價，非逐筆成交均價）。
+    """
+    cs = (verdict or {}).get('chip_strength') or {}
+    if not cs.get('available'):
+        return "籌碼強度：—（資料不足）"
+
+    st = cs.get('strength') or {}
+    co = cs.get('consistency') or {}
+    mg = cs.get('margin') or {}
+    ac = cs.get('avg_cost') or {}
+
+    z = st.get('combined_z') if st.get('available') else None
+    z_txt = f"{z:+.1f}" if isinstance(z, (int, float)) else "—"
+
+    r = co.get('consistency_ratio') if co.get('available') else None
+    r_txt = f"{r:.0%}（{co.get('dominant_direction', '')}）" if isinstance(r, (int, float)) else "—"
+
+    d_txt = mg.get('divergence_type') if mg.get('available') else "—"
+
+    cost = ac.get('avg_cost_proxy') if ac.get('available') else None
+    prem = ac.get('premium_pct') if ac.get('available') else None
+    if isinstance(cost, (int, float)):
+        c_txt = f"{cost:.2f}≈"       # ≈ 標示近似值
+        p_txt = f"{prem:+.1f}%" if isinstance(prem, (int, float)) else "—"
+        cost_txt = f"{c_txt} vs 現價 {p_txt}"
+    else:
+        cost_txt = "—"
+
+    return (f"強度 Z={z_txt} · 一致性 {r_txt} · 融資背離：{d_txt} · 法人均價 {cost_txt}")
 
 
 def watchlist_cell(verdict: dict) -> str:

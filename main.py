@@ -1899,6 +1899,15 @@ class QuickAnalyzer:
                 print(f"⚠️ [{symbol}] 漲跌幅異常 {price_change_pct:+.1f}%（超過±10%漲跌停），"
                       f"即時價 {current_price} 與昨收 {prev_close} 可能未對齊")
 
+            # build_prompt_12：籌碼強度四因子（純顯示層，不進 grade/score）。
+            # 掃描模式一律 allow_fetch=False（零 API，維持 bp09 額度紀律）；
+            # 單檔分析才允許補融資/收盤價 ETL。
+            chip_strength = QuickAnalyzer._chip_strength_bundle(
+                symbol, market,
+                as_of=(analysis_date.strftime('%Y-%m-%d')
+                       if is_historical and hasattr(analysis_date, 'strftime') else None),
+                current_price=current_price, scan_mode=scan_mode)
+
             result = {
                 "symbol": symbol,
                 "name": stock_name,  # v4.3 新增：股票名稱
@@ -1913,6 +1922,7 @@ class QuickAnalyzer:
                 "risk_metrics": risk_metrics,
                 "support_resistance": support_resistance,
                 "chip_flow": chip_flow,
+                "chip_strength": chip_strength,   # build_prompt_12：顯示層四因子
                 "volume_analysis": volume_analysis,
                 "volume_price": volume_price,  # v4.4.1 新增：量價分析
                 "risk_manager": risk_manager,  # v4.4.1 新增：風險管理
@@ -2668,6 +2678,30 @@ class QuickAnalyzer:
             print(f"成交量分析錯誤: {e}")
             return {"spike_detected": False, "message": f"分析錯誤: {e}"}
     
+    @staticmethod
+    def _chip_strength_bundle(symbol, market="台股", as_of=None, current_price=None,
+                              scan_mode=False):
+        """
+        build_prompt_12：籌碼強度四因子（強度Z / 一致性 / 融資背離 / 法人均價近似）。
+
+        純顯示層——不進 grade、score、ranking 任何計算。
+        額度紀律：scan_mode=True → allow_fetch=False（Z/一致性只讀本地 DB，
+        融資與均價若尚未 ETL 則回 available=False，不打任何 API）。
+        """
+        if market != "台股":
+            return {"available": False, "message": "籌碼強度僅適用於台股"}
+        try:
+            from chip_data_manager import get_chip_manager
+            mgr = get_chip_manager()
+            bundle = mgr.get_chip_strength_bundle(
+                symbol, as_of=as_of, current_price=current_price,
+                allow_fetch=(not scan_mode))
+            bundle["available"] = True
+            return bundle
+        except Exception as e:
+            print(f"[籌碼強度] {symbol} 略過: {e}")
+            return {"available": False, "message": str(e)}
+
     @staticmethod
     def _analyze_chip_flow_cached(symbol, market="台股", scan_mode=False):
         """
@@ -5220,6 +5254,19 @@ class RecommendationDialog:
             summ += f"　⚠️ 資料不完整（缺 {len(cs.get('missing_dates') or [])} 日，已排除於連買計算）"
         tk.Label(body, text=summ, font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
                  bg=DarkTheme.BG_MAIN).pack(anchor="w", pady=(0, 4))
+        # build_prompt_12：籌碼強度摘要列（純資訊，不影響評分／排序）
+        try:
+            from report_formatter import chip_strength_line
+            _cs_line = chip_strength_line(self.verdict)
+        except Exception:
+            _cs_line = None
+        if _cs_line:
+            tk.Label(body, text=_cs_line, font=("Arial", 10),
+                     fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_MAIN
+                     ).pack(anchor="w", pady=(0, 2))
+            tk.Label(body, text="※ 法人均價（≈）為當日收盤價近似，非真實逐筆成交均價",
+                     font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY,
+                     bg=DarkTheme.BG_MAIN).pack(anchor="w", pady=(0, 4))
         cols = [("日期", 11), ("外資買", 8), ("外資賣", 8), ("外資淨", 8),
                 ("投信買", 8), ("投信賣", 8), ("投信淨", 8), ("自營淨", 8), ("合計淨", 9)]
         hdr = tk.Frame(body, bg=DarkTheme.BG_HEADER)
@@ -5941,7 +5988,7 @@ class StockAnalysisApp(tk.Tk):
         # 訊號驗證（次要按鈕：比 Scan 低一階，但仍需明顯可見——
         # 用面板底＋主文字色＋細框，避免與工具列同色而「隱形」）
         self._recall_btn = tk.Button(bar, text="訊號驗證", command=self._open_signal_recall_window,
-                                     bg=C_PANEL, fg=C_TEXT, activebackground="#252B33",
+                                     bg=C_PANEL, fg="black", activebackground="#252B33",
                                      activeforeground=C_TEXT,
                                      relief=tk.SOLID, bd=1,
                                      highlightbackground=C_T3, highlightthickness=0,

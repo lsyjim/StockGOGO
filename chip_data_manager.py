@@ -96,6 +96,21 @@ class ChipDataManager:
                 source TEXT
             )
         ''')
+        # build_prompt_12：融資融券日資料（FinMind TaiwanStockMarginPurchaseShortSale）
+        # 單位：張（TWSE/TPEx 融資融券餘額本即以張計）
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS margin_daily (
+                symbol         TEXT NOT NULL,
+                date           TEXT NOT NULL,
+                margin_balance INTEGER,
+                margin_change  INTEGER,
+                short_balance  INTEGER,
+                short_change   INTEGER,
+                source         TEXT,
+                fetched_at     TEXT,
+                PRIMARY KEY (symbol, date)
+            )
+        ''')
         # migration：舊表補買/賣分列欄位（INTEGER NULL），舊資料列保持 NULL
         cur.execute("PRAGMA table_info(chip_daily)")
         existing = {row[1] for row in cur.fetchall()}
@@ -105,6 +120,15 @@ class ChipDataManager:
                     cur.execute(f"ALTER TABLE chip_daily ADD COLUMN {col} INTEGER")
                 except sqlite3.OperationalError:
                     pass
+        # build_prompt_12：法人買進成本「近似值」欄位（REAL）。
+        # ⚠️ 這是當日收盤價，不是真實逐筆成交均價 —— FinMind 三大法人資料集
+        # 實測欄位僅有 (buy, sell, date, name, stock_id)，不含 price，
+        # 故只能以日收盤價近似。所有對外顯示必須標註為近似值。
+        if 'foreign_buy_price_proxy' not in existing:
+            try:
+                cur.execute("ALTER TABLE chip_daily ADD COLUMN foreign_buy_price_proxy REAL")
+            except sqlite3.OperationalError:
+                pass
         conn.commit()
         conn.close()
 
@@ -955,6 +979,354 @@ class ChipDataManager:
             "signal": signal,
             "signal_color": signal_color,
             "message": msg,
+        }
+
+    # ────────────────────────────────────────────────────────────────────
+    # build_prompt_12：免費籌碼強度因子（純顯示層，不影響 grade/score）
+    #
+    # 共同紀律：
+    #   - 全部走既有 as_of 切片（get_trading_days_desc(as_of=...)），禁止前視
+    #   - 缺資料一律回 available=False / None，絕不 fallback 成 0
+    #   - 額度：z-score 與一致性只讀本地 DB（零 API）；融資與均價需 ETL，
+    #     由 allow_fetch 控制（掃描模式一律 False）
+    # ────────────────────────────────────────────────────────────────────
+    _UNAVAILABLE = {"available": False}
+
+    def _series_by_date(self, symbol, dates):
+        """回傳 [(date, f, t, d)]（依日期升冪，缺列略過）。"""
+        rows = self._load_chip_rows(symbol, dates)
+        out = []
+        for d in sorted(dates):
+            r = rows.get(d)
+            if not r:
+                continue
+            out.append((d, r.get("foreign"), r.get("trust"), r.get("dealer")))
+        return out
+
+    @staticmethod
+    def _zscore(today_val, history):
+        """今日值相對『過去分布』的 Z-score（history 不含今日）。
+        樣本 <20 或標準差為 0 → None（不以 0 充數）。"""
+        vals = [v for v in history if v is not None]
+        if today_val is None or len(vals) < 20:
+            return None
+        mean = sum(vals) / len(vals)
+        var = sum((v - mean) ** 2 for v in vals) / (len(vals) - 1)
+        sd = var ** 0.5
+        if sd <= 0:
+            return None
+        return round((today_val - mean) / sd, 2)
+
+    def get_chip_strength(self, symbol, as_of: str = None, window: int = 60) -> dict:
+        """
+        法人買賣強度 Z-score：今日淨買超（張）相對『過去 window 日』分布的 Z-score。
+        Z > 2 = 異常大買，Z < -2 = 異常大賣。
+
+        註：分布刻意不含今日（純粹以歷史為基準判斷今日是否異常）；
+            combined_z 取三者合計淨額序列自身的 Z（非三個 Z 的平均，避免忽略相關性）。
+        回傳 {available, as_of_date, foreign_z, trust_z, dealer_z, combined_z, n_samples}
+        """
+        cal = self.get_trading_days_desc(limit=window + 5, as_of=as_of)
+        if not cal:
+            return dict(self._UNAVAILABLE)
+        series = self._series_by_date(symbol, cal)
+        if len(series) < 21:
+            return dict(self._UNAVAILABLE)
+
+        last_date, f_now, t_now, d_now = series[-1]
+        hist = series[:-1][-window:]
+        f_hist = [r[1] for r in hist]
+        t_hist = [r[2] for r in hist]
+        d_hist = [r[3] for r in hist]
+
+        def _sum3(a, b, c):
+            vals = [v for v in (a, b, c) if v is not None]
+            return sum(vals) if vals else None
+
+        c_now = _sum3(f_now, t_now, d_now)
+        c_hist = [_sum3(r[1], r[2], r[3]) for r in hist]
+
+        return {
+            "available": True,
+            "as_of_date": last_date,
+            "foreign_z": self._zscore(f_now, f_hist),
+            "trust_z": self._zscore(t_now, t_hist),
+            "dealer_z": self._zscore(d_now, d_hist),
+            "combined_z": self._zscore(c_now, c_hist),
+            "n_samples": len([v for v in c_hist if v is not None]),
+        }
+
+    def get_institutional_consistency(self, symbol, as_of: str = None, days: int = 5) -> dict:
+        """
+        近 N 個交易日，外資/投信/自營三者同向（三者皆買或皆賣）的天數比例。
+        任一為 0 或缺值即不算同向（0 = 當日無動作，不構成方向一致）。
+
+        回傳 {available, consistency_ratio, dominant_direction, days_checked,
+              same_buy_days, same_sell_days}
+        """
+        cal = self.get_trading_days_desc(limit=days, as_of=as_of)
+        if not cal:
+            return dict(self._UNAVAILABLE)
+        series = self._series_by_date(symbol, cal)
+        if not series:
+            return dict(self._UNAVAILABLE)
+
+        same_buy = same_sell = 0
+        for _d, f, t, dl in series:
+            if None in (f, t, dl):
+                continue
+            if f > 0 and t > 0 and dl > 0:
+                same_buy += 1
+            elif f < 0 and t < 0 and dl < 0:
+                same_sell += 1
+        checked = len(series)
+        if not checked:
+            return dict(self._UNAVAILABLE)
+
+        if same_buy > same_sell:
+            dominant = "同買"
+        elif same_sell > same_buy:
+            dominant = "同賣"
+        else:
+            dominant = "混合"
+        return {
+            "available": True,
+            "consistency_ratio": round((same_buy + same_sell) / checked, 3),
+            "dominant_direction": dominant,
+            "days_checked": checked,
+            "same_buy_days": same_buy,
+            "same_sell_days": same_sell,
+        }
+
+    # ── 融資融券 ETL ────────────────────────────────────────────────────
+    def _fetch_finmind_margin(self, symbol, start_date, end_date):
+        """回傳 {date: dict(margin_balance, margin_change, short_balance, short_change)}（張）。
+        限流回 RATE_LIMITED；查無回 None。"""
+        data = self._finmind_get(
+            "TaiwanStockMarginPurchaseShortSale",
+            {"data_id": str(symbol), "start_date": start_date, "end_date": end_date},
+        )
+        if data == RATE_LIMITED:
+            return RATE_LIMITED
+        if not data:
+            return None
+        out = {}
+        for row in data:
+            d = str(row.get("date", ""))[:10]
+            if not d:
+                continue
+            try:
+                mb = int(row.get("MarginPurchaseTodayBalance") or 0)
+                my = int(row.get("MarginPurchaseYesterdayBalance") or 0)
+                sb = int(row.get("ShortSaleTodayBalance") or 0)
+                sy = int(row.get("ShortSaleYesterdayBalance") or 0)
+            except (TypeError, ValueError):
+                continue
+            out[d] = {"margin_balance": mb, "margin_change": mb - my,
+                      "short_balance": sb, "short_change": sb - sy}
+        return out or None
+
+    def update_margin(self, symbol, days: int = 60, allow_fetch: bool = True) -> int:
+        """補 margin_daily 缺洞。allow_fetch=False（掃描模式）時完全不打 API。"""
+        symbol = str(symbol)
+        cal = self.get_trading_days_desc(limit=days)
+        if not cal:
+            return 0
+        conn = self._conn()
+        have = {r[0] for r in conn.execute(
+            "SELECT date FROM margin_daily WHERE symbol=? AND date>=? "
+            "AND margin_balance IS NOT NULL", (symbol, min(cal)))}
+        conn.close()
+        if not (set(cal) - have):
+            return 0
+        if not allow_fetch:
+            return 0
+
+        got = self._fetch_finmind_margin(symbol, min(cal), max(cal))
+        if not got or got == RATE_LIMITED:
+            return 0
+        valid = set(cal)
+        rows = [(symbol, d, v["margin_balance"], v["margin_change"],
+                 v["short_balance"], v["short_change"], "finmind",
+                 datetime.datetime.now().isoformat(timespec="seconds"))
+                for d, v in got.items() if d in valid]
+        if not rows:
+            return 0
+        conn = self._conn()
+        conn.executemany(
+            "INSERT OR REPLACE INTO margin_daily (symbol,date,margin_balance,margin_change,"
+            "short_balance,short_change,source,fetched_at) VALUES (?,?,?,?,?,?,?,?)", rows)
+        conn.commit()
+        conn.close()
+        return len(rows)
+
+    def get_margin_divergence(self, symbol, as_of: str = None, days: int = 10,
+                              allow_fetch: bool = False) -> dict:
+        """
+        法人買超 且 融資餘額下降 = 正向背離（散戶退場、法人進場）。
+        法人賣超 且 融資餘額上升 = 負向背離（散戶接刀）。
+
+        回傳 {available, divergence_type, foreign_net_10d, margin_change_10d, note}
+        """
+        if allow_fetch:
+            try:
+                self.update_margin(symbol, days=max(days * 3, 60), allow_fetch=True)
+            except Exception as e:
+                print(f"[籌碼強度] {symbol} 融資 ETL 略過: {e}")
+
+        cal = self.get_trading_days_desc(limit=days, as_of=as_of)
+        if not cal:
+            return dict(self._UNAVAILABLE)
+        series = self._series_by_date(symbol, cal)
+        f_vals = [r[1] for r in series if r[1] is not None]
+        if not f_vals:
+            return dict(self._UNAVAILABLE)
+        foreign_net = sum(f_vals)
+
+        conn = self._conn()
+        qmarks = ",".join("?" * len(cal))
+        mrows = conn.execute(
+            f"SELECT date, margin_balance FROM margin_daily WHERE symbol=? "
+            f"AND date IN ({qmarks}) AND margin_balance IS NOT NULL ORDER BY date",
+            [str(symbol), *cal]).fetchall()
+        conn.close()
+        if len(mrows) < 2:
+            return {"available": False, "foreign_net_10d": foreign_net,
+                    "note": "融資資料不足（未 ETL 或免費額度不可用）"}
+
+        margin_change = mrows[-1][1] - mrows[0][1]
+        if foreign_net > 0 and margin_change < 0:
+            dtype, note = "正向背離", "法人買超＋融資減少：散戶退場、法人進場，籌碼趨於健康"
+        elif foreign_net < 0 and margin_change > 0:
+            dtype, note = "負向背離", "法人賣超＋融資增加：散戶接刀，籌碼轉弱"
+        else:
+            dtype, note = "無背離", "法人與融資同向，無背離訊號"
+        return {
+            "available": True,
+            "divergence_type": dtype,
+            "foreign_net_10d": foreign_net,
+            "margin_change_10d": margin_change,
+            "days_checked": len(mrows),
+            "note": note,
+        }
+
+    # ── 法人買進成本（近似值）────────────────────────────────────────────
+    def _fetch_finmind_close(self, symbol, start_date, end_date):
+        """收盤價 {date: close}。限流回 RATE_LIMITED；查無回 None。"""
+        data = self._finmind_get(
+            "TaiwanStockPrice",
+            {"data_id": str(symbol), "start_date": start_date, "end_date": end_date},
+        )
+        if data == RATE_LIMITED:
+            return RATE_LIMITED
+        if not data:
+            return None
+        out = {}
+        for row in data:
+            d = str(row.get("date", ""))[:10]
+            c = row.get("close")
+            if d and c not in (None, ""):
+                try:
+                    out[d] = float(c)
+                except (TypeError, ValueError):
+                    continue
+        return out or None
+
+    def fill_price_proxy(self, symbol, days: int = 60, allow_fetch: bool = True) -> int:
+        """
+        以當日收盤價填 chip_daily.foreign_buy_price_proxy（僅在外資淨買超>0 的日子）。
+        ⚠️ 近似值：三大法人資料集不含逐筆成交價（實測欄位僅 buy/sell/date/name/stock_id）。
+        """
+        symbol = str(symbol)
+        cal = self.get_trading_days_desc(limit=days)
+        if not cal:
+            return 0
+        conn = self._conn()
+        qmarks = ",".join("?" * len(cal))
+        need = [r[0] for r in conn.execute(
+            f"SELECT date FROM chip_daily WHERE symbol=? AND date IN ({qmarks}) "
+            f"AND foreign_net > 0 AND foreign_buy_price_proxy IS NULL",
+            [symbol, *cal])]
+        conn.close()
+        if not need or not allow_fetch:
+            return 0
+
+        closes = self._fetch_finmind_close(symbol, min(need), max(need))
+        if not closes or closes == RATE_LIMITED:
+            return 0
+        rows = [(closes[d], symbol, d) for d in need if d in closes]
+        if not rows:
+            return 0
+        conn = self._conn()
+        conn.executemany(
+            "UPDATE chip_daily SET foreign_buy_price_proxy=? WHERE symbol=? AND date=?", rows)
+        conn.commit()
+        conn.close()
+        return len(rows)
+
+    def get_institutional_avg_cost(self, symbol, as_of: str = None, days: int = 5,
+                                   current_price=None, allow_fetch: bool = False) -> dict:
+        """
+        近 N 日法人買超加權均價（近似）vs 現價。
+        權重採「當日外資淨買超張數」（對應 fill_price_proxy 只記淨買超日），
+        價格採「當日收盤價近似」。
+
+        ⚠️ avg_cost_proxy 為近似值，非真實逐筆成交均價。
+        回傳 {available, avg_cost_proxy, current_price, premium_pct, days_used, note}
+        """
+        if allow_fetch:
+            try:
+                self.fill_price_proxy(symbol, days=max(days * 6, 60), allow_fetch=True)
+            except Exception as e:
+                print(f"[籌碼強度] {symbol} 收盤價 ETL 略過: {e}")
+
+        cal = self.get_trading_days_desc(limit=days, as_of=as_of)
+        if not cal:
+            return dict(self._UNAVAILABLE)
+        conn = self._conn()
+        qmarks = ",".join("?" * len(cal))
+        rows = conn.execute(
+            f"SELECT date, foreign_net, foreign_buy_price_proxy FROM chip_daily "
+            f"WHERE symbol=? AND date IN ({qmarks}) AND foreign_net > 0 "
+            f"AND foreign_buy_price_proxy IS NOT NULL",
+            [str(symbol), *cal]).fetchall()
+        conn.close()
+        if not rows:
+            return {"available": False,
+                    "note": "近期無外資淨買超日或尚未取得收盤價（近似值不可得）"}
+
+        wsum = sum(r[1] * r[2] for r in rows)
+        w = sum(r[1] for r in rows)
+        if w <= 0:
+            return dict(self._UNAVAILABLE)
+        avg_cost = wsum / w
+
+        cur = None
+        if current_price is not None:
+            try:
+                cur = float(current_price)
+            except (TypeError, ValueError):
+                cur = None
+        premium = round((cur / avg_cost - 1) * 100, 2) if (cur and avg_cost > 0) else None
+        return {
+            "available": True,
+            "avg_cost_proxy": round(avg_cost, 2),
+            "current_price": (round(cur, 2) if cur else None),
+            "premium_pct": premium,
+            "days_used": len(rows),
+            "note": "以當日收盤價近似買入成本，非真實逐筆成交均價",
+        }
+
+    def get_chip_strength_bundle(self, symbol, as_of: str = None, current_price=None,
+                                 allow_fetch: bool = False) -> dict:
+        """四因子一次取得（顯示層用）。allow_fetch=False 時不打任何 API。"""
+        return {
+            "strength": self.get_chip_strength(symbol, as_of=as_of),
+            "consistency": self.get_institutional_consistency(symbol, as_of=as_of),
+            "margin": self.get_margin_divergence(symbol, as_of=as_of, allow_fetch=allow_fetch),
+            "avg_cost": self.get_institutional_avg_cost(
+                symbol, as_of=as_of, current_price=current_price, allow_fetch=allow_fetch),
+            "proxy_note": "法人均價為『當日收盤價』近似，非真實逐筆成交均價",
         }
 
 
