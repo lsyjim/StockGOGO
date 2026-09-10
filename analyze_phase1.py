@@ -151,6 +151,65 @@ def bootstrap_ci(vals, n_boot=1000, alpha=0.05, seed=42):
     return (round(float(lo), 3), round(float(hi), 3), round(float(hi - lo), 3))
 
 
+def bootstrap_ci_clustered(rows, ret_key, n_boot=1000, alpha=0.05, seed=42):
+    """
+    以 as_of 日期為重抽樣單位的 Block(Day-Cluster) Bootstrap。
+
+    為何需要：`bootstrap_ci()` 對攤平後的逐筆訊號做 iid 抽樣，
+    但訊號在日期上高度聚集（同一天多檔股票一起觸發），
+    把 n 筆當成 n 個獨立樣本會使 CI 偏窄、造成假顯著。
+
+    作法：對「不重複日期」取後放回抽樣（抽樣數＝原不重複日期數），
+    把抽到的每個日期的**全部**訊號池化後取平均。
+    如此保留同日訊號的原始筆數與變異，但隨機性反映的是
+    「日期」層級的不確定性，而非「訊號筆數」層級。
+    """
+    byd = defaultdict(list)
+    for r in rows:
+        v = fnum(r.get(ret_key))
+        if v is not None:
+            byd[r['as_of']].append(v)
+    days = list(byd)
+    if len(days) < 2:
+        return (None, None, None)
+    rng = np.random.default_rng(seed)
+    idx = np.arange(len(days))
+    means = []
+    for _ in range(n_boot):
+        picked = rng.choice(idx, size=len(days), replace=True)
+        pooled = [v for i in picked for v in byd[days[i]]]
+        means.append(statistics.mean(pooled))
+    lo, hi = np.percentile(means, [alpha / 2 * 100, (1 - alpha / 2) * 100])
+    return (round(float(lo), 3), round(float(hi), 3), round(float(hi - lo), 3))
+
+
+def cluster_profile(rows, ret_key='ret_20_net'):
+    """聚集度診斷：不重複日期數、每日筆數中位/最大、聚集比例。"""
+    byd = defaultdict(list)
+    for r in rows:
+        v = fnum(r.get(ret_key))
+        if v is not None:
+            byd[r['as_of']].append(v)
+    n = sum(len(v) for v in byd.values())
+    d = len(byd)
+    if not d:
+        return None
+    per = [len(v) for v in byd.values()]
+    return {'n': n, 'days': d, 'median_per_day': statistics.median(per),
+            'max_per_day': max(per), 'cluster_ratio': (1 - d / n) if n else 0.0}
+
+
+def ci_verdict(lo, hi):
+    """CI 是否跨 0 → 方向性判讀。"""
+    if lo is None or hi is None:
+        return '—'
+    if lo > 0:
+        return '顯著為正'
+    if hi < 0:
+        return '顯著為負'
+    return '**跨 0（不顯著）**'
+
+
 def meta_line(rows, extra=''):
     syms = len({r['symbol'] for r in rows})
     return (f"樣本期間 {min(r['as_of'] for r in rows)} → {max(r['as_of'] for r in rows)}"
@@ -258,7 +317,9 @@ def cmd_b3(_args):
             continue
         s5, s10, s20 = (stat_block(sub, N) for N in HOLDS)
         v20 = rets(sub, 20)
-        lo, hi, w = bootstrap_ci(v20)
+        # fix_prompt_14：改用 day-cluster block bootstrap（訊號日期高度聚集）
+        lo, hi, w = bootstrap_ci_clustered(sub, 'ret_20_net')
+        _nlo, _nhi, _nw = bootstrap_ci(v20)   # 保留 naive 供對照表
         n = s20['n'] if s20 else 0
         flag = '⚠️' if n < 100 else ''
         md.append(f"| {lab}{flag} | {n:,} | {s5['mean'] if s5 else '—'} | "
@@ -266,7 +327,63 @@ def cmd_b3(_args):
                   f"{s10['win'] if s10 else '—'}% | {s20['win'] if s20 else '—'}% | "
                   f"{s20['mdd'] if s20 else '—'} | [{lo}, {hi}] | {w} |")
         bmeans.append((lab, s20['mean'] if s20 else None, n, (lo, hi, w)))
-    md.append("\n⚠️ = N<100，point estimate 不可單獨採信\n")
+    md.append("\n⚠️ = N<100，point estimate 不可單獨採信")
+    md.append("\n**CI 欄位已改用 day-cluster block bootstrap**"
+              "（以 `as_of` 日期為重抽樣單位）——見下方新舊對照表。\n")
+
+    # ── fix_prompt_14：新舊 CI 對照（全期分桶 + 分 regime）──────────────
+    md.append("\n## Bootstrap CI 修正：Naive vs Day-Cluster（fix_prompt_14）\n")
+    md.append("> 原 `bootstrap_ci()` 對攤平的逐筆訊號做 iid 重抽樣；但同一天常有多檔股票")
+    md.append("> 同時觸發訊號（本節各桶聚集比例 81–96%），把 n 筆當 n 個獨立樣本會使 CI 偏窄。")
+    md.append("> 修正版以「日期」為重抽樣單位，池化該日全部訊號。")
+    md.append("> 聚集度明細見 [bootstrap_diagnostic.md](bootstrap_diagnostic.md)。\n")
+    md.append("### 全期分桶（20D）\n")
+    md.append("| 分桶 | N | 不重複日期 | 聚集比例 | Naive CI | Cluster CI | 寬度倍數 | 結論是否改變 |")
+    md.append("|---|---|---|---|---|---|---|---|")
+    _changed = []
+    for lab, cond in BUCKETS:
+        sub = [r for r in rows if cond(fnum(r['dir_score']))]
+        if not sub:
+            continue
+        p = cluster_profile(sub)
+        v = rets(sub, 20)
+        nlo, nhi, nw = bootstrap_ci(v)
+        clo, chi, cw = bootstrap_ci_clustered(sub, 'ret_20_net')
+        vn, vc = ci_verdict(nlo, nhi), ci_verdict(clo, chi)
+        ch = vn != vc
+        if ch:
+            _changed.append(f'全期 {lab}')
+        md.append(f"| {lab} | {p['n']:,} | {p['days']:,} | {p['cluster_ratio']:.0%} | "
+                  f"[{nlo}, {nhi}] | [{clo}, {chi}] | {cw/nw:.1f}x | "
+                  f"{'⚠️ **改變**：' + vc if ch else '不變（' + vc + '）'} |")
+    md.append("\n### 分 Regime × 分桶（僅列 n≥30；★ 為結論改變者）\n")
+    md.append("| Regime | 分桶 | N | 日期 | 平均 | Naive CI | Cluster CI | Cluster 判讀 | 改變 |")
+    md.append("|---|---|---|---|---|---|---|---|---|")
+    for reg in ('多頭', '盤整', '空頭'):
+        sr = [r for r in rows if r.get('regime') == reg]
+        for lab, cond in BUCKETS:
+            sub = [r for r in sr if cond(fnum(r['dir_score']))]
+            v = rets(sub, 20)
+            if len(v) < 30:
+                continue
+            p = cluster_profile(sub)
+            nlo, nhi, _ = bootstrap_ci(v)
+            clo, chi, _ = bootstrap_ci_clustered(sub, 'ret_20_net')
+            vn, vc = ci_verdict(nlo, nhi), ci_verdict(clo, chi)
+            ch = vn != vc
+            if ch:
+                _changed.append(f'{reg} {lab}')
+            md.append(f"| {reg} | {lab} | {p['n']:,} | {p['days']:,} | "
+                      f"{statistics.mean(v):+.2f}% | [{nlo}, {nhi}] | [{clo}, {chi}] | "
+                      f"{vc} | {'★ **是**' if ch else '否'} |")
+    md.append("")
+    if _changed:
+        md.append(f"**結論改變的 cell（{len(_changed)} 個）**：{', '.join(_changed)}\n")
+        md.append("依 fix_prompt_14 規定，這些 cell 的判讀一律改為")
+        md.append("「**CI 跨 0，方向性結論證據強度不足，待更多獨立事件樣本**」，"
+                  "不挑選對原結論有利的 CI。\n")
+    else:
+        md.append("**全部 cell 結論未改變**（CI 雖變寬，顯著性方向不變）。\n")
 
     # Spearman
     md.append("## 等級相關（Spearman）\n")
@@ -365,13 +482,28 @@ def cmd_b3(_args):
     md.append("實務意涵——可用於分級與排序（現行用途正確），")
     md.append("但不應據以宣稱「分數高的個股會贏過分數低的個股」。\n")
 
-    md.append("### 2. 空頭 regime 的單調性**反轉**（本輪最重要的發現）\n")
-    md.append("分 regime 表顯示：多頭 ρ=+0.017、分桶乾淨遞增；但**空頭 ρ=−0.108，")
-    md.append("且高分桶報酬為負**（80–90 桶 −3.50%、70–80 桶 −1.82%），低分桶反而為正")
-    md.append("（<30 桶 +1.60%）。\n")
-    md.append("亦即：**在空頭市場中，方向分越高越危險** —— 高分意味著「順勢動能強」，")
-    md.append("而空頭中的強勢股正是回檔幅度最大的一群。這為 B1 的大盤濾網提供了直接的")
-    md.append("實證依據（詳見 `b1_market_regime.md` 的四組對照）。\n")
+    md.append("### 2. 空頭 regime 的單調性**反轉**（經 cluster CI 修正後仍成立，但邊界收窄）\n")
+    md.append("多頭 ρ=+0.017、分桶乾淨遞增；空頭 ρ=−0.108 且中高分桶報酬為負。")
+    md.append("以 **day-cluster CI** 檢驗空頭各桶（fix_prompt_14 修正後）：\n")
+    md.append("| 空頭分桶 | 平均 | Cluster CI | 判讀 |")
+    md.append("|---|---|---|---|")
+    md.append("| 50–60 | −1.75% | [−3.231, −0.255] | 顯著為負 ✅ |")
+    md.append("| 60–70 | −1.65% | [−2.986, −0.258] | 顯著為負 ✅ |")
+    md.append("| 70–80 | −1.82% | [−3.357, −0.393] | 顯著為負 ✅ |")
+    md.append("| 80–90 | −3.50% | [−5.03, −2.075] | 顯著為負 ✅ |")
+    md.append("| **90–100** | −1.71% | **[−3.537, 0.056]** | **跨 0，證據強度不足** ⚠️ |")
+    md.append("| **<30** | +1.60% | **[−0.038, 3.184]** | **跨 0，證據強度不足** ⚠️ |")
+    md.append("")
+    md.append("**修正後的正確表述**：在空頭市場中，**方向分 50–90 區間顯著為負**"
+              "（四個相鄰桶一致，非單格僥倖）；")
+    md.append("但原先引用的兩個極端桶——最高分 90–100 與最低分 <30——在 cluster CI 下")
+    md.append("**都變成跨 0，不能再作為證據**。\n")
+    md.append("因此「空頭中方向分越高越危險」這句話需要修正為："
+              "**空頭中方向分處於中高區間（50–90）者顯著虧損**；")
+    md.append("最高分區間（90–100）雖點估計為負，但獨立事件樣本不足"
+              "（n=1,209 僅來自 177 天）無法斷言。\n")
+    md.append("即使如此，反轉的核心結論仍由四個相鄰桶支撐，且與 B1 空頭 A 級的")
+    md.append("cluster CI [−6.84, −1.032]（顯著為負）互相印證。\n")
 
     md.append("### 3. 時間穩定性不足——全期 +2.17pp 有集中來源，不可直接外推\n")
     md.append("分年 Top20−Bot20 價差：**8 年中有 3 年為負**（2019 −2.08pp、2021 −2.77pp、")
@@ -399,6 +531,15 @@ def cmd_b3(_args):
     md.append("  **每 N 個交易日取樣一次**（持倉不重疊）建構等權序列。真正的投組層級 MDD")
     md.append("  需要部位管理器與資金配置模擬，**超出現有 `signal_backtest.py` 框架能力**。")
     md.append("- 全期為樣本內重放（walk-forward as-of 切片，無前視），非切分訓練/測試的 OOS。")
+    md.append("- **殘留限制：事件層級（episode-level）自相關未處理**。"
+              "day-cluster bootstrap 修正的是「同一天多檔股票共同觸發」的聚集，"
+              "但 regime 本身橫跨連續數週至數月——同一次崩盤事件內**不同天之間**"
+              "仍存在自相關（例如 2022 全年空頭是一個延續事件，不是 245 個獨立日）。"
+              "本輪未實作 episode-level block bootstrap（避免過度工程化），"
+              "故現有 cluster CI 仍可能**偏窄**，方向是保守化不足而非過度保守。"
+              "若未來要再深入，下一步是以「連續 regime 區段」為 block 單位重抽樣，"
+              "屆時空頭類 cell 的 CI 預期會再明顯放寬。")
+
 
     write(md, 'b3_monotonicity.md')
 
@@ -632,7 +773,8 @@ def cmd_b1(_args):
                 md.append(f"| {_lab} | 0 | — | — | — |")
                 continue
             _m = statistics.mean(_v)
-            lo, hi, _w = bootstrap_ci(_v)
+            _rowset = _nr if _lab == '盤整' else _nb
+            lo, hi, _w = bootstrap_ci_clustered(_rowset, 'ret_20_net')
             if lo is not None and lo > 0:
                 jd = "顯著為正 → 濾網**誤殺**"
             elif hi is not None and hi < 0:
@@ -654,6 +796,38 @@ def cmd_b1(_args):
                       "且高於全期 A 級平均。**這是下一輪最值得檢視的調整點**"
                       "（盤整 A→B 的一律降級是否過嚴）。")
         md.append("")
+        # ── fix_prompt_14：新舊 CI 對照 ──────────────────────────────
+        md.append("#### Bootstrap CI 修正對照（fix_prompt_14）\n")
+        md.append("原 CI 以逐筆訊號 iid 重抽樣；同一天多檔股票同時觸發使其偏窄。")
+        md.append("下表並列 naive 與 day-cluster（以日期為重抽樣單位）結果：\n")
+        md.append("| Cell | N | 不重複日期 | 聚集比例 | Naive CI | Cluster CI | 寬度倍數 | 結論是否改變 |")
+        md.append("|---|---|---|---|---|---|---|---|")
+        _b1chg = []
+        for _lab, _rowset in (('空頭 A級', _nb), ('盤整 A級', _nr),
+                              ('多頭 A級', [r for r in _nof_a if r.get('regime') == '多頭'])):
+            _vv = rets(_rowset, 20)
+            if not _vv:
+                continue
+            _p = cluster_profile(_rowset)
+            _nl, _nh, _nw = bootstrap_ci(_vv)
+            _cl, _ch, _cw = bootstrap_ci_clustered(_rowset, 'ret_20_net')
+            _vn, _vc = ci_verdict(_nl, _nh), ci_verdict(_cl, _ch)
+            _ch2 = _vn != _vc
+            if _ch2:
+                _b1chg.append(_lab)
+            md.append(f"| {_lab} | {_p['n']:,} | {_p['days']:,} | {_p['cluster_ratio']:.0%} | "
+                      f"[{_nl}, {_nh}] | [{_cl}, {_ch}] | {_cw/_nw:.2f}x | "
+                      f"{'⚠️ **改變**：' + _vc if _ch2 else '不變（' + _vc + '）'} |")
+        md.append("")
+        if _b1chg:
+            md.append(f"⚠️ **結論改變**：{', '.join(_b1chg)} → 判讀改為"
+                      "「CI 跨 0，方向性結論證據強度不足，待更多獨立事件樣本」。\n")
+        else:
+            md.append("**三格結論皆未改變**：CI 寬度增加 1.25–1.35 倍，但顯著性方向不變。")
+            md.append("本節「盤整該救／空頭該殺」的方向性結論在 day-cluster 修正後仍成立。")
+            md.append("惟盤整下界由 1.02 收窄至 0.678（更接近 0），信心邊際變薄，")
+            md.append("採納前仍建議補時間穩定性驗證。\n")
+
         md.append("⚠️ **方法論警告（重要）**：本節刻意採用**訊號級**平均而非上方表格的")
         md.append("投組序列值。原因：空頭 A 級只有 5 個不重疊期，取樣後的投組數字"
                   f"（+0.982%）與訊號級真值（{statistics.mean(vb):+.3f}%）**符號相反**——")
@@ -682,6 +856,15 @@ def cmd_b1(_args):
     md.append("  且未模擬資金曲線上的實際成交與再平衡。真正的部位管理器超出現有")
     md.append("  `signal_backtest.py` 框架能力，已依 spec 規定如實記錄而非簡化到失真。")
     md.append("- regime 標記取自訊號當日 `market_regime.trend_direction`（as-of，無前視）。")
+    md.append("- **殘留限制：事件層級（episode-level）自相關未處理**。"
+              "day-cluster bootstrap 修正的是「同一天多檔股票共同觸發」的聚集，"
+              "但 regime 本身橫跨連續數週至數月——同一次崩盤事件內**不同天之間**"
+              "仍存在自相關（例如 2022 全年空頭是一個延續事件，不是 245 個獨立日）。"
+              "本輪未實作 episode-level block bootstrap（避免過度工程化），"
+              "故現有 cluster CI 仍可能**偏窄**，方向是保守化不足而非過度保守。"
+              "若未來要再深入，下一步是以「連續 regime 區段」為 block 單位重抽樣，"
+              "屆時空頭類 cell 的 CI 預期會再明顯放寬。")
+
 
     write(md, 'b1_market_regime.md')
 
@@ -710,7 +893,8 @@ def _metrics(rows, N=20):
     if not v:
         return None
     s = stat_block(rows, N)
-    lo, hi, w = bootstrap_ci(v)
+    # fix_prompt_14：一律用 day-cluster（此 CI 目前未渲染，改正以免日後誤用 naive）
+    lo, hi, w = bootstrap_ci_clustered(rows, f'ret_{N}_net')
     return {**s, 'ci': (lo, hi)}
 
 
@@ -991,10 +1175,16 @@ def cmd_summary(_args):
 
     md.append("### 2. 大盤濾網：空頭該留，盤整該檢討（B1）\n")
     md.append("現行濾網讓 A 級在盤整與空頭**完全歸零**。關閉濾網後檢視這些被壓制的訊號：\n")
-    md.append("| Regime | 被壓制的 A 級 n | 20日訊號級平均 | Bootstrap 95%CI | 判讀 |")
-    md.append("|---|---|---|---|---|")
-    md.append("| 盤整 | 550 | **+2.225%** | [1.02, 3.578] | CI 全正 → 濾網**誤殺** |")
-    md.append("| 空頭 | 158 | **−3.801%** | [−6.052, −1.416] | CI 全負 → 濾網**正確** |")
+    md.append("| Regime | n | 不重複日期 | 20日訊號級平均 | Day-Cluster 95%CI | 判讀 |")
+    md.append("|---|---|---|---|---|---|")
+    md.append("| 盤整 | 550 | 283 | **+2.225%** | [0.678, 4.136] | 不跨 0（正）→ 濾網**可能誤殺** |")
+    md.append("| 空頭 | 158 | 90 | **−3.801%** | [−6.84, −1.032] | 不跨 0（負）→ 濾網**正確** |")
+    md.append("")
+    md.append("CI 已依 fix_prompt_14 改用 **day-cluster block bootstrap**（以 as_of 日期為")
+    md.append("重抽樣單位）。原 naive CI 分別為 [1.02, 3.578] 與 [−6.052, −1.416]，")
+    md.append("修正後寬 1.25–1.35 倍但**顯著性方向不變**。惟盤整下界由 1.02 收窄至 0.678，")
+    md.append("信心邊際變薄；且 episode-level 自相關尚未處理（見限制章節），"
+              "故用語為「可能誤殺」而非確定。")
     md.append("")
     md.append("**兩個 regime 結論相反**：空頭壓制有明確實證支持、不應放寬；"
               "盤整的一律 A→B 降級則可能過度保守，是下一輪最值得檢視的調整點。\n")
@@ -1018,7 +1208,9 @@ def cmd_summary(_args):
     md.append("- 但全樣本 Spearman ρ=+0.0011（不顯著）——**個股雜訊遠大於因子訊號**")
     md.append("- 90–100 桶 N=29,416、CI 窄，**未見飽和**")
     md.append("- **8 年中有 3 年 Top−Bot 價差為負**（2019/2021/2022），全期正值主要由 2026 撐起")
-    md.append("- 空頭 regime 單調性**反轉**（ρ=−0.108，高分桶為負）\n")
+    md.append("- 空頭 regime 單調性**反轉**（ρ=−0.108）：day-cluster CI 下 50–90 四個")
+    md.append("  相鄰桶顯著為負；但最高分 90–100 桶 [−3.537, 0.056] 與最低分 <30 桶")
+    md.append("  [−0.038, 3.184] **皆跨 0**，兩個極端桶不能作為證據\n")
     md.append("正確讀法不是「方向分無效」，而是「**其有效性條件於市場環境**」——"
               "這與第 2 點互相印證，共同支持 regime-aware 設計。\n")
 
@@ -1037,23 +1229,99 @@ def cmd_summary(_args):
               "非切分訓練/測試的 OOS；跨年結果已分列可視為時間穩健性的替代檢驗。")
     md.append("6. B1 的 C/D 組部位模型以固定比例（單筆 10%）代替真實風險預算，"
               "未模擬成交與再平衡。")
+    md.append("7. **Bootstrap CI 已於 fix_prompt_14 修正為 day-cluster**（原 naive 版本"
+              "把同一天的多檔訊號當獨立樣本，40 個 cell 中 36 個聚集比例 >50%，"
+              "B3 分桶更達 81–96%）。修正後 B1 三格與 B3 全期八桶結論不變，"
+              "但**分 regime 有 2 格翻盤**（空頭 <30、空頭 90–100 由顯著變為跨 0）。"
+              "殘留：**episode-level 自相關未處理**——同一次崩盤內不同天仍相關，"
+              "故現有 CI 仍可能偏窄。詳見 "
+              "[bootstrap_diagnostic.md](bootstrap_diagnostic.md)。")
 
     md.append("\n## 下一輪建議（供人工決策，本輪不做任何規則變更）\n")
     md.append("| 優先 | 項目 | 依據 | 風險 |")
     md.append("|---|---|---|---|")
     md.append("| 1 | 修正 breakout priority **註解** | B2-extra 零影響 | 極低（純文件） |")
-    md.append("| 2 | 檢視盤整 regime 的 A→B 一律降級 | B1 盤整 CI 全正、n=550 | "
-              "中（需先做時間穩定性驗證） |")
+    md.append("| 2 | 檢視盤整 regime 的 A→B 一律降級 | B1 盤整 day-cluster CI [0.678, 4.136] "
+              "不跨 0、n=550／283 天 | 中偏高（下界較 naive 收窄近半；"
+              "且 episode-level 聚集未處理，**優先度需在補做穩定性與 episode CI 後重新評估**） |")
     md.append("| 3 | 檢視 RS 權重（降低或與趨勢群擇一） | B2 兩軌一致負貢獻 + 高相關 | "
               "中（幅度小，須先驗穩定性） |")
-    md.append("| — | **不建議**放寬空頭濾網 | B1 空頭 CI 全負（−3.80%） | — |")
+    md.append("| — | **不建議**放寬空頭濾網 | B1 空頭 day-cluster CI [−6.84, −1.032] 仍全負 | — |")
 
     write(md, 'phase1_report.md')
 
 
+# ── fix_prompt_14：Bootstrap 聚集度診斷 ──────────────────────────────────
+def _all_cells():
+    """回傳 [(區塊, cell 名, rows)]，涵蓋 B1/B3 所有呼叫過 bootstrap_ci 的 cell。"""
+    base = load_trades(os.path.join(BASE_DIR, 'trades.csv'))
+    nf_p = os.path.join(ROOT, 'backtest_results', 'b1_nofilter', 'trades.csv')
+    nof = load_trades(nf_p) if os.path.exists(nf_p) else []
+    cells = []
+    # B1：A 級書（Current 與 NoFilter）× regime
+    cells.append(('B1', 'Current A級（全期）', [r for r in base if r['grade'] == 'A']))
+    for reg in ('多頭', '盤整', '空頭'):
+        cells.append(('B1', f'Current A級（{reg}）',
+                      [r for r in base if r['grade'] == 'A' and r.get('regime') == reg]))
+    if nof:
+        cells.append(('B1', 'NoFilter A級（全期）', [r for r in nof if r['grade'] == 'A']))
+        for reg in ('多頭', '盤整', '空頭'):
+            cells.append(('B1', f'NoFilter A級（{reg}）★',
+                          [r for r in nof if r['grade'] == 'A' and r.get('regime') == reg]))
+    # B3：分桶（全期 + 分 regime）
+    scored = [r for r in base if fnum(r.get('dir_score')) is not None]
+    for lab, cond in BUCKETS:
+        cells.append(('B3', f'dir_score {lab}（全期）',
+                      [r for r in scored if cond(fnum(r['dir_score']))]))
+    for reg in ('多頭', '盤整', '空頭'):
+        for lab, cond in BUCKETS:
+            cells.append(('B3', f'dir_score {lab}（{reg}）',
+                          [r for r in scored if cond(fnum(r['dir_score']))
+                           and r.get('regime') == reg]))
+    return cells
+
+
+def cmd_diag(_args):
+    md = ["# Bootstrap 聚集度診斷（fix_prompt_14 任務1）\n"]
+    md.append("> **問題**：`bootstrap_ci()` 對攤平後的逐筆訊號做 iid 重抽樣，")
+    md.append("> 但 regime 是連續日曆區段，同一段期間內多檔股票常在同幾天一起觸發訊號。")
+    md.append("> 若 n 筆訊號其實只來自少數交易日，naive bootstrap 會把它們當 n 個獨立樣本，")
+    md.append("> **使 CI 偏窄、造成假顯著**。\n")
+    md.append("- 聚集比例 = 1 − (不重複日期數 / 訊號筆數)；越高代表獨立資訊量越少於筆數")
+    md.append("- ⚠️ 標記門檻：聚集比例 > 50%")
+    md.append("- ★ 標記：Phase 1 核心方向性結論所依賴的 cell\n")
+
+    md.append("## 全部 cell 聚集度\n")
+    md.append("| 區塊 | Cell | N | 不重複日期 | 中位筆數/日 | 最大筆數/日 | 聚集比例 | 標記 |")
+    md.append("|---|---|---|---|---|---|---|---|")
+    high = 0
+    for blk, name, rows in _all_cells():
+        p = cluster_profile(rows)
+        if not p:
+            md.append(f"| {blk} | {name} | 0 | — | — | — | — | 無樣本 |")
+            continue
+        flag = '⚠️ 高聚集，naive CI 可能低估不確定性' if p['cluster_ratio'] > 0.50 else ''
+        if p['cluster_ratio'] > 0.50:
+            high += 1
+        md.append(f"| {blk} | {name} | {p['n']:,} | {p['days']:,} | "
+                  f"{p['median_per_day']:.0f} | {p['max_per_day']} | "
+                  f"{p['cluster_ratio']:.1%} | {flag} |")
+
+    md.append(f"\n## 小結\n")
+    md.append(f"- 共 {len(_all_cells())} 個 cell，其中 **{high} 個聚集比例 > 50%**")
+    md.append("- **B3 分桶問題最嚴重**（全期各桶 81–96%）：例如 `<30` 桶 40,305 筆訊號")
+    md.append("  僅來自 1,635 個交易日，中位每日 21 筆——naive CI 實際上把「同一天的")
+    md.append("  21 檔股票」當成 21 個獨立觀測。")
+    md.append("- **B1 核心兩格聚集度中等**（空頭 43%、盤整 49%），影響較小但仍需修正。")
+    md.append("- 修正結果與新舊 CI 對照見 `b1_market_regime.md`、`b3_monotonicity.md`。")
+
+    write(md, 'bootstrap_diagnostic.md')
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('cmd', choices=['baseline', 'b3', 'b1', 'b2corr', 'b2', 'b2extra', 'summary'])
+    ap.add_argument('cmd', choices=['baseline', 'b3', 'b1', 'b2corr', 'b2', 'b2extra',
+                                    'summary', 'diag'])
     args = ap.parse_args()
     globals()[f'cmd_{args.cmd}'](args)
 
