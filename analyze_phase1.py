@@ -1237,16 +1237,108 @@ def cmd_summary(_args):
               "故現有 CI 仍可能偏窄。詳見 "
               "[bootstrap_diagnostic.md](bootstrap_diagnostic.md)。")
 
+    # ── Phase 1.5 補充驗證（build_prompt_15）────────────────────────────
+    md.append("\n---\n")
+    md.append("# Phase 1.5 補充驗證（build_prompt_15）\n")
+    md.append("四項獨立檢驗：universe 稽核、date-neutral 橫斷面、RS 配對穩定性、"
+              "regime episode bootstrap。")
+    md.append("**結論：Phase 1 的「相對排序」結論大體存活，但「絕對水準」與"
+              "「regime 方向性」兩類結論被明顯削弱。**\n")
+    md.append("子報告：[universe_audit.md](universe_audit.md)、"
+              "[universe_reconstruction.md](universe_reconstruction.md)、"
+              "[b_date_neutral.md](b_date_neutral.md)、"
+              "[c_rs_paired.md](c_rs_paired.md)、"
+              "[episode_bootstrap.md](episode_bootstrap.md)\n")
+
+    md.append("## ⚠️ 全域警語（任務A 結論）\n")
+    md.append("**Phase 1 的 82 檔 universe 具已證實的 selection bias**："
+              "全部 82 檔的 `watchlist.added_date` 皆為 **2026 年**，晚於回測起點 "
+              "2019-06-01 約 **7 年** —— 即「先知道結果再回測」。")
+    md.append("與 point-in-time 對照 universe（全市場合格 1,502 檔中產業分層抽 120 檔，"
+              "202,560 筆訊號）比較：\n")
+    md.append("| 等級 | Watchlist | 對照 | 差距 | 產業對齊後差距 |")
+    md.append("|---|---|---|---|---|")
+    md.append("| A | +3.360% | +2.728% | +0.632pp | **+0.095pp** |")
+    md.append("| B | +2.408% | +1.205% | +1.203pp | +1.077pp |")
+    md.append("| C | +1.904% | +0.854% | +1.050pp | +0.990pp |")
+    md.append("")
+    md.append("**→ 所有絕對期望值須折扣 0.6–1.2pp 後解讀，不可視為全市場預期表現。**")
+    md.append("惟兩項辯護：(1) **A>B>C 單調性在對照組同樣成立，A−C 價差甚至更大**"
+              "（+1.874pp vs +1.456pp）；(2) 產業對齊後 **A 級差距僅 +0.095pp**，"
+              "代表 A 級的水準幾乎不受選股偏誤影響（差距主要來自產業結構）。")
+    md.append("**受偏誤影響的是 level，不是 ranking。**\n")
+
+    md.append("## 逐項結論影響對照\n")
+    md.append("| # | 原結論 | Phase 1.5 檢驗 | 影響 |")
+    md.append("|---|---|---|---|")
+    md.append("| 1 | Step 0 基準完全可重現 | 不受影響 | **不變** |")
+    md.append("| 2 | 濾網讓 A 級在盤整/空頭歸零 | 事實陳述，不受影響 | **不變** |")
+    md.append("| 3 | 盤整被壓制訊號為正（濾網誤殺） | 任務D episode CI "
+              "**[−0.362, 4.828] 跨 0** | **推翻**（證據不足支撐規則調整） |")
+    md.append("| 4 | 空頭被壓制訊號為負（濾網正確） | 任務D episode CI "
+              "**[−9.519, 0.758] 跨 0** | **轉弱**（方向仍為負但不顯著） |")
+    md.append("| 5 | 濾網 trade-off：品質換機會 | 描述性，未依賴 CI | **不變** |")
+    md.append("| 6 | 組別D 曝險上限幾乎不作用 | 結構性事實 | **不變** |")
+    md.append("| 7 | 組別C 線性縮放無單位風險改善 | 結構性事實 | **不變** |")
+    md.append("| 8 | Raw Ablation 結構性無鑑別力 | 結構性事實 | **不變** |")
+    md.append("| 9 | RS 疑似冗餘、為權重候選 | 任務C Δspread CI **[−0.051, 0.175] 跨 0**，"
+              "僅 1/8 年顯著 | **推翻**（維持「優先複驗但未證實」） |")
+    md.append("| 10 | ADX 增量價值最高 | 未經 Phase1.5 獨立檢驗 | **待驗**（同 RS 的疑慮） |")
+    md.append("| 11 | Breakout priority 零影響、邏輯不可達 | 不依賴統計推論 | **不變** |")
+    md.append("| 12 | 方向分有群體鑑別力、無逐筆預測力 | 任務B date-neutral spread "
+              "**+1.259pp CI [0.959, 1.579] 顯著為正** | **轉強**（見下） |")
+    md.append("| 13 | 空頭 regime 單調性反轉 | fix_14 已縮限至 50–90 桶；"
+              "任務B 空頭 date-neutral 見子報告 | **維持縮限後版本** |")
+    md.append("| 14 | 時間穩定性不足（3/8 年負） | 任務B 分年結果一致偏弱 | **不變** |")
+    md.append("| 15 | 90–100 桶未見飽和 | 不受影響 | **不變** |")
+
+    md.append("\n## 任務B：方向分的橫斷面鑑別力——縮水但存活（本輪最好的消息）\n")
+    md.append("原 B3 的 Top20−Bot20 = +2.173pp 是**全期 pooled** 排名，"
+              "可能混入時間組成效應。改為**逐日內排名**後：\n")
+    md.append("| 持有期 | 原 pooled | Date-neutral | 縮水幅度 | 95%CI | 判讀 |")
+    md.append("|---|---|---|---|---|---|")
+    md.append("| 5D | +0.445pp | +0.161pp | −64% | [0.017, 0.304] | 顯著為正 |")
+    md.append("| 10D | +1.094pp | +0.462pp | −58% | [0.262, 0.652] | 顯著為正 |")
+    md.append("| 20D | +2.173pp | **+1.259pp** | **−42%** | [0.959, 1.579] | **顯著為正** |")
+    md.append("")
+    md.append("**判讀：原數字約 42% 來自時間組成效應（G6 的疑慮部分成立），"
+              "但扣除後仍有 +1.259pp 的真實同日橫斷面優勢，且 CI 不跨 0。**")
+    md.append("「方向分具群體鑑別力」這個結論因此**正式坐實**，"
+              "而非只是時間效應的假象。\n")
+
+    md.append("## 殘留限制（Phase 1.5 之後仍未解）\n")
+    md.append("1. **對照 universe 本身仍有 survivorship bias**：`twstock.codes` 只收錄"
+              "目前仍上市者，2019–2026 間下市/下櫃股不在池中。"
+              "故任務A 量測的是 **selection bias**，**未**量測 survivorship bias。")
+    md.append("2. **Episode bootstrap 的 block 數過少**（盤整 68、空頭 19），"
+              "block bootstrap 本身在此régime下不穩定；且 episode 中位長度僅 4–6 天，"
+              "顯示 regime 標籤碎片化會把單一市場事件切成多段，"
+              "使 CI **偏窄**（保守化仍不足）。")
+    md.append("3. **對照 universe 的籌碼資料以 FinMind 預填、停用官方逐日補洞**"
+              "（原設計逐檔觸發 per-date 掃描，單檔可達 20 分鐘）。"
+              "覆蓋率中位 98.0% vs watchlist 99.3%，可比但非完全相同；"
+              "對照組營收回補亦略過（月營收動能因子在對照組不可用）。")
+    md.append("4. 任務C 只檢驗了 RS；其餘四因子（含 ADX）未做同等的 date-neutral "
+              "配對穩定性檢驗，故第 10 項結論狀態為「待驗」。")
+
     md.append("\n## 下一輪建議（供人工決策，本輪不做任何規則變更）\n")
     md.append("| 優先 | 項目 | 依據 | 風險 |")
     md.append("|---|---|---|---|")
     md.append("| 1 | 修正 breakout priority **註解** | B2-extra 零影響 | 極低（純文件） |")
-    md.append("| 2 | 檢視盤整 regime 的 A→B 一律降級 | B1 盤整 day-cluster CI [0.678, 4.136] "
-              "不跨 0、n=550／283 天 | 中偏高（下界較 naive 收窄近半；"
-              "且 episode-level 聚集未處理，**優先度需在補做穩定性與 episode CI 後重新評估**） |")
-    md.append("| 3 | 檢視 RS 權重（降低或與趨勢群擇一） | B2 兩軌一致負貢獻 + 高相關 | "
-              "中（幅度小，須先驗穩定性） |")
-    md.append("| — | **不建議**放寬空頭濾網 | B1 空頭 day-cluster CI [−6.84, −1.032] 仍全負 | — |")
+    md.append("| ~~2~~ | ~~檢視盤整 A→B 降級~~ **暫緩** | Phase1.5 任務D："
+              "episode CI [−0.362, 4.828] **跨 0** | **證據不足，撤下此建議**"
+              "（原依據為 day-cluster CI，經 episode 檢驗後不成立） |")
+    md.append("| ~~3~~ | ~~檢視 RS 權重~~ **暫緩** | Phase1.5 任務C："
+              "Δspread CI [−0.051, 0.175] **跨 0**、僅 1/8 年顯著 | "
+              "**證據不足，維持「優先複驗但未證實」** |")
+    md.append("| 2 | **補齊其餘四因子的 date-neutral 配對檢驗** | 任務C 只驗了 RS，"
+              "ADX「增量最高」尚未經同等檢驗 | 低（純量測） |")
+    md.append("| 3 | 建立 point-in-time universe 機制（含已下市股） | 任務A：現行 universe "
+              "有已證實的 selection bias，且對照組仍缺倒存股 | 中（需歷史上市清單資料源） |")
+    md.append("| — | **不建議**放寬空頭濾網 | 空頭 episode CI [−9.519, 0.758] 雖跨 0，"
+              "點估計仍為負（−3.80%）；無證據支持放寬 | — |")
+    md.append("| — | **不建議**依 Phase 1 絕對期望值設定報酬預期 | 任務A：絕對水準"
+              "被墊高 0.6–1.2pp | — |")
 
     write(md, 'phase1_report.md')
 
