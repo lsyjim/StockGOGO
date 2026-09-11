@@ -373,6 +373,63 @@ class ChipDataManager:
                 self._backfill_official_range([symbol], {symbol: miss})
         return written
 
+    def deep_backfill_batch(self, symbols, start_date: str = None):
+        """
+        多檔批次深度回補（fix_prompt_16）。
+
+        與逐檔 `deep_backfill()` 的差別只在**官方備援的時機**：
+        FinMind 階段仍是逐檔請求（各檔資料獨立，無法批次），
+        但官方備援延後到全部 symbol 的 FinMind 請求都跑完後，
+        把所有 symbol 的缺洞合併成一份 {symbol: miss} 一次性交給
+        `_backfill_official_range` —— 讓它「同一天只發一次請求、
+        服務當天全部有缺洞的 symbol」的 per-date 批次設計真正發揮效益。
+
+        逐檔呼叫時，同一個交易日會被重複請求最多 N(symbol) 次
+        （實測 120 檔跑 4.5 小時仍未完成）；批次化後官方請求數
+        ＝不重複交易日數，與 symbol 數無關。
+
+        回傳 {symbol: FinMind 寫入筆數}（官方備援寫入不計入，與單檔版一致）。
+        """
+        from config import QuantConfig as _QC
+        start = start_date or getattr(_QC, 'CHIP_DEEP_START_DATE', '2020-01-01')
+        end = datetime.date.today().isoformat()
+        try:
+            all_days = self.get_trading_days_desc(limit=100000)
+        except Exception:
+            all_days = []
+        cal = [d for d in all_days if d >= start]
+        valid = set(all_days)
+
+        written_by_symbol = {}
+        combined_missing = {}
+        for symbol in symbols:
+            symbol = str(symbol)
+            chip = self._fetch_finmind_chip(symbol, start, end)
+            written = 0
+            if chip and chip != RATE_LIMITED:
+                for d, v in chip.items():
+                    if valid and d not in valid:
+                        continue
+                    self._upsert_chip(symbol, d, v["f_net"], v["t_net"], v["d_net"], "finmind",
+                                      v["f_buy"], v["f_sell"], v["t_buy"], v["t_sell"],
+                                      v["d_buy"], v["d_sell"])
+                    written += 1
+            written_by_symbol[symbol] = written
+            if cal:
+                have = self._existing_dates(symbol, start)
+                miss = set(cal) - have
+                if miss:
+                    combined_missing[symbol] = miss
+
+        if combined_missing:
+            total_gaps = sum(len(v) for v in combined_missing.values())
+            unique_dates = len({d for v in combined_missing.values() for d in v})
+            print(f"[DeepBackfillBatch] {len(combined_missing)} 檔共 {total_gaps} 個缺洞，"
+                  f"合併為 {unique_dates} 個不重複交易日 → 官方備援一次性掃描")
+            self._backfill_official_range(list(combined_missing.keys()), combined_missing)
+
+        return written_by_symbol
+
     def daily_update(self, symbols: list, holes: int = 5):
         """
         對 watchlist 逐檔補「最近 holes 個交易日」的洞（含節流 0.2s）。

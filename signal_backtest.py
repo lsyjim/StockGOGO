@@ -1099,10 +1099,10 @@ def main():
             except Exception as e:
                 print(f"[Backtest] {sym} 抓取失敗: {e}")
             # 籌碼回測需要足夠歷史：backfill 一次（含 as_of 前的日子）
+            # fix_prompt_16：全歷史模式（days<=0）的深度回補改到迴圈**結束後**
+            # 批次執行一次，讓官方備援的 per-date 批次設計生效（見迴圈後）。
             try:
-                if args.days <= 0:
-                    chip_mgr.deep_backfill(sym, start_date=QuantConfig.CHIP_DEEP_START_DATE)
-                else:
+                if args.days > 0:
                     chip_mgr.backfill(sym, trading_days=_chip_days)
             except Exception:
                 pass
@@ -1110,6 +1110,16 @@ def main():
                 rev_mgr.backfill(sym, months=_rev_months)
             except Exception:
                 pass
+        # fix_prompt_16：全歷史模式的籌碼深度回補，在逐檔迴圈結束後**批次**執行一次。
+        # 逐檔呼叫 deep_backfill 會讓同一交易日被官方備援重複請求最多 N(symbol) 次
+        # （實測 120 檔 4.5 小時未完成）；批次化後官方請求數＝不重複交易日數。
+        if args.days <= 0:
+            try:
+                chip_mgr.deep_backfill_batch(
+                    symbols, start_date=QuantConfig.CHIP_DEEP_START_DATE)
+            except Exception as e:
+                print(f"[Backtest] 籌碼批次深度回補略過: {e}")
+
         # 全歷史模式落地快取，供後續 --reuse-data 重用（預設行為不變）
         if args.days <= 0:
             _save_hist_cache(full_hists, QuantConfig.HISTORY_START_DATE)
