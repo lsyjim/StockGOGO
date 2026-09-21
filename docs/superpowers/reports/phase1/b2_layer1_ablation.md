@@ -65,6 +65,8 @@
 
 ### 主表（持有 20 日）
 
+> ⚠️ 投組層級 CAGR/MDD 為近似值（每 N 個交易日取樣一次，避免同一筆資金重複複利計算），非可交易 production 績效；真正的投組模擬需要部位管理器，超出現有 `signal_backtest.py` 框架能力。
+
 | 模型 | A級n | 期望 | PF | 勝率 | MDD | Sharpe | Sortino | Δ vs Full (Raw) | Top20%n | Top20%期望 | Δ vs Full (Rank-Norm) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | **Full Model** | 1,305 | 3.36% | 1.754 | 50.2% | -44.31% | 0.175 | 0.442 | baseline | 26,198 | 3.388% | baseline |
@@ -119,5 +121,6 @@ Raw Δ 全部落在 −0.024 ~ +0.016 之間，A 級樣本數也僅在 1,299–1
 
 ## 限制
 
+- **投組層級 CAGR/MDD 為近似值（每 N 個交易日取樣一次，避免同一筆資金重複複利計算），非可交易 production 績效；真正的投組模擬需要部位管理器，超出現有 `signal_backtest.py` 框架能力。**
 - Test A 為抽樣（n=5,000）；Test B 為全樣本重跑（每個 variant 一次完整回測）。
 - Ablation 僅作用於 `score_direction` 的五個修正量，不改變 base_score（均線排列）與 position/timing 兩層。

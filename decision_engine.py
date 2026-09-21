@@ -198,19 +198,19 @@ class ThreeLayerEngine:
                 # 大盤空頭：A 級降為 B 級，加入大盤警示
                 timing['grade'] = 'B'
                 timing['label'] = '追蹤（大盤空頭降級）'
-                _mkt_reason = f'大盤空頭（{market_trend}，ADX={market_adx:.0f}），A→B 降級'
+                _mkt_reason = f'大盤空頭（{market_trend}，ADX={market_adx:.0f}），A→B 降級 · 風控疊加'
                 timing['triggers'].append('⚠️ ' + _mkt_reason)
             elif _is_market_bear and timing['grade'] == 'B':
                 # 大盤空頭：B 級降為 C 級
                 timing['grade'] = 'C'
                 timing['label'] = '觀察（大盤空頭降級）'
-                _mkt_reason = '大盤空頭，B→C 降級'
+                _mkt_reason = '大盤空頭，B→C 降級 · 風控疊加'
                 timing['triggers'].append('⚠️ ' + _mkt_reason)
             elif _is_market_range and timing['grade'] == 'A':
                 # 大盤震盪：A 級降為 B 級
                 timing['grade'] = 'B'
                 timing['label'] = '追蹤（大盤震盪降級）'
-                _mkt_reason = f'大盤震盪（ADX={market_adx:.0f}），A→B 降級'
+                _mkt_reason = f'大盤震盪（ADX={market_adx:.0f}），A→B 降級 · 風控疊加'
                 timing['triggers'].append('⚠️ ' + _mkt_reason)
             if _mkt_reason:
                 trail.append({'stage': '大盤濾網', 'from': _g_before_mkt, 'to': timing['grade'], 'reason': _mkt_reason})
@@ -742,7 +742,13 @@ class ThreeLayerEngine:
         # 量價突破類（互斥，只取最強一個）
         # build_prompt_04：Donchian 20/55 帶量突破與既有三盤突破/VP05 並列。
         #   D55 視同強 VP 觸發（中期突破確認，稀缺性高）；D20 為一般觸發。
-        #   取較強者敘述：D55 > 三盤帶量/VP05 > D20 > 三盤待確認。
+        #   實際判定順序：D55 > 三盤（帶量）> 三盤（量能待確認）> VP05 > D20
+        #   註：三盤待確認與 VP05/D20 因量能條件互斥（前者=無量、後者=帶量，
+        #   同一根K棒不可能同時成立），故此優先序與 VP05/D20 的相對高低不可達，
+        #   不影響任何實際判定（見 docs/superpowers/reports/phase1/
+        #   b2extra_breakout_priority.md，全樣本130,993筆零影響）。
+        #   Guard：若未來修改 volume_confirmed／VP05／D20 的量能定義使兩者
+        #   不再互斥，此優先序將變成可達路徑，須重新檢查並可能需要回測驗證。
         _bo_20 = bool(tech.get('breakout_20'))
         _bo_55 = bool(tech.get('breakout_55'))
 

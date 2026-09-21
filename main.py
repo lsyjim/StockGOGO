@@ -5055,8 +5055,14 @@ class RecommendationDialog:
                  fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_MAIN).pack(side=tk.LEFT, padx=6)
         tk.Label(top, text=self._fmtnum(v.get('score'), 0), font=(self._MONO, 26, "bold"),
                  fg=DarkTheme.TEXT_PRIMARY, bg=DarkTheme.BG_MAIN).pack(side=tk.RIGHT)
-        tk.Label(top, text="綜合分 ", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
+        tk.Label(top, text="方向位置分 ", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
                  bg=DarkTheme.BG_MAIN).pack(side=tk.RIGHT)
+        # fix_17 任務2：這個數字只含 direction×position，不含 timing 分級，
+        # 與 A/B/C 買進優先序不同源 → 緊貼數字右下固定一行說明，避免被當排序依據。
+        _score_note = tk.Frame(body, bg=DarkTheme.BG_MAIN)
+        _score_note.pack(fill=tk.X)
+        tk.Label(_score_note, text="不含時機分級，非A/B/C買進優先序", font=("Arial", 9),
+                 fg=DarkTheme.TEXT_SECONDARY, bg=DarkTheme.BG_MAIN).pack(side=tk.RIGHT)
         # 覆蓋建議一行（同源 overall_text）— fix_07：文字色吃動作語意（買=橘/賣=綠/中性=灰）
         import theme as _thm
         _act_col = _thm.action_color(v.get('action_code') or v.get('overall_text', ''))
@@ -5187,6 +5193,12 @@ class RecommendationDialog:
         # 軌跡表
         tk.Label(body, text="裁決軌跡", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
                  bg=DarkTheme.BG_MAIN).pack(anchor="w", pady=(8, 2))
+        # fix_17 任務3：大盤濾網是風控政策選擇，不是統計驗證過的選股訊號。
+        # 固定顯示（不隨本次是否觸發而消失），讓使用者隨時看得到這個脈絡。
+        tk.Label(body, text="大盤濾網為風控政策選擇，非統計驗證之選股訊號\n"
+                            "（episode-level證據不足，詳見機制檢視文件）",
+                 font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY,
+                 bg=DarkTheme.BG_MAIN, justify=tk.LEFT, anchor="w").pack(anchor="w", pady=(0, 4))
         adjustments = self.verdict.get('adjustments') or []
         # fix_13b P2-14：SKIP／WAIT 等否決情境沒有 adjustment_trail，原本整段留白。
         # 至少補一行「{層} 分否決（{分} < 40）」，說明卡在哪一層、幾分。

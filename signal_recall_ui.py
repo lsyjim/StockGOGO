@@ -76,6 +76,14 @@ class SignalRecallWindow(tk.Toplevel):
         tk.Label(bar, text="※ 中長期為方向追蹤中，非最終結果", bg=theme.BG_APP,
                  fg=theme.TEXT_3).pack(side=tk.RIGHT)
 
+        # fix_17 任務4：樣本來自個人自選股，非全市場中性樣本 → 常駐警語，
+        # 不需點擊或 hover 才看得到。
+        tk.Label(self,
+                 text="⚠️ 此驗證基於目前自選股清單（非全市場中性樣本），\n"
+                      "　　統計結果可能反映個人選股偏誤，僅供參考",
+                 bg=theme.BG_APP, fg=theme.TEXT_3,
+                 justify=tk.LEFT, anchor="w").pack(fill=tk.X, padx=12, pady=(0, 6))
+
     def _list_sources(self):
         srcs = ["Watchlist"]
         try:

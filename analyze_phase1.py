@@ -222,6 +222,20 @@ def cost_block():
             + "\n".join(f"- `{k}` = `{v}`" for k, v in COST_PARAMS.items()) + "\n")
 
 
+# fix_17 任務5：CAGR/MDD 免責的統一措辭。凡輸出 CAGR 或 MDD 欄位的報告，
+# 同一份內至少出現一次（不必每張表格重複）。
+CAGR_MDD_NOTE = (
+    "投組層級 CAGR/MDD 為近似值（每 N 個交易日取樣一次，避免同一筆資金"
+    "重複複利計算），非可交易 production 績效；真正的投組模擬需要部位管理器，"
+    "超出現有 `signal_backtest.py` 框架能力。"
+)
+
+
+def cagr_mdd_note(prefix='- '):
+    """回傳統一免責句（預設為 markdown 清單項目）。"""
+    return f"{prefix}**{CAGR_MDD_NOTE}**"
+
+
 # ── Step 0 ────────────────────────────────────────────────────────────────
 def cmd_baseline(_args):
     rows = load_trades(os.path.join(BASE_DIR, 'trades.csv'))
@@ -656,6 +670,9 @@ def cmd_b1(_args):
               ('C. Position Sizing（不降級＋逐筆縮放）', _nof_a, 'scale'),
               ('D. Hybrid（不降級＋總曝險上限）', _nof_a, 'cap')]
 
+    # fix_17 任務5：下方所有表格都含 CAGR/MDD 欄位 → 進表格前先給統一免責句。
+    md.append(f"\n> ⚠️ {CAGR_MDD_NOTE}\n")
+
     for N in HOLDS:
         md.append(f"\n## 【主要基準】A 級書｜持有 {N} 日｜全期間\n")
         md.append("| 組別 | A級訊號數 | 期數 | CAGR | Expectancy | PF | 勝率 | MDD | Sharpe | Sortino |")
@@ -852,6 +869,7 @@ def cmd_b1(_args):
               "**單位風險報酬未改善**，並非真正的風險控制優化。\n")
 
     md.append("\n## 限制\n")
+    md.append(cagr_mdd_note())
     md.append("- 投組模擬為**近似**：單筆部位以固定比例代替真實風險預算（ATR/波動度定量），")
     md.append("  且未模擬資金曲線上的實際成交與再平衡。真正的部位管理器超出現有")
     md.append("  `signal_backtest.py` 框架能力，已依 spec 規定如實記錄而非簡化到失真。")
@@ -956,6 +974,8 @@ def cmd_b2(_args):
     ftop = _topq(base)
     mfull, mfull_t = _metrics(fb), _metrics(ftop)
     md.append("### 主表（持有 20 日）\n")
+    # fix_17 任務5：主表含 MDD 欄位 → 表格前先給統一免責句。
+    md.append(f"> ⚠️ {CAGR_MDD_NOTE}\n")
     md.append("| 模型 | A級n | 期望 | PF | 勝率 | MDD | Sharpe | Sortino | "
               "Δ vs Full (Raw) | Top20%n | Top20%期望 | Δ vs Full (Rank-Norm) |")
     md.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
@@ -1030,6 +1050,7 @@ def cmd_b2(_args):
                   "依 bp10 紀律，**尚不足以直接改權重**，需先做穩定性驗證。\n")
 
     md.append("\n## 限制\n")
+    md.append(cagr_mdd_note())
     md.append("- Test A 為抽樣（n=5,000）；Test B 為全樣本重跑（每個 variant 一次完整回測）。")
     md.append("- Ablation 僅作用於 `score_direction` 的五個修正量，"
               "不改變 base_score（均線排列）與 position/timing 兩層。")
