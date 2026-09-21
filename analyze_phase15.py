@@ -5,6 +5,10 @@ analyze_phase15.py — build_prompt_15 任務 B / C / D（report-only）
   c   RS Paired Stability Test                 → c_rs_paired.md
   d   Regime Episode Block Bootstrap           → episode_bootstrap.md
 
+fix_prompt_18（Phase2 第二項，方法同 c 只換因子）：
+
+  adx ADX Paired Stability Test                → d_adx_paired.md
+
 全部複用 Phase 1 既有 trades.csv，不重跑回測。不修改任何規則。
 """
 
@@ -23,6 +27,7 @@ OUT_DIR = os.path.join(ROOT, 'docs', 'superpowers', 'reports', 'phase1')
 BASE = os.path.join(ROOT, 'backtest_results', 'bp13_step0', 'trades.csv')
 NOFILTER = os.path.join(ROOT, 'backtest_results', 'b1_nofilter', 'trades.csv')
 AB_RS = os.path.join(ROOT, 'backtest_results', 'b2_ab_rs', 'trades.csv')
+AB_ADX = os.path.join(ROOT, 'backtest_results', 'b2_ab_adx', 'trades.csv')
 CONTROL = os.path.join(ROOT, 'backtest_results', 'bp15_control', 'trades.csv')
 
 HOLDS = (5, 10, 20)
@@ -286,6 +291,153 @@ def cmd_c(_a):
     write(md, 'c_rs_paired.md')
 
 
+# ── fix_17/18：ADX Paired Stability（Phase2 第二項，方法完全比照任務C）────
+# B2 Rank-Normalized 對 ADX 的既有結論是 Δ = −0.265（移除 ADX 會變差 →
+# ADX 有正貢獻）。因此本測試「支持」的方向是 Δspread **顯著為負**。
+# 這與任務C（RS 的 B2 Δ = +0.088，支持方向為正）用的是同一條規則：
+#   「CI 不跨 0，且方向與 B2 Rank-Norm Δ 同號」，只是兩個因子的同號方向相反。
+ADX_B2_RANKNORM_DELTA = -0.265
+RS_B2_RANKNORM_DELTA = +0.088
+
+
+def _same_sign_verdict(lo, hi, expect):
+    """CI 是否顯著且與 expect 同號。回傳 (是否同號顯著, 文字判讀)。"""
+    v = ci_verdict(lo, hi)
+    if lo is None or hi is None:
+        return False, '—'
+    if expect < 0:
+        return (hi < 0), v
+    return (lo > 0), v
+
+
+def cmd_adx(_a):
+    if not os.path.exists(AB_ADX):
+        print('[ADX] 缺 b2_ab_adx/trades.csv'); return
+    full, aadx = load(BASE), load(AB_ADX)
+    exp = ADX_B2_RANKNORM_DELTA
+    md = ["# Phase2-D：ADX Paired Stability Test（fix_prompt_18）\n"]
+    md.append("> **目的**：驗證 B2「移除 ADX 後表現變差（Rank-Norm Δ = −0.265，五因子中")
+    md.append("> 幅度最大）」是否在 date-neutral 排名下依然成立，且跨年跨 regime 穩定。")
+    md.append("> 方法與任務C（RS paired stability）**完全相同，只換因子**。\n")
+    md.append("- **資料來源：複用既有 `backtest_results/b2_ab_adx/trades.csv`**"
+              "（2026-09-09 產出，即 B2 Raw Ablation 階段 "
+              "`research_phase1.py --variant ablate --factor adx` 的輸出），"
+              "本次**未重跑回測**。已核對該檔 `dir_score` 與 baseline 差值恰為 "
+              "`adx_mod` 的幅度，確認為 −ADX 模型。")
+    md.append(f"- Full model：{len(full):,} 筆｜−ADX model：{len(aadx):,} 筆")
+    md.append("- 方法：兩模型各自用任務B 的 date-neutral 法算「當日 spread」"
+              f"（逐 as_of 依 dir_score 取 Top/Bottom {QUANT:.0%}，"
+              f"排除當日訊號數 < {MIN_PER_DAY} 的日期），"
+              "再對**同一天**配對相減：Δspread = (−ADX spread) − (Full spread)")
+    md.append("- CI：對 Δspread 時間序列 block bootstrap（1000 次，以日期為重抽樣單位）\n")
+
+    md.append("## 預先定義的判斷準則（跑之前寫死）\n")
+    md.append("沿用任務C 對 RS 的同一條規則——**CI 不跨 0，且方向與 B2 Rank-Norm Δ 同號**：\n")
+    md.append(f"- RS 的 B2 Rank-Norm Δ = {RS_B2_RANKNORM_DELTA:+.3f}（移除更好）"
+              "→ 任務C 的支持方向是 Δspread **顯著為正**")
+    md.append(f"- ADX 的 B2 Rank-Norm Δ = {exp:+.3f}（移除更差）"
+              "→ 本節的支持方向是 Δspread **顯著為負**\n")
+    md.append("**支持**（ADX 列入下一輪權重調整候選，"
+              "**仍不直接改 production 權重**）需同時滿足三條：\n")
+    md.append("1. 20D 整體 Δspread CI 不跨 0，且方向與 B2 Rank-Norm Δ 同號（負）")
+    md.append("2. 多數年份（≥ 60% 有效年份）方向一致且顯著")
+    md.append("3. 至少一個 regime 顯著且同號\n")
+    md.append("任一條不滿足 → **不支持**，ADX 維持現狀。"
+              "此標準與 RS 先例一致，不因 ADX 在 Phase1 Rank-Norm 看起來"
+              "「最有價值」而放寬。\n")
+
+    _final = None
+    for N in HOLDS:
+        spf, _ = daily_spreads(full, N)
+        spa, _ = daily_spreads(aadx, N)
+        common = sorted(set(spf) & set(spa))
+        delta = {d: (spa[d][0] - spf[d][0], spf[d][1]) for d in common}
+        v = [x[0] for x in delta.values()]
+        lo, hi, w = series_bootstrap_ci(v)
+        md.append(f"\n## 持有 {N} 日\n")
+        md.append(f"- 配對天數：{len(common):,}")
+        md.append(f"- Full 平均 spread：{statistics.mean([spf[d][0] for d in common]):+.3f}pp")
+        md.append(f"- −ADX 平均 spread：{statistics.mean([spa[d][0] for d in common]):+.3f}pp")
+        md.append(f"- **Δspread 平均：{statistics.mean(v):+.3f}pp**"
+                  f"（中位 {statistics.median(v):+.3f}pp，"
+                  f"Δ<0 天數佔比 {sum(1 for x in v if x<0)/len(v):.0%}）")
+        md.append(f"- **Block Bootstrap 95%CI：[{lo}, {hi}] → {ci_verdict(lo, hi)}**\n")
+        if N != 20:
+            continue
+
+        md.append("### 分年拆解（20 日）\n")
+        md.append("| 年份 | 天數 | Δspread 平均 | 95%CI | 判讀 | 與預期同號且顯著 |")
+        md.append("|---|---|---|---|---|---|")
+        _yr_ok, _yr_n = 0, 0
+        for y in sorted({d[:4] for d in delta}):
+            vv = [x[0] for d, x in delta.items() if d[:4] == y]
+            if len(vv) < 20:
+                continue
+            l2, h2, _ = series_bootstrap_ci(vv)
+            ok, txt = _same_sign_verdict(l2, h2, exp)
+            _yr_n += 1
+            _yr_ok += int(ok)
+            md.append(f"| {y} | {len(vv):,} | {statistics.mean(vv):+.3f}pp | "
+                      f"[{l2}, {h2}] | {txt} | {'✅' if ok else '—'} |")
+
+        md.append("\n### 分 Regime 拆解（20 日）\n")
+        md.append("| Regime | 天數 | Δspread 平均 | 95%CI | 判讀 | 與預期同號且顯著 |")
+        md.append("|---|---|---|---|---|---|")
+        _rg_ok = 0
+        for rg in ('多頭', '盤整', '空頭'):
+            vv = [x[0] for x in delta.values() if x[1] == rg]
+            if len(vv) < 20:
+                md.append(f"| {rg} | {len(vv)} | 樣本不足 | — | — | — |")
+                continue
+            l2, h2, _ = series_bootstrap_ci(vv)
+            ok, txt = _same_sign_verdict(l2, h2, exp)
+            _rg_ok += int(ok)
+            md.append(f"| {rg} | {len(vv):,} | {statistics.mean(vv):+.3f}pp | "
+                      f"[{l2}, {h2}] | {txt} | {'✅' if ok else '—'} |")
+
+        all_ok, all_txt = _same_sign_verdict(lo, hi, exp)
+        c1, c2, c3 = all_ok, (_yr_n and _yr_ok >= _yr_n * 0.6), (_rg_ok >= 1)
+        md.append("\n## 最終判定（驗收條件2）\n")
+        md.append("| 準則 | 要求 | 實測 | 通過 |")
+        md.append("|---|---|---|---|")
+        md.append(f"| 1. 整體 20D CI | 不跨 0 且為負 | [{lo}, {hi}]（{all_txt}） | "
+                  f"{'✅' if c1 else '❌'} |")
+        md.append(f"| 2. 年份一致性 | ≥60% 有效年份同號顯著 | "
+                  f"{_yr_ok}/{_yr_n} 年 | {'✅' if c2 else '❌'} |")
+        md.append(f"| 3. Regime | ≥1 個 regime 同號顯著 | "
+                  f"{_rg_ok}/3 個 | {'✅' if c3 else '❌'} |")
+        md.append("")
+        if c1 and c2 and c3:
+            _final = '支持'
+            md.append("### ✅ 判定：**支持**\n")
+            md.append("三條準則全數通過。ADX 由「Phase1 Rank-Norm 觀察」升格為"
+                      "**下一輪權重調整候選**。")
+            md.append("⚠️ 依 spec 明文規定，**本輪不得直接修改 production 權重**——"
+                      "只是從候選名單移到下一階段，實際調權重仍需獨立實驗驗證。")
+        else:
+            _final = '不支持'
+            md.append("### ❌ 判定：**不支持**\n")
+            _fail = [n for n, ok in (('整體 CI', c1), ('年份一致性', c2),
+                                     ('Regime', c3)) if not ok]
+            md.append(f"未通過的準則：{'、'.join(_fail)}。")
+            md.append("依與 RS 完全相同的標準，**ADX 維持現狀，不列入權重調整候選，"
+                      "本輪不做進一步處理**。")
+            md.append("特別註記：Phase1 B2 的 Rank-Norm Δ = −0.265 是"
+                      "**全期單一數字**，本節顯示該數字在 date-neutral 配對、"
+                      "逐年與逐 regime 拆解下不具穩定性——這正是 fix_prompt_18 "
+                      "要求「不因 ADX 看起來最有價值就放寬門檻」的理由。")
+
+    md.append("\n## 限制\n")
+    md.append("- 與任務B/C 相同：date-neutral spread 只衡量 `dir_score` 的"
+              "**橫斷面排序能力**，不等於可交易績效。")
+    md.append("- Δspread 的 bootstrap 以**日期**為重抽樣單位，已消除同日多檔的聚集，"
+              "但未處理 episode-level（連續 regime 區段）自相關，CI 仍可能偏窄"
+              "（見 [episode_bootstrap.md](episode_bootstrap.md)）。")
+    md.append("- 單一路徑全期樣本內測試，未做時間雙半 holdout。")
+    print(f"[ADX] 最終判定：{_final}")
+    write(md, 'd_adx_paired.md')
+
+
 # ── 任務 D：Regime Episode Block Bootstrap ───────────────────────────────
 def build_episodes(rows):
     """依 as_of 的 regime 標籤，把連續同標籤日期切成 episode。"""
@@ -434,7 +586,7 @@ def cmd_d(_a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('cmd', choices=['b', 'c', 'd'])
+    ap.add_argument('cmd', choices=['b', 'c', 'd', 'adx'])
     a = ap.parse_args()
     globals()[f'cmd_{a.cmd}'](a)
 

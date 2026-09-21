@@ -1339,8 +1339,9 @@ def cmd_summary(_args):
               "（原設計逐檔觸發 per-date 掃描，單檔可達 20 分鐘）。"
               "覆蓋率中位 98.0% vs watchlist 99.3%，可比但非完全相同；"
               "對照組營收回補亦略過（月營收動能因子在對照組不可用）。")
-    md.append("4. 任務C 只檢驗了 RS；其餘四因子（含 ADX）未做同等的 date-neutral "
-              "配對穩定性檢驗，故第 10 項結論狀態為「待驗」。")
+    md.append("4. ~~任務C 只檢驗了 RS；其餘四因子（含 ADX）未做同等的 date-neutral "
+              "配對穩定性檢驗~~ → **ADX 已於 Phase 2 補驗（見下方 Phase 2 章節，"
+              "判定不支持）**；尚餘 MA斜率／量能／PTH 三因子未驗。")
 
     md.append("\n## 下一輪建議（供人工決策，本輪不做任何規則變更）\n")
     md.append("| 優先 | 項目 | 依據 | 風險 |")
@@ -1352,14 +1353,56 @@ def cmd_summary(_args):
     md.append("| ~~3~~ | ~~檢視 RS 權重~~ **暫緩** | Phase1.5 任務C："
               "Δspread CI [−0.051, 0.175] **跨 0**、僅 1/8 年顯著 | "
               "**證據不足，維持「優先複驗但未證實」** |")
-    md.append("| 2 | **補齊其餘四因子的 date-neutral 配對檢驗** | 任務C 只驗了 RS，"
-              "ADX「增量最高」尚未經同等檢驗 | 低（純量測） |")
+    md.append("| ~~2~~ | ~~檢視 ADX 權重~~ **暫緩** | Phase2：Δspread CI "
+              "[−0.193, 0.006] **跨 0**、僅 2/8 年同號顯著 | "
+              "**證據不足，ADX 維持現狀** |")
+    md.append("| 2 | **補齊剩餘三因子（MA斜率／量能／PTH）的 date-neutral 配對檢驗** | "
+              "RS、ADX 已驗且皆不支持；其餘三項仍無同等證據 | 低（純量測） |")
     md.append("| 3 | 建立 point-in-time universe 機制（含已下市股） | 任務A：現行 universe "
               "有已證實的 selection bias，且對照組仍缺倒存股 | 中（需歷史上市清單資料源） |")
     md.append("| — | **不建議**放寬空頭濾網 | 空頭 episode CI [−9.519, 0.758] 雖跨 0，"
               "點估計仍為負（−3.80%）；無證據支持放寬 | — |")
     md.append("| — | **不建議**依 Phase 1 絕對期望值設定報酬預期 | 任務A：絕對水準"
               "被墊高 0.6–1.2pp | — |")
+
+    # ── Phase 2 記錄（fix_prompt_17 / 18）──────────────────────────────
+    md.append("\n---\n")
+    md.append("# Phase 2 記錄\n")
+    md.append("## Step 1：文件與 UI 語意修正（fix_prompt_17）\n")
+    md.append("純文字／標籤修正，未動任何評分公式、門檻或 grade 判定邏輯："
+              "breakout priority 註解改為實際判定順序並加互斥性 guard；"
+              "裁決卡「綜合分」改名「方向位置分」並註明非 A/B/C 優先序；"
+              "大盤濾網標記為風控疊加；訊號驗證視窗加 selection-bias 警語；"
+              "CAGR/MDD 近似值免責措辭統一。\n")
+
+    md.append("## Step 2：ADX Paired Stability Test（fix_prompt_18）\n")
+    md.append("子報告：[d_adx_paired.md](d_adx_paired.md)｜"
+              "方法完全比照 Phase1.5 任務C（[c_rs_paired.md](c_rs_paired.md)），"
+              "只換因子。複用既有 `b2_ab_adx/trades.csv`，未重跑回測。\n")
+    md.append("Δspread = (−ADX spread) − (Full spread)，配對 1,644 個交易日。"
+              "ADX 的 B2 Rank-Norm Δ = −0.265（移除更差），"
+              "故支持方向為 Δspread **顯著為負**。\n")
+    md.append("| 持有 | Δspread 平均 | 95%CI | 判讀 |")
+    md.append("|---|---|---|---|")
+    md.append("| 5 日 | −0.031pp | [−0.083, 0.017] | 跨 0 |")
+    md.append("| 10 日 | −0.062pp | [−0.132, 0.003] | 跨 0 |")
+    md.append("| **20 日** | **−0.086pp** | **[−0.193, 0.006]** | **跨 0** |")
+    md.append("")
+    md.append("- 分年（20D）：8 個有效年份中僅 **2/8** 同號顯著（2020、2022）；"
+              "2019 反而**顯著為正**（+0.303pp，方向相反）。")
+    md.append("- 分 regime（20D）：僅 **空頭** 同號顯著（−0.482pp，[−0.72, −0.251]）；"
+              "多頭、盤整皆跨 0。\n")
+    md.append("### 最終判定：**不支持**\n")
+    md.append("三條預先寫死的準則（整體 20D CI 同號不跨 0／≥60% 年份同號顯著／"
+              "≥1 regime 同號顯著）只通過第三條。"
+              "**ADX 維持現狀，不列入權重調整候選，不修改 `decision_engine.py` "
+              "或 `config.py` 任何規則。**\n")
+    md.append("值得注意的是，ADX 的失敗型態與 RS **幾乎完全相同**"
+              "（20D 跨 0、僅少數年份顯著、僅空頭單一 regime 顯著）——"
+              "Phase1 B2 的 Rank-Norm Δ 把 ADX 排在「最有價值」、RS 排在"
+              "「唯一負貢獻」，但兩者在 date-neutral 配對＋逐年逐 regime 拆解下"
+              "**同樣不具穩定性**。這說明 B2 的全期單一數字排序本身"
+              "不足以支撐任何權重決策。\n")
 
     write(md, 'phase1_report.md')
 
