@@ -5193,12 +5193,8 @@ class RecommendationDialog:
         # 軌跡表
         tk.Label(body, text="裁決軌跡", font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
                  bg=DarkTheme.BG_MAIN).pack(anchor="w", pady=(8, 2))
-        # fix_17 任務3：大盤濾網是風控政策選擇，不是統計驗證過的選股訊號。
-        # 固定顯示（不隨本次是否觸發而消失），讓使用者隨時看得到這個脈絡。
-        tk.Label(body, text="大盤濾網為風控政策選擇，非統計驗證之選股訊號\n"
-                            "（episode-level證據不足，詳見機制檢視文件）",
-                 font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY,
-                 bg=DarkTheme.BG_MAIN, justify=tk.LEFT, anchor="w").pack(anchor="w", pady=(0, 4))
+        # build_prompt_19 任務0：大盤濾網 grade 降級已移除，原本 fix_17 任務3
+        # 加的固定說明文字沒有對象可指，一併撤掉。regime 風控改在曝險層。
         adjustments = self.verdict.get('adjustments') or []
         # fix_13b P2-14：SKIP／WAIT 等否決情境沒有 adjustment_trail，原本整段留白。
         # 至少補一行「{層} 分否決（{分} < 40）」，說明卡在哪一層、幾分。

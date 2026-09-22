@@ -134,26 +134,25 @@ class ThreeLayerEngine:
         """
         主入口：取代舊版 DecisionMatrix.analyze(result)
 
-        v2.1 新增：大盤濾網（Market Regime Gate）
-        - result['market_regime'] 由 QuickAnalyzer 計算並傳入，無需重複抓取
-        - 大盤空頭時壓制 A 級信號，避免逆勢操作
-        - 大盤震盪時 A 級降為 B 級，謹慎操作
+        build_prompt_19 任務0：**移除大盤濾網的 grade 降級**。
+        - grade 恢復成純粹由 Direction/Position/Timing 三層決定，不再受市場
+          regime 影響（原本的 空頭 A→B／B→C、震盪 A→B 三段降級整段移除）。
+        - `result['market_regime']` 仍由 QuickAnalyzer 計算並原樣保留在 result
+          裡，改由 `portfolio_engine.gross_exposure_cap()` 在**曝險層**使用，
+          而不是在訊號層動 grade。
+        - 依據：Phase1.5 任務D episode bootstrap 顯示 regime 分格 CI 跨 0，
+          降級行為缺乏統計支持；風控改用總曝險上限表達（見
+          docs/superpowers/reports/phase1/episode_bootstrap.md）。
+        - `market_available`／`market_trend` 仍供 M-Lite 盤整路徑使用。
 
         Returns:
             dict: 與舊版格式兼容的決策結果，並額外包含 three_layer 詳細分解
         """
         try:
-            # ── 大盤濾網（前置過濾）──────────────────────────────
+            # ── 市場 regime（只讀，不再作用於 grade）────────────────
             market_regime = result.get('market_regime', {})
             market_available = market_regime.get('available', False)
             market_trend = market_regime.get('trend_direction', '未知')  # 多頭/空頭/盤整
-            market_adx   = market_regime.get('adx', 25)
-
-            # 判斷大盤狀態
-            _is_market_bear  = market_available and market_trend == '空頭'
-            _is_market_range = market_available and (
-                market_trend == '盤整' or market_adx < 20
-            )
 
             # Layer 1: 方向
             direction = ThreeLayerEngine.score_direction(result)
@@ -191,31 +190,9 @@ class ThreeLayerEngine:
             else:
                 trail.append({'stage': 'PTH閘門', 'from': None, 'to': None, 'reason': '—'})
 
-            # ── 大盤濾網作用於 timing grade ──────────────────────
-            _g_before_mkt = timing['grade']
-            _mkt_reason = None
-            if _is_market_bear and timing['grade'] == 'A':
-                # 大盤空頭：A 級降為 B 級，加入大盤警示
-                timing['grade'] = 'B'
-                timing['label'] = '追蹤（大盤空頭降級）'
-                _mkt_reason = f'大盤空頭（{market_trend}，ADX={market_adx:.0f}），A→B 降級 · 風控疊加'
-                timing['triggers'].append('⚠️ ' + _mkt_reason)
-            elif _is_market_bear and timing['grade'] == 'B':
-                # 大盤空頭：B 級降為 C 級
-                timing['grade'] = 'C'
-                timing['label'] = '觀察（大盤空頭降級）'
-                _mkt_reason = '大盤空頭，B→C 降級 · 風控疊加'
-                timing['triggers'].append('⚠️ ' + _mkt_reason)
-            elif _is_market_range and timing['grade'] == 'A':
-                # 大盤震盪：A 級降為 B 級
-                timing['grade'] = 'B'
-                timing['label'] = '追蹤（大盤震盪降級）'
-                _mkt_reason = f'大盤震盪（ADX={market_adx:.0f}），A→B 降級 · 風控疊加'
-                timing['triggers'].append('⚠️ ' + _mkt_reason)
-            if _mkt_reason:
-                trail.append({'stage': '大盤濾網', 'from': _g_before_mkt, 'to': timing['grade'], 'reason': _mkt_reason})
-            else:
-                trail.append({'stage': '大盤濾網', 'from': None, 'to': None, 'reason': '—'})
+            # build_prompt_19 任務0：大盤濾網的 grade 降級已移除。
+            # regime 風控改在曝險層處理（portfolio_engine.gross_exposure_cap），
+            # 此處不再有 '大盤濾網' 這個 trail 階段。
 
             # 籌碼過濾（可能降級 timing.grade）
             _g_before_chip = timing['grade']

@@ -2,7 +2,7 @@
 test_verdict_consistency.py — build_prompt_06 任務1c 一致性驗收
 
 驗證單一真相源：首頁量化建議與完整報告經 build_verdict 取得一致等級/建議，
-且大盤濾網降級、籌碼缺日等裁決都反映在同一份 verdict。
+且籌碼缺日等裁決都反映在同一份 verdict。（build_prompt_19 任務0 後，大盤濾網降級機制已移除。）
 
 執行：python tests/test_verdict_consistency.py
 （測試 1、2 為合成資料，無需網路；測試 3 需 FINMIND_TOKEN + 網路，無資料時自動略過。）
@@ -52,9 +52,14 @@ def _base_result(market_trend="多頭", reliable=True):
     }
 
 
-def test_1_market_bear_downgrades_A_to_B():
-    """大盤空頭 + A 級雙因子 → verdict 等級為 B，adjustments 含大盤濾網一筆。"""
-    # 先確認多頭時本檔確實是 A（否則測試前提不成立）
+def test_1_market_regime_does_not_downgrade_grade():
+    """build_prompt_19 任務0：grade 不再受大盤 regime 影響。
+
+    原斷言為「大盤空頭 A→B 降級」。該降級機制已整段移除——風控改在曝險層
+    （portfolio_engine.gross_exposure_cap）表達，訊號層的 grade 恢復成純粹由
+    Direction/Position/Timing 決定。本測試改為守住「不降級」這個新契約，
+    同時保留原本要驗的「verdict 與 decision_matrix 同源」意圖。
+    """
     bull = _base_result("多頭")
     bull["decision_matrix"] = ThreeLayerEngine.analyze(bull)
     assert bull["decision_matrix"]["scenario"] == "A", \
@@ -63,12 +68,16 @@ def test_1_market_bear_downgrades_A_to_B():
     bear = _base_result("空頭")
     bear["decision_matrix"] = ThreeLayerEngine.analyze(bear)
     v = build_verdict(bear)
-    assert v["grade"] == "B", f"大盤空頭應降 A→B，實得 {v['grade']}"
-    mkt = [a for a in v["adjustments"] if a["stage"] == "大盤濾網" and a["to"] is not None]
-    assert mkt and mkt[0]["from"] == "A" and mkt[0]["to"] == "B", \
-        f"adjustments 應含大盤濾網 A→B，實得 {v['adjustments']}"
-    print("[1] 大盤空頭 A→B：verdict.grade =", v["grade"],
-          "| 軌跡:", mkt[0]["reason"])
+    assert v["grade"] == "A", f"大盤空頭不應再降級，應維持 A，實得 {v['grade']}"
+    assert v["grade"] == bear["decision_matrix"]["scenario"], "verdict 與引擎需同源"
+    # '大盤濾網' 階段本身已不存在於裁決軌跡
+    mkt = [a for a in v["adjustments"] if a["stage"] == "大盤濾網"]
+    assert not mkt, f"裁決軌跡不應再有大盤濾網階段，實得 {mkt}"
+    # market_regime 仍須完整保留在 result，供 portfolio_engine 讀取
+    assert bear["market_regime"]["trend_direction"] == "空頭"
+    assert bear["market_regime"]["available"] is True
+    print("[1] 大盤空頭不降級：verdict.grade =", v["grade"],
+          "| market_regime 仍在:", bear["market_regime"]["trend_direction"])
 
 
 def test_2_unreliable_chip_consistent_and_warned():
@@ -120,7 +129,7 @@ def test_3_real_stocks_same_source():
 
 
 if __name__ == "__main__":
-    test_1_market_bear_downgrades_A_to_B()
+    test_1_market_regime_does_not_downgrade_grade()
     test_2_unreliable_chip_consistent_and_warned()
     test_3_real_stocks_same_source()
     print("\nALL VERDICT CONSISTENCY TESTS PASSED")

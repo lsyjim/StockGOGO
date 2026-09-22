@@ -1374,6 +1374,9 @@ def cmd_summary(_args):
               "裁決卡「綜合分」改名「方向位置分」並註明非 A/B/C 優先序；"
               "大盤濾網標記為風控疊加；訊號驗證視窗加 selection-bias 警語；"
               "CAGR/MDD 近似值免責措辭統一。\n")
+    md.append("> ⚠️ 其中「大盤濾網標記為風控疊加」與裁決軌跡下方那段固定說明文字，"
+              "已於 Step 3（build_prompt_19 任務0）**連同降級機制本身一併移除**——"
+              "沒有降級行為，這兩項說明就沒有對象可指。\n")
 
     md.append("## Step 2：ADX Paired Stability Test（fix_prompt_18）\n")
     md.append("子報告：[d_adx_paired.md](d_adx_paired.md)｜"
@@ -1403,6 +1406,46 @@ def cmd_summary(_args):
               "「唯一負貢獻」，但兩者在 date-neutral 配對＋逐年逐 regime 拆解下"
               "**同樣不具穩定性**。這說明 B2 的全期單一數字排序本身"
               "不足以支撐任何權重決策。\n")
+
+    md.append("## Step 3：移除大盤濾網降級 + Portfolio Engine 核心"
+              "（build_prompt_19）\n")
+    md.append("**這是 Phase 1/1.5 全部證據累積後的第一個實質規則變更。**\n")
+    md.append("`decision_engine.analyze()` 原本在 timing grade 之後套三段 regime "
+              "降級（空頭 A→B、空頭 B→C、震盪 A→B），**整段移除**。"
+              "grade 恢復成純粹由 Direction/Position/Timing 三層決定。\n")
+    md.append("依據——本階段對大盤濾網累積的證據一路走低：\n")
+    md.append("| 來源 | 結論 |")
+    md.append("|---|---|")
+    md.append("| B1（day-cluster CI） | 盤整格「該檢討」、空頭格「該留」 |")
+    md.append("| Phase1.5 任務D（episode bootstrap） | 盤整 episode CI "
+              "[−0.362, 4.828] **跨 0** → B1 的盤整結論撤回 |")
+    md.append("| Phase1.5 任務D（空頭） | episode CI [−9.519, 0.758] 亦**跨 0** |")
+    md.append("")
+    md.append("即：**沒有任何一格的降級行為通過 episode-level 檢驗**。"
+              "與其留一個統計上站不住、又會污染 grade 語意的機制，"
+              "改以曝險層表達同一個風控意圖——"
+              "`portfolio_engine.gross_exposure_cap()` 依 regime 限制**總曝險**"
+              "（多頭 100%／盤整 70%／空頭 40%，未知一律 fallback 70%）。\n")
+    md.append("差別在語意分工：grade 只回答「這檔訊號多強」，"
+              "曝險層回答「整體該持多少」。空頭時不再假裝 A 級訊號變成 B 級，"
+              "而是承認它仍是 A 級、但整體倉位只開到四成。\n")
+    md.append("同輪新增 `portfolio_engine.py`（純函式，不讀 DB／不打網路）："
+              "ATR 風險預算 + 等級係數的 `position_sizing()`、"
+              "regime 曝險上限 `gross_exposure_cap()`、"
+              "題材集中度 `concentration_limits()`、"
+              "相關性集中度 `correlation_limits()`，"
+              "以及串接四層取最嚴格值的 `evaluate_new_position()`。"
+              "門檻常數全部集中在 `config.py`。\n")
+    md.append("⚠️ **尚未整合**：回測（`signal_backtest.py` 逐日資金曲線）與"
+              "實盤 UI（報告顯示建議部位）都還沒接上，是下一輪任務。"
+              "因此本輪**沒有**任何關於「新風控是否更好」的績效證據——"
+              "移除降級的依據是「原機制缺乏統計支持」，"
+              "不是「新機制已被證明更優」。\n")
+    md.append("⚠️ **連帶影響**：`bp13_step0` baseline 是在降級機制存在時產生的，"
+              "本輪之後**無法再用現行 code 重現**（凍結的 trades.csv 仍有效，"
+              "但 `analyze_phase1.py baseline` 的重跑比對自此失效）。"
+              "`research_phase1.py --variant nofilter` 因原始碼注入目標消失，"
+              "會直接拋 RuntimeError。\n")
 
     write(md, 'phase1_report.md')
 

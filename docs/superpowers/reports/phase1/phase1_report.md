@@ -176,6 +176,8 @@ RS 擁有五因子中最大權重（−8~+12），卻是**唯一在 Raw 與 Rank
 
 純文字／標籤修正，未動任何評分公式、門檻或 grade 判定邏輯：breakout priority 註解改為實際判定順序並加互斥性 guard；裁決卡「綜合分」改名「方向位置分」並註明非 A/B/C 優先序；大盤濾網標記為風控疊加；訊號驗證視窗加 selection-bias 警語；CAGR/MDD 近似值免責措辭統一。
 
+> ⚠️ 其中「大盤濾網標記為風控疊加」與裁決軌跡下方那段固定說明文字，已於 Step 3（build_prompt_19 任務0）**連同降級機制本身一併移除**——沒有降級行為，這兩項說明就沒有對象可指。
+
 ## Step 2：ADX Paired Stability Test（fix_prompt_18）
 
 子報告：[d_adx_paired.md](d_adx_paired.md)｜方法完全比照 Phase1.5 任務C（[c_rs_paired.md](c_rs_paired.md)），只換因子。複用既有 `b2_ab_adx/trades.csv`，未重跑回測。
@@ -196,4 +198,28 @@ RS 擁有五因子中最大權重（−8~+12），卻是**唯一在 Raw 與 Rank
 三條預先寫死的準則（整體 20D CI 同號不跨 0／≥60% 年份同號顯著／≥1 regime 同號顯著）只通過第三條。**ADX 維持現狀，不列入權重調整候選，不修改 `decision_engine.py` 或 `config.py` 任何規則。**
 
 值得注意的是，ADX 的失敗型態與 RS **幾乎完全相同**（20D 跨 0、僅少數年份顯著、僅空頭單一 regime 顯著）——Phase1 B2 的 Rank-Norm Δ 把 ADX 排在「最有價值」、RS 排在「唯一負貢獻」，但兩者在 date-neutral 配對＋逐年逐 regime 拆解下**同樣不具穩定性**。這說明 B2 的全期單一數字排序本身不足以支撐任何權重決策。
+
+## Step 3：移除大盤濾網降級 + Portfolio Engine 核心（build_prompt_19）
+
+**這是 Phase 1/1.5 全部證據累積後的第一個實質規則變更。**
+
+`decision_engine.analyze()` 原本在 timing grade 之後套三段 regime 降級（空頭 A→B、空頭 B→C、震盪 A→B），**整段移除**。grade 恢復成純粹由 Direction/Position/Timing 三層決定。
+
+依據——本階段對大盤濾網累積的證據一路走低：
+
+| 來源 | 結論 |
+|---|---|
+| B1（day-cluster CI） | 盤整格「該檢討」、空頭格「該留」 |
+| Phase1.5 任務D（episode bootstrap） | 盤整 episode CI [−0.362, 4.828] **跨 0** → B1 的盤整結論撤回 |
+| Phase1.5 任務D（空頭） | episode CI [−9.519, 0.758] 亦**跨 0** |
+
+即：**沒有任何一格的降級行為通過 episode-level 檢驗**。與其留一個統計上站不住、又會污染 grade 語意的機制，改以曝險層表達同一個風控意圖——`portfolio_engine.gross_exposure_cap()` 依 regime 限制**總曝險**（多頭 100%／盤整 70%／空頭 40%，未知一律 fallback 70%）。
+
+差別在語意分工：grade 只回答「這檔訊號多強」，曝險層回答「整體該持多少」。空頭時不再假裝 A 級訊號變成 B 級，而是承認它仍是 A 級、但整體倉位只開到四成。
+
+同輪新增 `portfolio_engine.py`（純函式，不讀 DB／不打網路）：ATR 風險預算 + 等級係數的 `position_sizing()`、regime 曝險上限 `gross_exposure_cap()`、題材集中度 `concentration_limits()`、相關性集中度 `correlation_limits()`，以及串接四層取最嚴格值的 `evaluate_new_position()`。門檻常數全部集中在 `config.py`。
+
+⚠️ **尚未整合**：回測（`signal_backtest.py` 逐日資金曲線）與實盤 UI（報告顯示建議部位）都還沒接上，是下一輪任務。因此本輪**沒有**任何關於「新風控是否更好」的績效證據——移除降級的依據是「原機制缺乏統計支持」，不是「新機制已被證明更優」。
+
+⚠️ **連帶影響**：`bp13_step0` baseline 是在降級機制存在時產生的，本輪之後**無法再用現行 code 重現**（凍結的 trades.csv 仍有效，但 `analyze_phase1.py baseline` 的重跑比對自此失效）。`research_phase1.py --variant nofilter` 因原始碼注入目標消失，會直接拋 RuntimeError。
 

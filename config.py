@@ -152,7 +152,33 @@ class QuantConfig:
     ATR_K_STOP = 2.0  # ATR 止損倍數
     R_MULTIPLE_TARGET = 2.0  # 預設 R 倍數目標（停利）
     SWING_LOOKBACK = 20  # 波段高低點回看天數
-    
+
+    # ============================================================================
+    # build_prompt_19：Portfolio Engine 參數（portfolio_engine.py 專用）
+    # 定位：regime 風控從「訊號層降 grade」改為「曝險層限總量」，
+    #       任務0 已移除 decision_engine 的大盤濾網降級，風控改由此處表達。
+    # ============================================================================
+    # 1a 部位大小：以 RISK_PER_TRADE=0.01 為 B 級基準，A/C 按比例調整
+    RISK_PCT_BY_GRADE = {'A': 0.015, 'B': 0.01, 'C': 0.005}
+    # 安全上限：低波動股即使風險預算法算出更大部位，單筆也不超過此比例
+    MAX_SINGLE_POSITION_PCT = 0.20
+
+    # 1b regime 總曝險上限（未知/不可用 regime 一律 fallback 到「盤整」）
+    GROSS_EXPOSURE_BY_REGIME = {'多頭': 1.00, '盤整': 0.70, '空頭': 0.40}
+    GROSS_EXPOSURE_FALLBACK_REGIME = '盤整'
+
+    # 1c 題材集中度（依 theme_map.json 分類）
+    MAX_THEME_EXPOSURE_PCT = 0.30
+
+    # 1d 相關性集中度
+    CORR_THRESHOLD = 0.7              # 判定「高相關」的報酬相關係數門檻
+    MAX_CORRELATED_EXPOSURE_PCT = 0.30  # 高相關集群總曝險上限
+    CORR_WINDOW_DAYS = 60             # 報酬相關係數窗口（與 RS 等既有 60 日一致）
+
+    # 整合判定：final_pct 低於此值視為實質不該進場（rejected）
+    MIN_EFFECTIVE_POSITION_PCT = 0.005
+
+
     # ============================================================================
     # v4.4 新增：量價分析模組參數
     # ============================================================================
