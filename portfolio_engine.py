@@ -32,7 +32,7 @@ from config import QuantConfig as _QC
 
 __all__ = [
     'position_sizing', 'gross_exposure_cap', 'concentration_limits',
-    'correlation_limits', 'evaluate_new_position',
+    'correlation_limits', 'evaluate_new_position', 'select_position_to_trim',
 ]
 
 
@@ -257,6 +257,46 @@ def correlation_limits(current_positions, candidate_symbol, candidate_pct,
     return {'approved_pct': allowed, 'correlated_with': cluster,
             'cluster_total_after': cluster_pct + allowed,
             'capped': allowed < want}
+
+
+# ── build_prompt_22：曝險減碼（退場側）────────────────────────────────────
+def select_position_to_trim(current_positions, regime, market_available=True):
+    """總曝險超過 regime 上限時，挑一筆該減的持倉出來。
+
+    背景：`gross_exposure_cap()` 原本只在 `evaluate_new_position()` 被讀取，
+    是**進場閘門**——多頭期間建到滿倉後，regime 翻成空頭時既有持倉不會被
+    減碼（build_prompt_21 實測空頭期間曝險仍達 100%）。這個函式補上退場
+    那一半。
+
+    選擇規則：**最舊者優先**（依 entry_date，同日依 symbol）。
+    理由：本專案已驗證的是「固定 20 日持有期」，砍最舊的那筆對這套方法論
+    的偏移最小——它本來就最接近到期。**刻意不採用 P&L 規則**
+    （砍虧最多／賺最多），那會引入未經驗證的出場擇時。
+
+    這是**風控政策選擇**，不是統計上證明更優的機制；是否採用由
+    build_prompt_22 的 A/B 對照依預先定義的準則裁決。
+
+    回傳 {'symbol', 'entry_date', 'reason', 'excess_pct', 'gross', 'cap'}
+    或 None（未超標／無持倉）。呼叫端自行決定一次砍幾筆——限速屬於
+    執行策略，不在本函式內。
+    """
+    pos = [p for p in (current_positions or []) if p.get('symbol')]
+    if not pos:
+        return None
+    cap = gross_exposure_cap(regime, market_available)
+    gross = _sum_pct(pos)
+    if gross <= cap:
+        return None
+    oldest = min(pos, key=lambda p: (str(p.get('entry_date') or ''),
+                                     str(p.get('symbol'))))
+    return {
+        'symbol': oldest.get('symbol'),
+        'entry_date': oldest.get('entry_date'),
+        'reason': 'gross_exposure_deleverage',
+        'excess_pct': gross - cap,
+        'gross': gross,
+        'cap': cap,
+    }
 
 
 # ── 1e. 整合 ──────────────────────────────────────────────────────────────

@@ -1482,6 +1482,33 @@ def cmd_summary(_args):
               "怎麼補（regime 翻轉強制減碼？波動度目標？）是需要獨立設計與"
               "驗證的下一個題目——**在補上之前，不應把目前的空頭風控視為完整**。\n")
 
+    md.append("## Step 5：曝險減碼機制（build_prompt_22）\n")
+    md.append("報告：[../phase2/portfolio_backtest_deleverage.md]"
+              "(../phase2/portfolio_backtest_deleverage.md)\n")
+    md.append("**補上 Step 4 指出的缺口**：`portfolio_engine` 新增"
+              "`select_position_to_trim()`——總曝險超過 regime 上限時，"
+              "砍 entry_date 最舊的一筆（刻意不用 P&L 規則），"
+              "每天最多一筆（限速）。A/B 對照，判斷準則跑之前寫死。\n")
+    md.append("| 門檻（預先定義） | A 無減碼 | B 有減碼 | 判定 |")
+    md.append("|---|---|---|---|")
+    md.append("| 空頭段 \\|MDD\\| 縮小 | −46.32% | **−36.39%** | ✅ |")
+    md.append("| 盤整段 \\|MDD\\| 縮小 | −77.92% | −76.37% | ✅ |")
+    md.append("| 多頭段年化 ≥ A×90%（142.31%） | 158.12% | 149.10% | ✅ |")
+    md.append("")
+    md.append("整體：CAGR 19.06% → 20.52%，MDD −45.80% → −41.90%，"
+              "Sharpe 0.858 → 0.932。**判定：支持採用。**\n")
+    md.append("兩點必須一起讀：\n")
+    md.append("1. 門檻 3 是**通過而非無代價**——多頭段年化少了 9.02pp。"
+              "減碼在多頭轉盤整的瞬間確實會誤砍還在賺的倉位。")
+    md.append("2. A/B 差異**混合了兩種效果**：B 比 A 多開 243 倉"
+              "（633 → 876），減碼既降低下檔曝險，也釋放容量讓更多訊號進場。"
+              "總報酬改善有多少來自「少虧」、多少來自「多做」，本輪未拆解。\n")
+    md.append("⚠️ **尚未接進 production**：實盤側目前沒有持倉概念"
+              "（Step 2 的 `current_positions` 恆為空清單），"
+              "減碼要在實盤生效必須先補上持倉追蹤——這是硬前提。"
+              "回測預設也仍是 `deleverage=False`，"
+              "`portfolio_backtest_real.md` 基準保持原樣供對照。\n")
+
     write(md, 'phase1_report.md')
 
 

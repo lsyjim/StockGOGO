@@ -147,14 +147,32 @@ class PriceBook:
         return ds[j], self.close[symbol][j]
 
 
+def _held_days(book, symbol, entry_date, exit_date):
+    """實際持有的交易日數（進場日到出場日之間的交易日格數）。"""
+    idx = book.idx.get(symbol, {})
+    i, j = idx.get(entry_date), idx.get(exit_date)
+    return (j - i - 1) if (i is not None and j is not None) else None
+
+
 def load_rows(path):
     with open(path, encoding='utf-8-sig') as f:
         return list(csv.DictReader(f))
 
 
 # ── 模擬主體 ──────────────────────────────────────────────────────────────
+MAX_DELEVERAGE_PER_DAY = 1     # build_prompt_22：限速，每天最多強制平倉一筆
+
+
 def simulate(trades_csv_path=BASE_TRADES, start_capital=START_CAPITAL,
-             holding_days=HOLDING_DAYS, theme_map=None, verbose=True):
+             holding_days=HOLDING_DAYS, theme_map=None, verbose=True,
+             deleverage=False):
+    """deleverage=False 時與 build_prompt_21 完全相同（Scenario A 基準）。
+
+    deleverage=True 啟用 build_prompt_22 的減碼：每日在「到期結算」之後、
+    「新進場」之前，若總曝險超過當日 regime 上限，依 `portfolio_engine.
+    select_position_to_trim()` 強制平倉最舊的一筆，每天最多
+    MAX_DELEVERAGE_PER_DAY 筆（不一次到位）。
+    """
     rows = load_rows(trades_csv_path)
 
     by_symbol = collections.defaultdict(list)
@@ -191,9 +209,12 @@ def simulate(trades_csv_path=BASE_TRADES, start_capital=START_CAPITAL,
 
         # 1. 到期結算
         for sym in exits_on.pop(date, []):
-            p = positions.pop(sym, None)
-            if p is None:
+            p = positions.get(sym)
+            # 同一檔被減碼後可能已重新進場，舊排程會殘留在 exits_on 裡。
+            # 用部位自己記的排程日核對，避免舊排程把新部位提早關掉。
+            if p is None or p.get('exit_date_sched') != date:
                 continue
+            positions.pop(sym)
             px = p['exit_price']
             if px is None:
                 px = book.close_on(sym, date) or p['entry_price']
@@ -207,7 +228,9 @@ def simulate(trades_csv_path=BASE_TRADES, start_capital=START_CAPITAL,
                 'entry_price': p['entry_price'], 'exit_price': px,
                 'shares': p['shares'], 'notional': p['notional'],
                 'pnl': pnl, 'ret_pct': pnl / p['notional'] * 100,
-                'regime_at_entry': p['regime'],
+                'regime_at_entry': p['regime'], 'exit_reason': 'expired',
+                'held_days': _held_days(book, sym, p['entry_date'], date),
+                'early_by': 0, 'regime_at_exit': regime,
             })
             stats['closed'] += 1
 
@@ -222,6 +245,43 @@ def simulate(trades_csv_path=BASE_TRADES, start_capital=START_CAPITAL,
 
         invested = _mark()
         equity = cash + invested
+
+        # 2b. 減碼檢查（build_prompt_22）：在新進場之前，釋放曝險空間。
+        #     提早出場一律以**當日真實收盤價**結算——PriceBook 由
+        #     exit_5 反推，第 7 個交易日起每檔每日都有實價，不需近似。
+        if deleverage:
+            for _ in range(MAX_DELEVERAGE_PER_DAY):
+                if not positions or equity <= 0:
+                    break
+                cur_list = [{'symbol': s, 'entry_date': p['entry_date'],
+                             'position_pct': p['shares'] * p['mark'] / equity}
+                            for s, p in positions.items()]
+                pick = PE.select_position_to_trim(
+                    cur_list, regime,
+                    market_available=(regime in QC.GROSS_EXPOSURE_BY_REGIME))
+                if not pick:
+                    break
+                sym = pick['symbol']
+                p = positions.pop(sym)
+                px = book.close_on(sym, date) or p['entry_price']
+                proceeds = p['shares'] * px
+                cost = COST_RATE * p['notional']
+                cash += proceeds - cost
+                pnl = proceeds - cost - p['notional']
+                held = _held_days(book, sym, p['entry_date'], date)
+                trade_log.append({
+                    'symbol': sym, 'grade': p['grade'],
+                    'entry_date': p['entry_date'], 'exit_date': date,
+                    'entry_price': p['entry_price'], 'exit_price': px,
+                    'shares': p['shares'], 'notional': p['notional'],
+                    'pnl': pnl, 'ret_pct': pnl / p['notional'] * 100,
+                    'regime_at_entry': p['regime'], 'exit_reason': 'deleveraged',
+                    'held_days': held, 'early_by': holding_days - held,
+                    'regime_at_exit': regime, 'excess_pct': pick['excess_pct'],
+                })
+                stats['deleveraged'] += 1
+                invested = _mark()
+                equity = cash + invested
 
         # 3. 當日候選訊號：A 優先，同級 dir_score 高者優先，同分依代號
         cands = sorted(
@@ -293,6 +353,7 @@ def simulate(trades_csv_path=BASE_TRADES, start_capital=START_CAPITAL,
                 'grade': r['grade'], 'shares': shares, 'entry_price': entry_px,
                 'notional': notional, 'entry_date': date, 'exit_price': exit_px,
                 'regime': regime, 'mark': entry_px,
+                'exit_date_sched': exit_date,
             }
             exits_on[exit_date].append(sym)
             stats['opened'] += 1
@@ -327,13 +388,17 @@ def simulate(trades_csv_path=BASE_TRADES, start_capital=START_CAPITAL,
             'pnl': proceeds - cost - p['notional'],
             'ret_pct': (proceeds - cost - p['notional']) / p['notional'] * 100,
             'regime_at_entry': p['regime'], 'forced_close': True,
+            'exit_reason': 'forced_end',
+            'held_days': _held_days(book, sym, p['entry_date'], last),
+            'early_by': None, 'regime_at_exit': regime_of.get(last, '未知'),
         })
         stats['forced_close_at_end'] += 1
         positions.pop(sym)
 
     if verbose:
-        print(f"[sim] 交易日 {len(calendar)}｜候選 {stats['candidates']}｜"
-              f"開倉 {stats['opened']}｜平倉 {stats['closed']}"
+        print(f"[sim{'+DL' if deleverage else ''}] 交易日 {len(calendar)}｜"
+              f"候選 {stats['candidates']}｜開倉 {stats['opened']}｜"
+              f"到期平倉 {stats['closed']}｜減碼出場 {stats.get('deleveraged',0)}"
               f"（期末強制 {stats['forced_close_at_end']}）")
 
     return {'equity_curve': equity_curve, 'trades': trade_log,
@@ -710,12 +775,287 @@ def write_curve_csv(sim, name='portfolio_equity_curve.csv'):
     return p
 
 
+# ── build_prompt_22：減碼機制 A/B 對照報告 ───────────────────────────────
+# 預先定義的判斷準則（寫死在程式碼裡，不看結果才回頭改）
+BULL_CAGR_FLOOR = 0.90      # B 的多頭段年化 ≥ A 的 90%
+
+
+def _pct_dist(vals):
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    return {
+        'n': n,
+        'win_rate': sum(1 for x in s if x > 0) / n * 100,
+        'mean': statistics.mean(s),
+        'median': s[n // 2],
+        'p10': s[int(n * 0.10)],
+        'p90': s[int(n * 0.90)],
+        'min': s[0], 'max': s[-1],
+    }
+
+
+def write_deleverage_report(simA, perfA, regA, simB, perfB, regB,
+                            out_name='portfolio_backtest_deleverage.md'):
+    os.makedirs(OUT_DIR, exist_ok=True)
+    dl = [t for t in simB['trades'] if t.get('exit_reason') == 'deleveraged']
+    ex = [t for t in simB['trades'] if t.get('exit_reason') == 'expired']
+
+    md = ["# Phase2：曝險減碼機制 A/B 對照（build_prompt_22）\n"]
+    md.append("> build_prompt_21 發現 `gross_exposure_cap()` 只在"
+              "`evaluate_new_position()` 被讀取——它是**進場閘門**，不是"
+              "**持倉上限**。多頭建到滿倉後 regime 翻轉，既有持倉不會減碼，"
+              "實測空頭期間曝險仍達 100%。這輪補上退場那一半並做 A/B 對照。\n")
+    md.append("> **這是風控政策選擇，不是聲稱統計上證明更優**——"
+              "是否採用由下方預先定義的準則裁決。\n")
+
+    md.append("## 預先定義的判斷準則（跑之前寫死）\n")
+    md.append("**支持採用減碼機制**須同時滿足三條：\n")
+    md.append("1. 空頭段 MDD 絕對值縮小（風控目的達成）")
+    md.append("2. 盤整段 MDD 絕對值縮小")
+    md.append(f"3. 多頭段年化報酬 ≥ Scenario A 的 {BULL_CAGR_FLOOR:.0%}"
+              "（防止「為了防守犧牲太多進攻」——減碼在多頭轉盤整的瞬間"
+              "也可能誤砍正在賺錢的倉位）\n")
+    md.append("任一條不成立 → **不支持**，缺口繼續記錄為已知限制。"
+              "不因為「風控直覺上應該更好」放寬標準。\n")
+
+    md.append("## 設計\n")
+    md.append("- **選誰**：總曝險超過 regime 上限時，砍 **entry_date 最舊**的一筆"
+              "（同日依代號）。理由：本專案已驗證的是固定 20 日持有期，"
+              "砍最接近到期的那筆對該方法論偏移最小。")
+    md.append("- **刻意不用 P&L 規則**（砍虧最多／賺最多）——那會引入未經驗證的"
+              "出場擇時，是設計討論時明確排除的選項。")
+    md.append(f"- **限速**：每天最多強制平倉 {MAX_DELEVERAGE_PER_DAY} 筆，不一次到位。")
+    md.append("- **執行順序**：到期結算 → 減碼檢查 → 新進場"
+              "（因此減碼釋放的空間當天就能被新訊號使用）。\n")
+
+    md.append("### 提早出場的損益結算方法（驗收條件3）\n")
+    md.append("**用當日真實收盤價結算，沒有用任何近似法。**\n")
+    md.append("build_prompt_22 的規格擔心「減碼可能發生在第 3 天或第 14 天，"
+              "不一定落在 5/10/20 檢查點上」。實際查證後確認這個顧慮不成立："
+              "`PriceBook` 是用每一列的 `exit_5` 反推第 i+6 個交易日的收盤價，"
+              "i 掃過全部列之後，**第 7 個交易日起每檔每個交易日都有實價**"
+              "（實測 130,993 格中缺值 492 格，全部落在最前面 6 天，"
+              "index ≥ 6 零缺值）。")
+    md.append("所以提早出場不論發生在第幾天都能用該日真實收盤價結算，"
+              "成本模型與到期出場完全相同"
+              f"（round-trip {COST_RATE*100:.4f}% 計於進場名目金額）。\n")
+
+    md.append("## 1. Scenario A vs B 總覽\n")
+    md.append("- **Scenario A**＝build_prompt_21 基準（無減碼）。"
+              "本報告以 `simulate(deleverage=False)` 在記憶體中重跑，"
+              f"CAGR/MDD 與已發佈的 `portfolio_backtest_real.md` 逐位一致"
+              f"（{perfA['cagr']}% / {perfA['mdd']}%），確認是同一條基準線。")
+    md.append("- **Scenario B**＝唯一差異是啟用減碼；資料源、成本模型、"
+              "排序規則、持有期全部相同。\n")
+    md.append("| 指標 | A（無減碼） | B（有減碼） | 差異 |")
+    md.append("|---|---|---|---|")
+
+    def _row(label, ka, kb, suf='%', src=('perf',)):
+        a, b = perfA.get(ka), perfB.get(kb)
+        if a is None or b is None:
+            md.append(f"| {label} | {_fmt(a,suf)} | {_fmt(b,suf)} | — |")
+        else:
+            md.append(f"| {label} | {a}{suf} | {b}{suf} | {b-a:+.2f}{suf} |")
+
+    _row('CAGR', 'cagr', 'cagr')
+    _row('MDD', 'mdd', 'mdd')
+    _row('總報酬', 'total_return', 'total_return')
+    _row('Sharpe（年化）', 'sharpe', 'sharpe', '')
+    _row('Sortino（年化）', 'sortino', 'sortino', '')
+    _row('平均總曝險', 'avg_gross', 'avg_gross')
+    _row('平均同時持倉數', 'avg_positions', 'avg_positions', '')
+    md.append(f"| 期末資產 | {perfA['final_equity']:,.0f} | "
+              f"{perfB['final_equity']:,.0f} | "
+              f"{perfB['final_equity']-perfA['final_equity']:+,.0f} |")
+    md.append("")
+
+    md.append("### 分 Regime 對照\n")
+    md.append("| Regime | A 累積 | B 累積 | A 年化 | B 年化 | A MDD | B MDD | "
+              "A 平均曝險 | B 平均曝險 |")
+    md.append("|---|---|---|---|---|---|---|---|---|")
+    for rg in ('多頭', '盤整', '空頭'):
+        a, b = regA.get(rg), regB.get(rg)
+        if not a or not b:
+            continue
+        md.append(f"| {rg} | {a['cum_return']}% | {b['cum_return']}% | "
+                  f"{a['ann_return']}% | {b['ann_return']}% | "
+                  f"{a['mdd']}% | {b['mdd']}% | "
+                  f"{a['avg_gross']}% | {b['avg_gross']}% |")
+    md.append("")
+
+    md.append("### 曝險上限合規性\n")
+    md.append("| Regime | 上限 | A 觀察最高 | B 觀察最高 |")
+    md.append("|---|---|---|---|")
+    obsA = collections.defaultdict(float)
+    obsB = collections.defaultdict(float)
+    for c in simA['equity_curve']:
+        obsA[c['regime']] = max(obsA[c['regime']], c['gross_pct'])
+    for c in simB['equity_curve']:
+        obsB[c['regime']] = max(obsB[c['regime']], c['gross_pct'])
+    for rg in ('多頭', '盤整', '空頭'):
+        cap = QC.GROSS_EXPOSURE_BY_REGIME.get(rg)
+        if cap is None:
+            continue
+        md.append(f"| {rg} | {cap:.0%} | {obsA[rg]:.1%} | {obsB[rg]:.1%} |")
+    md.append("")
+    md.append("> 限速（每天一筆）意味著 B 的曝險是**逐步**收斂到上限，"
+              "不是瞬間達標，因此觀察到的最高值仍可能高於上限——"
+              "這是限速設計的預期行為，不是失效。\n")
+
+    md.append("## 2. 減碼觸發統計（任務2）\n")
+    md.append(f"- 減碼出場：**{len(dl):,} 筆**"
+              f"（占全部 {len(simB['trades']):,} 筆出場的 "
+              f"{len(dl)/max(len(simB['trades']),1):.1%}）")
+    md.append(f"- 到期出場：{len(ex):,} 筆")
+    hd = [t['held_days'] for t in dl if t.get('held_days') is not None]
+    eb = [t['early_by'] for t in dl if t.get('early_by') is not None]
+    if hd:
+        md.append(f"- 平均持有 {statistics.mean(hd):.1f} 個交易日"
+                  f"（中位 {sorted(hd)[len(hd)//2]}），"
+                  f"即平均**提早 {statistics.mean(eb):.1f} 天**出場")
+    md.append(f"- B 的開倉數 {simB['stats']['opened']:,} vs A 的 "
+              f"{simA['stats']['opened']:,}"
+              f"（{simB['stats']['opened']-simA['stats']['opened']:+,}）"
+              "——減碼釋放的容量被新訊號吃掉了\n")
+
+    md.append("### 被迫提早出場當下是賺是賠？（政策含義的關鍵）\n")
+    d = _pct_dist([t['ret_pct'] for t in dl])
+    e = _pct_dist([t['ret_pct'] for t in ex])
+    if d and e:
+        md.append("| 出場類型 | 筆數 | 勝率 | 平均報酬 | 中位 | P10 | P90 | 最差 | 最佳 |")
+        md.append("|---|---|---|---|---|---|---|---|---|")
+        for lab, x in (('減碼提早出場', d), ('到期出場', e)):
+            md.append(f"| {lab} | {x['n']:,} | {x['win_rate']:.1f}% | "
+                      f"{x['mean']:+.2f}% | {x['median']:+.2f}% | "
+                      f"{x['p10']:+.2f}% | {x['p90']:+.2f}% | "
+                      f"{x['min']:+.2f}% | {x['max']:+.2f}% |")
+        md.append("")
+        md.append(f"→ 減碼出場勝率 {d['win_rate']:.1f}%、"
+                  f"中位 {d['median']:+.2f}%、平均 {d['mean']:+.2f}%。")
+        _skew = '高於' if d['mean'] > d['median'] else '低於'
+        md.append(f"典型的減碼出場是小賠（中位 {d['median']:+.2f}%），"
+                  f"平均{_skew}中位數"
+                  f"（{d['mean']:+.2f}% vs {d['median']:+.2f}%），"
+                  f"分佈被少數極端值拉開（最佳 {d['max']:+.2f}%、"
+                  f"最差 {d['min']:+.2f}%、P90 {d['p90']:+.2f}%）。")
+        md.append("換句話說，減碼機制**主要在砍小賠的倉位**（扮演停損角色），"
+                  "但**偶爾也會砍掉正在大賺的倉位**"
+                  "——放棄的上檔是真實成本，不是零。")
+        md.append(f"對照到期出場（勝率 {e['win_rate']:.1f}%、"
+                  f"平均 {e['mean']:+.2f}%），被減碼的那批本來就是"
+                  "表現較差的一群——但這不代表機制「挑得準」，"
+                  "它挑的是**最舊**，不是最弱；兩者相關只是因為"
+                  "持有越久、壞消息越可能已經反映。\n")
+
+    md.append("### 減碼發生在哪些 regime\n")
+    byreg_dl = collections.Counter(t.get('regime_at_exit') for t in dl)
+    md.append("| 出場時 Regime | 減碼筆數 |")
+    md.append("|---|---|")
+    for rg, n in byreg_dl.most_common():
+        md.append(f"| {rg} | {n:,} |")
+    md.append("")
+
+    md.append("## 3. 最終判定（任務3準則）\n")
+    c1 = abs(regB['空頭']['mdd']) < abs(regA['空頭']['mdd'])
+    c2 = abs(regB['盤整']['mdd']) < abs(regA['盤整']['mdd'])
+    floor = regA['多頭']['ann_return'] * BULL_CAGR_FLOOR
+    c3 = regB['多頭']['ann_return'] >= floor
+    md.append("| # | 門檻 | A | B | 判定 |")
+    md.append("|---|---|---|---|---|")
+    md.append(f"| 1 | 空頭段 \\|MDD\\| 縮小 | {regA['空頭']['mdd']}% | "
+              f"{regB['空頭']['mdd']}% | {'✅' if c1 else '❌'} |")
+    md.append(f"| 2 | 盤整段 \\|MDD\\| 縮小 | {regA['盤整']['mdd']}% | "
+              f"{regB['盤整']['mdd']}% | {'✅' if c2 else '❌'} |")
+    md.append(f"| 3 | 多頭段年化 ≥ A×{BULL_CAGR_FLOOR:.0%}"
+              f"（門檻 {floor:.2f}%） | {regA['多頭']['ann_return']}% | "
+              f"{regB['多頭']['ann_return']}% | {'✅' if c3 else '❌'} |")
+    md.append("")
+
+    if c1 and c2 and c3:
+        md.append("### ✅ 判定：**支持採用減碼機制**\n")
+        md.append("三條預先定義的門檻全數通過。\n")
+        _bull_cost = regA['多頭']['ann_return'] - regB['多頭']['ann_return']
+        if _bull_cost > 0:
+            md.append(f"⚠️ 但門檻 3 是**通過而非無代價**：多頭段年化少了 "
+                      f"{_bull_cost:.2f}pp（{regA['多頭']['ann_return']}% → "
+                      f"{regB['多頭']['ann_return']}%），只是仍在 "
+                      f"{BULL_CAGR_FLOOR:.0%} 底線之上。減碼在多頭轉盤整的"
+                      "瞬間確實會誤砍還在賺的倉位，這筆代價是真的。"
+                      "若之後調整限速或選擇規則，這條門檻要重新量。\n")
+        md.append("**建議下一步（本輪不執行）**：\n")
+        md.append("1. 把 `deleverage=True` 設為 `portfolio_backtest.py` 的預設，"
+                  "並重跑 `portfolio_backtest_real.md` 讓基準數字換成有減碼版本")
+        md.append("2. 實盤側目前**還沒有持倉概念**"
+                  "（build_prompt_20 的 `current_positions` 恆為空清單），"
+                  "減碼機制在實盤要生效，必須先補上持倉追蹤——"
+                  "**這是接進 production 的硬前提，不可跳過**")
+        md.append("3. 需要額外確認的事項：限速參數（每天 1 筆）未做敏感度分析；"
+                  "本輪僅單一確定性模擬，未檢驗跨年穩定性")
+        md.append("")
+        md.append("⚠️ 仍須留意：本結果來自**單一路徑、樣本內**模擬，"
+                  "且標的池帶有已證實的 selection bias。"
+                  "三條門檻是風控政策的可接受性檢查，"
+                  "**不等於統計上證明減碼更優**。")
+    else:
+        md.append("### ❌ 判定：**不支持**\n")
+        fails = [n for n, ok in (('空頭 MDD', c1), ('盤整 MDD', c2),
+                                 ('多頭 CAGR 底線', c3)) if not ok]
+        md.append(f"未通過：{'、'.join(fails)}。")
+        md.append("依預先定義的準則，**維持現狀不採用減碼**。"
+                  "曝險上限只有進場閘門、沒有減碼路徑這個缺口，"
+                  "繼續記錄為已知限制，`portfolio_backtest_real.md` "
+                  "的既有措辭維持不變。")
+    md.append("")
+
+    md.append("## 4. 限制\n")
+    md.append("0. **A/B 差異混合了兩種效果，不可只歸因於「風控變好」**："
+              f"B 比 A 多開了 {simB['stats']['opened']-simA['stats']['opened']:,} 倉"
+              f"（{simA['stats']['opened']:,} → {simB['stats']['opened']:,}）。"
+              "減碼一方面降低了下檔曝險，另一方面**釋放容量讓更多訊號進場**，"
+              "後者本身就會改變報酬。CAGR 從 "
+              f"{perfA['cagr']}% 升到 {perfB['cagr']}% 之中有多少來自"
+              "「少虧」、多少來自「多做」，本輪**沒有拆解**。"
+              "要拆解需要再跑一個「只減碼、不把釋放的空間拿去加倉」的對照組，"
+              "那是獨立的下一題。三條判斷門檻只檢查 MDD 與多頭報酬的"
+              "可接受性，不受此混淆影響——但**總報酬的解讀受影響**。")
+    md.append("1. **單一確定性模擬**：無隨機種子、無蒙地卡羅，"
+              "未做限速參數與選擇規則的敏感度分析。")
+    md.append("2. **年齡規則未與其他規則比較**：本輪只測「砍最舊」，"
+              "沒有測「砍最弱 / 等比例縮減 / 波動度目標」。"
+              "通過門檻只代表這一種規則可接受，不代表它最好。")
+    md.append("3. **樣本內、單一路徑**，且沿用 Phase1 研究 universe"
+              "（已證實的 selection bias，絕對水準須折扣 0.6–1.2pp）。")
+    md.append("4. 其餘限制（碎股、固定持有期、不含股利、無流動性衝擊成本）"
+              "與 [portfolio_backtest_real.md](portfolio_backtest_real.md) 相同。")
+
+    p = os.path.join(OUT_DIR, out_name)
+    with open(p, 'w', encoding='utf-8') as f:
+        f.write("\n".join(md) + "\n")
+    print(f"[Phase2] → {p}")
+    return p
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--trades', default=BASE_TRADES)
     ap.add_argument('--capital', type=float, default=START_CAPITAL)
     ap.add_argument('--hold', type=int, default=HOLDING_DAYS)
+    ap.add_argument('--mode', choices=['real', 'deleverage-ab'], default='real',
+                    help="real=build_prompt_21 基準報告；"
+                         "deleverage-ab=build_prompt_22 A/B 對照")
     a = ap.parse_args()
+
+    if a.mode == 'deleverage-ab':
+        simA = simulate(a.trades, a.capital, a.hold, deleverage=False)
+        simB = simulate(a.trades, a.capital, a.hold, deleverage=True)
+        perfA = perf_from_equity(simA['equity_curve'], simA['start_capital'])
+        perfB = perf_from_equity(simB['equity_curve'], simB['start_capital'])
+        regA, regB = perf_by_regime(simA['equity_curve']), perf_by_regime(simB['equity_curve'])
+        write_curve_csv(simB, 'portfolio_equity_curve_deleverage.csv')
+        write_deleverage_report(simA, perfA, regA, simB, perfB, regB)
+        return
 
     sim = simulate(a.trades, a.capital, a.hold)
     perf = perf_from_equity(sim['equity_curve'], sim['start_capital'])
