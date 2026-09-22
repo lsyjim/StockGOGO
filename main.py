@@ -5110,6 +5110,7 @@ class RecommendationDialog:
             v = self._fmtnum(x, 2)
             return v if v != '—' else None
 
+        _basis = None   # build_prompt_20：A/B 級部位的客觀依據行（出場版型不用）
         if p.get('is_exit'):
             # fix_07 任務4：賣出族 → 出場計畫版型（退化欄位一律 '—'）
             body_title = "交易計畫（出場）"
@@ -5141,13 +5142,35 @@ class RecommendationDialog:
             except (TypeError, ValueError):
                 _rr_txt = '—'
             tgt_txt = (f"{tgt}   RR {_rr_txt}" if tgt != '—' else '—')
+            # build_prompt_20：建議部位改吃 portfolio_engine 的輸出。
+            # position_pct 為 None（C/X 級或被否決）→ 只顯示 position_note，
+            # 不格式化任何百分比數字。
             pos = p.get('position_pct')
-            # 禁止退化：部位 0.0% → '—'
+            pos_note = p.get('position_note')
             try:
-                pos_txt = f"{self._fmtnum(pos,1)}%" if (pos is not None and float(pos) > 0) else '—'
+                _has_pos = pos is not None and float(pos) > 0
             except (TypeError, ValueError):
-                pos_txt = '—'
+                _has_pos = False
+            if _has_pos:
+                pos_txt = f"{self._fmtnum(pos,1)}%"
+            else:
+                pos_txt = pos_note or '—'
             cards = [("進場參考區", ez_txt), ("停損", sl_txt), ("目標 ＋ RR", tgt_txt), ("建議部位", pos_txt)]
+            # 客觀依據行：純樣板字串，不呼叫任何會產生形容詞的函式。
+            _basis = None
+            if _has_pos:
+                _shares = p.get('position_shares')
+                _basis = (f"風險預算法 · {self.verdict.get('grade','—')}級 · "
+                          f"風險{self._fmtnum(p.get('position_risk_pct'), 2)}% · "
+                          f"止損{self._fmtnum(p.get('stop_atr_mult'), 1)}×ATR")
+                if _shares:
+                    _basis += f" · 約{int(_shares):,}股"
+                _capped = p.get('position_capped_by') or []
+                _names = {'gross_exposure_cap': '曝險',
+                          'concentration_limits': '題材',
+                          'correlation_limits': '相關性'}
+                if _capped:
+                    _basis += "（受" + "/".join(_names.get(c, c) for c in _capped) + "限制縮減）"
         grid = tk.Frame(body, bg=DarkTheme.BG_MAIN)
         grid.pack(fill=tk.X)
         for idx, (lab, val) in enumerate(cards):
@@ -5156,8 +5179,14 @@ class RecommendationDialog:
             cell.grid(row=idx // 2, column=idx % 2, sticky="nsew", padx=4, pady=4)
             tk.Label(cell, text=lab, font=("Arial", 10), fg=DarkTheme.TEXT_SECONDARY,
                      bg=DarkTheme.BG_CARD).pack(anchor="w", padx=10, pady=(8, 0))
+            _pad_b = (0, 0) if (lab == "建議部位" and _basis) else (0, 8)
             tk.Label(cell, text=val, font=(self._MONO, 14, "bold"), fg=DarkTheme.TEXT_PRIMARY,
-                     bg=DarkTheme.BG_CARD).pack(anchor="w", padx=10, pady=(0, 8))
+                     bg=DarkTheme.BG_CARD).pack(anchor="w", padx=10, pady=_pad_b)
+            # build_prompt_20：依據行緊貼數字下方（同一張卡），純樣板字串。
+            if lab == "建議部位" and _basis:
+                tk.Label(cell, text=_basis, font=("Arial", 9), fg=DarkTheme.TEXT_SECONDARY,
+                         bg=DarkTheme.BG_CARD, justify=tk.LEFT,
+                         anchor="w").pack(anchor="w", padx=10, pady=(0, 8))
         grid.columnconfigure(0, weight=1)
         grid.columnconfigure(1, weight=1)
 

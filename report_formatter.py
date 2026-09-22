@@ -39,6 +39,105 @@ _GRADE_LABELS = {
     'X': '無訊號',
 }
 
+# ── build_prompt_20：建議部位（接 portfolio_engine）─────────────────────
+#
+# 核心防線：這個區塊**只產生數字與客觀計算依據**，一個強度形容詞都不准出現。
+# 「強烈建議買進」「積極進場」這類字眼的唯一來源仍是 overall_text
+# （_generate_recommendation_v43），本輪完全沒動那條路徑。
+#
+# 等級閘門（fix_prompt_07 3149 事件的延伸紀律）：
+#   A/B      → 顯示部位 % 與股數
+#   C/X/其他 → position_pct=None，只給 POSITION_NOTE_WATCH，不給任何百分比，
+#              避免「C 級也有 5%」被讀成「C 級也值得進場」
+#   賣出族   → 完全不碰 portfolio_engine（那是買進情境的引擎），
+#              UI 維持既有「出清 / 避開」
+POSITION_NOTE_WATCH = '觀察中，暫無建議部位'
+_SIZED_GRADES = ('A', 'B')
+
+_THEME_MAP_CACHE = None
+
+
+def _theme_map():
+    """theme_map.json（讀一次快取）。讀不到就回空 dict，集中度限制自然不作用。"""
+    global _THEME_MAP_CACHE
+    if _THEME_MAP_CACHE is None:
+        import json
+        import os
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'theme_map.json')
+        try:
+            with open(p, encoding='utf-8') as f:
+                _THEME_MAP_CACHE = json.load(f)
+        except Exception:
+            _THEME_MAP_CACHE = {}
+    return _THEME_MAP_CACHE
+
+
+def _no_price_history(_symbol):
+    """本輪 current_positions 恆為空清單，相關性層不會被用到。
+
+    多持倉整合時，這裡要換成真的「近 N 日收盤價」取數器。
+    """
+    return None
+
+
+def _position_block(grade, is_exit, result, current_price):
+    """回傳要併進 plan 的部位欄位。只回資料，不回任何描述性文案。"""
+    blank = {'position_pct': None, 'position_note': None, 'position_shares': None,
+             'position_steps': None, 'position_risk_pct': None,
+             'position_capped_by': [], 'position_rejected': False}
+
+    if is_exit:
+        # 賣出族：UI 既有「出清 / 避開」照舊，不接 portfolio_engine
+        return blank
+    if grade not in _SIZED_GRADES:
+        return {**blank, 'position_note': POSITION_NOTE_WATCH}
+
+    try:
+        import portfolio_engine as _PE
+        from config import QuantConfig as _QC
+    except Exception:
+        return {**blank, 'position_note': POSITION_NOTE_WATCH}
+
+    tech = result.get('technical', {}) or {}
+    atr = _num(tech.get('atr14'))
+    if atr is None:
+        atr = _num(tech.get('atr'))
+    mreg = result.get('market_regime', {}) or {}
+
+    try:
+        out = _PE.evaluate_new_position(
+            {'symbol': result.get('symbol'), 'grade': grade,
+             'entry_price': current_price, 'atr': atr},
+            current_positions=[],          # 本輪單檔視角；多持倉整合是下一輪
+            capital=_QC.SIMULATED_CAPITAL,
+            regime=mreg.get('trend_direction'),
+            market_available=bool(mreg.get('available')),
+            theme_map=_theme_map(),
+            price_history_getter=_no_price_history,
+        )
+    except Exception:
+        return {**blank, 'position_note': POSITION_NOTE_WATCH}
+
+    if out.get('rejected'):
+        return {**blank, 'position_note': POSITION_NOTE_WATCH,
+                'position_steps': out.get('steps'), 'position_rejected': True}
+
+    sizing = (out['steps'][0].get('detail') or {}) if out.get('steps') else {}
+    # 哪幾層真的縮減了（供 UI 加註「受限縮減」）。position_sizing 的單筆上限
+    # 不算集中度限制，故從第二層起算。
+    capped_by = [s['step'] for s in (out.get('steps') or [])[1:] if s.get('capped')]
+
+    return {
+        # 單位沿用既有 UI 契約：百分比數字（20.0 = 20%），不是小數
+        'position_pct':      round(out['final_pct'] * 100, 1),
+        'position_shares':   out['final_shares'],
+        'position_steps':    out['steps'],
+        'position_risk_pct': round((sizing.get('risk_pct_used') or 0) * 100, 2),
+        'position_capped_by': capped_by,
+        'position_rejected': False,
+        'position_note':     None,
+    }
+
 
 def build_verdict(result: dict) -> dict:
     """單一真相源。回傳完整 verdict dict（見 build_prompt_06 任務1a 規格）。"""
@@ -108,12 +207,14 @@ def build_verdict(result: dict) -> dict:
         'target':       pt.get('target_price'),
         'target2':      None,
         'rr':           pt.get('rr_ratio'),
-        'position_pct': rm.get('position_pct'),
+        # build_prompt_20：建議部位改由 portfolio_engine 決定（見下方 _position_block）
+        'position_pct': None,
         # 出場版型專用：現價（出場參考）、上方壓力（持有者停損）、下檔目標
         'exit_ref':     current,
         'holder_stop':  (_res1 if (_res1 is not None and current is not None and _res1 > current) else None),
         'downside_ref': pt.get('target_price'),
     }
+    plan.update(_position_block(grade, _is_exit, result, current))
 
     # ── 量價分析（05 區）──
     va = result.get('volume_analysis', {}) or {}
