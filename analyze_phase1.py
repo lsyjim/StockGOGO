@@ -228,6 +228,9 @@ CAGR_MDD_NOTE = (
     "投組層級 CAGR/MDD 為近似值（每 N 個交易日取樣一次，避免同一筆資金"
     "重複複利計算），非可交易 production 績效；真正的投組模擬需要部位管理器，"
     "超出現有 `signal_backtest.py` 框架能力。"
+    "（build_prompt_21 更新：部位管理器已完成，真實逐日資金曲線模擬見 "
+    "[../phase2/portfolio_backtest_real.md](../phase2/portfolio_backtest_real.md)；"
+    "本節數字仍為近似法，兩者差異對照表在該報告第 2 節。）"
 )
 
 
@@ -1446,6 +1449,38 @@ def cmd_summary(_args):
               "但 `analyze_phase1.py baseline` 的重跑比對自此失效）。"
               "`research_phase1.py --variant nofilter` 因原始碼注入目標消失，"
               "會直接拋 RuntimeError。\n")
+
+    md.append("## Step 4：真實投組模擬（build_prompt_21）\n")
+    md.append("報告：[../phase2/portfolio_backtest_real.md]"
+              "(../phase2/portfolio_backtest_real.md)"
+              "｜逐日序列：`../phase2/portfolio_equity_curve.csv`\n")
+    md.append("新增 `portfolio_backtest.py`（獨立模組，未動 `signal_backtest.py`），"
+              "讀同一份凍結 `trades.csv`，用 `portfolio_engine` 逐日決定進場，"
+              "固定持有 20 交易日，跑出**第一條真實資金曲線**。"
+              "至此 Phase1 那句「超出框架能力」的免責正式有了替代品。\n")
+    md.append("| 指標 | 舊近似法 | 真實模擬 |")
+    md.append("|---|---|---|")
+    md.append("| CAGR | 10.72% | **19.06%** |")
+    md.append("| MDD | −61.73% | **−45.80%** |")
+    md.append("| Sharpe（年化） | 0.548 | **0.858** |")
+    md.append("")
+    md.append("兩者不可直接當成「新方法比較好」——近似法是每 20 日取樣的"
+              "等權訊號序列，真實模擬是有容量限制、有排序競爭的投組；"
+              "**量的是不同東西**，差異方向如實呈現而已。\n")
+    md.append("### 本輪最重要的發現：曝險上限只有進場閘門，沒有減碼路徑\n")
+    md.append("633 次開倉**全部**在進場當下合規（0 次超過 `gross_exposure_cap()`），"
+              "但逐日觀察到的曝險在盤整與空頭都曾達 100%，遠超 70%／40% 上限。")
+    md.append("原因：上限只在 `evaluate_new_position()` 被讀取，是進場閘門；"
+              "多頭期間建立的滿倉部位在 regime 翻轉後不會被減碼，"
+              "只能等 20 日持有期自然到期。\n")
+    md.append("**這暴露 Step 3 的一個缺口**：當時以「曝險層風控」為由移除大盤濾網的 "
+              "grade 降級，但目前的曝險層**只裝了一半**——舊機制拿掉了，"
+              "新機制缺少 regime 翻轉時的減碼路徑。"
+              "分 regime 的盤整（−75.7%）／空頭（−45.1%）段虧損主要源於此，"
+              "而非訊號本身在空頭較差。\n")
+    md.append("⚠️ 本輪定位是**量測**，未修補此缺口。"
+              "怎麼補（regime 翻轉強制減碼？波動度目標？）是需要獨立設計與"
+              "驗證的下一個題目——**在補上之前，不應把目前的空頭風控視為完整**。\n")
 
     write(md, 'phase1_report.md')
 

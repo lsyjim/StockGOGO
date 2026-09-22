@@ -40,7 +40,7 @@
 等於「既降級又縮倉」，無法回答 spec 的問題。
 
 
-> ⚠️ 投組層級 CAGR/MDD 為近似值（每 N 個交易日取樣一次，避免同一筆資金重複複利計算），非可交易 production 績效；真正的投組模擬需要部位管理器，超出現有 `signal_backtest.py` 框架能力。
+> ⚠️ 投組層級 CAGR/MDD 為近似值（每 N 個交易日取樣一次，避免同一筆資金重複複利計算），非可交易 production 績效；真正的投組模擬需要部位管理器，超出現有 `signal_backtest.py` 框架能力。（build_prompt_21 更新：部位管理器已完成，真實逐日資金曲線模擬見 [../phase2/portfolio_backtest_real.md](../phase2/portfolio_backtest_real.md)；本節數字仍為近似法，兩者差異對照表在該報告第 2 節。）
 
 
 ## 【主要基準】A 級書｜持有 5 日｜全期間
@@ -231,7 +231,7 @@ D 組多數欄位與 B 組相同。原因：A 級訊號稀疏，同日筆數 k �
 
 ## 限制
 
-- **投組層級 CAGR/MDD 為近似值（每 N 個交易日取樣一次，避免同一筆資金重複複利計算），非可交易 production 績效；真正的投組模擬需要部位管理器，超出現有 `signal_backtest.py` 框架能力。**
+- **投組層級 CAGR/MDD 為近似值（每 N 個交易日取樣一次，避免同一筆資金重複複利計算），非可交易 production 績效；真正的投組模擬需要部位管理器，超出現有 `signal_backtest.py` 框架能力。（build_prompt_21 更新：部位管理器已完成，真實逐日資金曲線模擬見 [../phase2/portfolio_backtest_real.md](../phase2/portfolio_backtest_real.md)；本節數字仍為近似法，兩者差異對照表在該報告第 2 節。）**
 - 投組模擬為**近似**：單筆部位以固定比例代替真實風險預算（ATR/波動度定量），
   且未模擬資金曲線上的實際成交與再平衡。真正的部位管理器超出現有
   `signal_backtest.py` 框架能力，已依 spec 規定如實記錄而非簡化到失真。
